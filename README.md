@@ -554,6 +554,16 @@ microk8s enable metrics-server
 Netdata даёт наглядные метрики **CPU/память/диск/I/O/сеть/FD** как для ноды, так и для отдельных сервисов (по namespaces).
 Сервис `netdata` управляется через `ENABLED_SERVICES` / `EXCLUDE_SERVICES`.
 
+### Netdata без облака
+
+В этой конфигурации Netdata работает **полностью автономно**, без Netdata Cloud:
+
+- **UI и дашборды** — доступны по ingress или `make monitoring-port-forward` (порт 19999).
+- **Метрики и алерты** — собираются и оцениваются локально в поде; алерты видны в разделе **Alarms** в UI.
+- **Уведомления** — без облака можно настроить локально: exec-скрипты, webhooks, SMTP (см. ConfigMap `health_alarm_notify.conf` в разделе «Алертинг в Netdata»).
+
+Netdata Cloud не подключается: в чарте нет claim-token и streaming. Для централизованных дашбордов и уведомлений через Slack/PagerDuty можно позже подключить облако по желанию.
+
 ### Установка
 
 1. Проверьте hostname для ingress в `monitoring/netdata/values-$(ENV).yaml`:
@@ -571,6 +581,8 @@ make monitoring-up ENV=dev
 make monitoring-port-forward ENV=dev
 ```
 Откройте: `http://localhost:19999`
+
+**Вход без облака.** При первом открытии Netdata показывает экран «Welcome to Netdata» с предложением войти (Sign-in). Чтобы пользоваться дашбордом без регистрации и без Netdata Cloud, нажмите ссылку **Skip and use the dashboard anonymously** под кнопкой Sign-in — откроется полный дашборд с метриками и алертами, все данные остаются локально.
 
 ### Где смотреть метрики по сервисам
 
@@ -698,3 +710,9 @@ helmfile -f helmfile.yaml.gotmpl -e dev template
 # Посмотреть что будет развернуто
 helmfile -f helmfile.yaml.gotmpl -e dev diff
 ```
+
+## Repository topics (discoverability)
+
+Рекомендуемые теги для настроек репозитория на GitHub (About → Topics):
+
+`kubernetes` `helm` `infrastructure` `microservices` `docker` `postgresql` `kafka` `minio` `redis` `rabbitmq` `clickhouse` `netdata` `microk8s`
