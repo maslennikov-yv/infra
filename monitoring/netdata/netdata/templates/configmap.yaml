@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "netdata.fullname" . }}
+  labels:
+    {{- include "netdata.labels" . | nindent 4 }}
+data:
+  netdata.conf: |
+    [global]
+      update every = {{ .Values.config.updateEvery }}
+      memory mode = {{ .Values.config.memoryMode }}
+      history = {{ .Values.config.history }}
+
+  disk_space_pv.conf: |
+    alarm: pv_disk_usage
+      on: disk.space
+      lookup: average -5m percentage of used
+      units: %
+      every: 1m
+      warn: $this > 80
+      crit: $this > 90
+      info: PersistentVolume disk usage is above threshold

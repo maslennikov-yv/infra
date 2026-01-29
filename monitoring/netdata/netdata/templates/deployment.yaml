@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "netdata.fullname" . }}
+  labels:
+    {{- include "netdata.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "netdata.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "netdata.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "netdata.fullname" . }}
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: netdata
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          env:
+            - name: NETDATA_HOST_PREFIX
+              value: /host
+          securityContext:
+            privileged: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: cgroup
+              mountPath: /host/sys/fs/cgroup
+              readOnly: true
+            - name: run
+              mountPath: /host/var/run
+              readOnly: true
+            - name: config
+              mountPath: /etc/netdata/netdata.conf
+              subPath: netdata.conf
+            - name: config
+              mountPath: /etc/netdata/health.d/disk_space_pv.conf
+              subPath: disk_space_pv.conf
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/netdata
+            - name: lib
+              mountPath: /var/lib/netdata
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: sys
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: run
+          hostPath:
+            path: /var/run
+            type: Directory
+        - name: config
+          configMap:
+            name: {{ include "netdata.fullname" . }}
+        - name: cache
+          emptyDir: {}
+        - name: lib
+          emptyDir: {}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}

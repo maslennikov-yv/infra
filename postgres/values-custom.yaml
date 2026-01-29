@@ -1,0 +1,47 @@
+# Кастомные настройки для PostgreSQL StatefulSet с 2 нодами
+
+# Использование local registry (microk8s)
+# Если используете make load-containerd, можно оставить значения по умолчанию
+# Если используете make load-all с registry, раскомментируйте:
+# image:
+#   registry: localhost:32000
+#   repository: bitnami/postgresql
+
+# Базовая аутентификация
+auth:
+  enablePostgresUser: true
+  postgresPassword: "postgres123"
+  username: "app_user"
+  password: "app_password"
+  database: "app_db"
+
+# Архитектура (standalone - одна нода, replication - с репликацией)
+architecture: standalone
+
+# Primary настройки - 2 ноды
+primary:
+  replicaCount: 2
+  
+  # Ресурсы для каждой ноды
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Персистентное хранилище
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+  
+  # Обновление стратегии для StatefulSet
+  updateStrategy:
+    type: RollingUpdate
+
+# Отключаем read replicas, так как используем 2 ноды primary
+readReplicas:
+  replicaCount: 0
+

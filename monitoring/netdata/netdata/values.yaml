@@ -1,0 +1,44 @@
+image:
+  repository: netdata/netdata
+  tag: stable
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  port: 19999
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: netdata.local
+      paths:
+        - /
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+config:
+  updateEvery: 2
+  memoryMode: ram
+  history: 3600
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

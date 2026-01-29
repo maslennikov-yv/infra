@@ -1,0 +1,55 @@
+global:
+  security:
+    allowInsecureImages: true
+
+image:
+  registry: localhost:32000
+
+existingKraftSecret: kafka-kraft
+
+listeners:
+  client:
+    protocol: SASL_PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+sasl:
+  enabledMechanisms: SCRAM-SHA-256
+  interBrokerMechanism: SCRAM-SHA-256
+  controllerMechanism: SCRAM-SHA-256
+  # Important for upgrades: reuse the already generated passwords secret.
+  # Without this, Bitnami chart may fail with: "PASSWORDS ERROR: You must provide your current passwords when upgrading".
+  existingSecret: kafka-user-passwords
+  client:
+    users:
+      - user1
+
+overrideConfiguration:
+  authorizer.class.name: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+  # controller listener is PLAINTEXT => principal can be ANONYMOUS for internal KRaft traffic
+  super.users: User:user1;User:ANONYMOUS
+  allow.everyone.if.no.acl.found: "false"
+
+defaultInitContainers:
+  volumePermissions:
+    image:
+      registry: localhost:32000
+  autoDiscovery:
+    image:
+      registry: localhost:32000
+
+metrics:
+  jmx:
+    image:
+      registry: localhost:32000
+
+controller:
+  persistence:
+    enabled: true
+
+broker:
+  persistence:
+    enabled: false
+

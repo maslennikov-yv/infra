@@ -1,0 +1,40 @@
+global:
+  security:
+    allowInsecureImages: true
+
+image:
+  registry: localhost:32000
+  repository: bitnami/clickhouse
+  tag: "25.7.5-debian-12-r0"
+
+defaultInitContainers:
+  volumePermissions:
+    image:
+      registry: localhost:32000
+      repository: bitnami/os-shell
+      tag: "12-debian-12-r51"
+
+# Standalone
+shards: 1
+replicaCount: 1
+
+keeper:
+  enabled: false
+  image:
+    registry: localhost:32000
+    repository: bitnami/clickhouse-keeper
+    tag: "25.7.5-debian-12-r0"
+
+service:
+  type: ClusterIP
+  perReplicaAccess: false
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+auth:
+  username: admin
+  password: ""
+  existingSecret: ""
+  existingSecretKey: ""

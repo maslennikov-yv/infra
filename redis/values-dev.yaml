@@ -1,0 +1,45 @@
+global:
+  security:
+    allowInsecureImages: true
+
+architecture: standalone
+
+auth:
+  enabled: true
+  existingSecret: redis
+  existingSecretPasswordKey: redis-password
+  acl:
+    enabled: true
+
+image:
+  registry: localhost:32000
+  repository: bitnami/redis
+  tag: "8.4.0"
+
+sentinel:
+  enabled: false
+  image:
+    registry: localhost:32000
+    repository: bitnami/redis-sentinel
+    tag: "8.4.0"
+
+metrics:
+  enabled: true
+  image:
+    registry: localhost:32000
+    repository: bitnami/redis-exporter
+    tag: "1.80.1"
+
+volumePermissions:
+  enabled: false
+  image:
+    registry: localhost:32000
+    repository: bitnami/os-shell
+    tag: "12-debian-12-r51"
+
+kubectl:
+  image:
+    registry: localhost:32000
+    repository: bitnami/kubectl
+    tag: "1.35.0"
+

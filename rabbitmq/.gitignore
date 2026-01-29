@@ -1,0 +1,7 @@
+# Артефакты сервиса (генерируются через make, не коммитятся)
+#
+# - `images/*.tar` создаётся командами:
+#   - из корня: `make images-save ENV=<env> [SERVICE=rabbitmq]`
+#   - из директории сервиса: `make images-save ENV=<env>`
+images/*.tar
+

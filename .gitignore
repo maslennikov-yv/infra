@@ -1,0 +1,37 @@
+# Корневой .gitignore — только общие для репозитория правила.
+# Артефакты конкретных сервисов (например `images/*.tar`, бэкапы) игнорируются
+# в `.gitignore` внутри соответствующего сервиса.
+
+# Kubeconfig (локальные файлы окружений, содержат доступы)
+# Создаются/обновляются командами:
+# - `make env-new ENV=<name>` (создаёт плейсхолдер)
+# - `make kubeconfig-fetch ENV=<name> SSH_HOST=... SSH_KEY=...` (скачивает реальный kubeconfig)
+k8s/config/*
+!k8s/config/README.md
+
+# Локальные overrides окружений (SSH_HOST/SSH_KEY/KUBECONFIG/REGISTRY и т.п.)
+# Создаются командой: `make env-new ENV=<name>`
+environments/*.mk
+!environments/*.yaml
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+*.tmp
+*.log
+*.bak
+*.cache
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.code-workspace
+.project
+.classpath
+.settings/
+
+# Examples (reference implementations, not part of infrastructure)
+examples/

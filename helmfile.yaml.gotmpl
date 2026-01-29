@@ -1,0 +1,98 @@
+helmDefaults:
+  skipDeps: true
+
+environments:
+  default: {}
+
+---
+
+{{- $env := (env "ENV" | default "dev") -}}
+{{- $enabledStr := (env "ENABLED_SERVICES" | default "") | trim -}}
+{{- $excludeStr := (env "EXCLUDE_SERVICES" | default "") | trim -}}
+{{- $enabledList := (splitList "," $enabledStr) -}}
+{{- $excludeList := (splitList "," $excludeStr) -}}
+{{- $enabled := dict -}}
+{{- $exclude := dict -}}
+{{- range $enabledList -}}
+  {{- $trimmed := trim . -}}
+  {{- if ne $trimmed "" -}}
+    {{- $enabled = set $enabled $trimmed true -}}
+  {{- end -}}
+{{- end -}}
+{{- range $excludeList -}}
+  {{- $trimmed := trim . -}}
+  {{- if ne $trimmed "" -}}
+    {{- $exclude = set $exclude $trimmed true -}}
+  {{- end -}}
+{{- end -}}
+{{- $hasEnabled := gt (len $enabled) 0 -}}
+
+releases:
+{{- if or (and $hasEnabled (hasKey $enabled "postgres")) (and (not $hasEnabled) (not (hasKey $exclude "postgres"))) }}
+  - name: postgres
+    namespace: postgres
+    chart: ./postgres/postgresql
+    values:
+      - ./postgres/values-{{ $env }}.yaml
+{{- end }}
+
+{{- if or (and $hasEnabled (hasKey $enabled "minio")) (and (not $hasEnabled) (not (hasKey $exclude "minio"))) }}
+  - name: minio
+    namespace: minio
+    chart: ./minio/minio
+    values:
+      - ./minio/values-{{ $env }}.yaml
+{{- end }}
+
+{{- if or (and $hasEnabled (hasKey $enabled "redis")) (and (not $hasEnabled) (not (hasKey $exclude "redis"))) }}
+  - name: redis
+    namespace: redis
+    chart: ./redis/redis
+    values:
+      - ./redis/values-{{ $env }}.yaml
+    set:
+      # Required for Bitnami Redis chart rendering when ACL is enabled (it needs the password to build users.acl).
+      # `make up`/`make diff` will populate REDIS_PASSWORD from the cluster secret.
+      - name: global.redis.password
+        value: {{ env "REDIS_PASSWORD" | quote }}
+{{- end }}
+
+{{- if or (and $hasEnabled (hasKey $enabled "rabbitmq")) (and (not $hasEnabled) (not (hasKey $exclude "rabbitmq"))) }}
+  - name: rabbitmq
+    namespace: rabbitmq
+    chart: ./rabbitmq/rabbitmq
+    values:
+      - ./rabbitmq/values-{{ $env }}.yaml
+    set:
+      # Bitnami RabbitMQ chart requires passing current passwords on upgrade/diff.
+      # `make up`/`make diff` will populate these env vars from the cluster secret.
+      - name: auth.password
+        value: {{ env "RABBITMQ_PASSWORD" | quote }}
+      - name: auth.erlangCookie
+        value: {{ env "RABBITMQ_ERLANG_COOKIE" | quote }}
+{{- end }}
+
+{{- if or (and $hasEnabled (hasKey $enabled "clickhouse")) (and (not $hasEnabled) (not (hasKey $exclude "clickhouse"))) }}
+  - name: clickhouse
+    namespace: clickhouse
+    chart: ./clickhouse/clickhouse
+    values:
+      - ./clickhouse/values-{{ $env }}.yaml
+{{- end }}
+
+{{- if or (and $hasEnabled (hasKey $enabled "kafka")) (and (not $hasEnabled) (not (hasKey $exclude "kafka"))) }}
+  - name: kafka
+    namespace: kafka
+    chart: ./kafka/kafka
+    values:
+      - ./kafka/values-{{ $env }}.yaml
+{{- end }}
+
+{{- if or (and $hasEnabled (hasKey $enabled "netdata")) (and (not $hasEnabled) (not (hasKey $exclude "netdata"))) }}
+  - name: netdata
+    namespace: monitoring
+    chart: ./monitoring/netdata/netdata
+    values:
+      - ./monitoring/netdata/values-{{ $env }}.yaml
+{{- end }}
+

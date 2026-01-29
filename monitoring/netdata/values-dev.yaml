@@ -1,0 +1,19 @@
+image:
+  repository: netdata/netdata
+  tag: stable
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: netdata.dev.local
+      paths:
+        - /
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

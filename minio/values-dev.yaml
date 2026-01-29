@@ -1,0 +1,58 @@
+global:
+  security:
+    allowInsecureImages: true
+
+auth:
+  existingSecret: minio
+  rootUserSecretKey: root-user
+  rootPasswordSecretKey: root-password
+
+image:
+  registry: localhost:32000
+  repository: bitnami/minio
+  tag: "2025.7.23-debian-12-r3"
+
+clientImage:
+  registry: localhost:32000
+  repository: bitnami/minio-client
+  tag: "2025.7.21-debian-12-r2"
+
+console:
+  enabled: true
+  image:
+    registry: localhost:32000
+    repository: bitnami/minio-object-browser
+    tag: "2.0.2-debian-12-r3"
+  ingress:
+    enabled: false
+
+defaultInitContainers:
+  volumePermissions:
+    image:
+      registry: localhost:32000
+      repository: bitnami/os-shell
+      tag: "12-debian-12-r50"
+
+ingress:
+  enabled: false
+  ingressClassName: nginx
+  hostname: files.appA.com
+  path: /
+  pathType: Prefix
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  tls: true
+  extraHosts:
+    - name: files.appB.com
+      path: /
+  extraTls:
+    - hosts:
+        - files.appA.com
+        - files.appB.com
+      secretName: minio-s3-tls
+

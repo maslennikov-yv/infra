@@ -1,0 +1,52 @@
+global:
+  security:
+    allowInsecureImages: true
+
+image:
+  registry: localhost:32000
+
+# Use pre-created secrets (see: make -C kafka secrets-init)
+existingKraftSecret: kafka-kraft
+
+listeners:
+  client:
+    protocol: SASL_PLAINTEXT
+  controller:
+    # Bootstrap-safe: controller quorum comes up without auth chicken-egg.
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+sasl:
+  enabledMechanisms: SCRAM-SHA-256
+  interBrokerMechanism: SCRAM-SHA-256
+  controllerMechanism: SCRAM-SHA-256
+  existingSecret: kafka-user-passwords
+  client:
+    users:
+      - user1
+
+# Bootstrap-safe: enable authorizer AFTER quorum is stable.
+overrideConfiguration: {}
+
+defaultInitContainers:
+  volumePermissions:
+    image:
+      registry: localhost:32000
+  autoDiscovery:
+    image:
+      registry: localhost:32000
+
+metrics:
+  jmx:
+    image:
+      registry: localhost:32000
+
+controller:
+  persistence:
+    enabled: true
+
+broker:
+  persistence:
+    enabled: false
+

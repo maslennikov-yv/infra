@@ -1,0 +1,18 @@
+image:
+  registry: docker.io
+  repository: bitnamilegacy/kafka
+
+controller:
+  persistence:
+    enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/kafka
+
+broker:
+  persistence:
+    enabled: false
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/kafka
+

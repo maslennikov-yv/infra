@@ -1,0 +1,55 @@
+global:
+  security:
+    allowInsecureImages: true
+
+image:
+  registry: localhost:32000
+
+existingKraftSecret: kafka-kraft
+
+listeners:
+  client:
+    protocol: SASL_PLAINTEXT
+  controller:
+    # IMPORTANT: Keep controller listener PLAINTEXT to avoid a bootstrap chicken-egg.
+    # KRaft quorum needs to come up before SCRAM users can be written to metadata.
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+sasl:
+  enabledMechanisms: SCRAM-SHA-256
+  interBrokerMechanism: SCRAM-SHA-256
+  controllerMechanism: SCRAM-SHA-256
+  existingSecret: kafka-user-passwords
+  client:
+    users:
+      - user1
+
+overrideConfiguration:
+  authorizer.class.name: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+  # controller listener is PLAINTEXT => principal can be ANONYMOUS for internal KRaft traffic
+  super.users: User:user1;User:ANONYMOUS
+  allow.everyone.if.no.acl.found: "false"
+
+defaultInitContainers:
+  volumePermissions:
+    image:
+      registry: localhost:32000
+  autoDiscovery:
+    image:
+      registry: localhost:32000
+
+metrics:
+  jmx:
+    image:
+      registry: localhost:32000
+
+controller:
+  persistence:
+    enabled: true
+
+broker:
+  persistence:
+    enabled: false
+
