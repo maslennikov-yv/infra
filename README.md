@@ -278,7 +278,7 @@ make images-sync-from-files
 make up ENV=dev
 ```
 
-## Kafka: для приложений (Go 1.24 / Laravel 12)
+## Kafka: для приложений
 
 В этой инфраструктуре Kafka настроена для **in-cluster** использования приложениями с **SASL/SCRAM (SCRAM-SHA-256) + ACL**.
 
@@ -303,7 +303,7 @@ make kafka-app-create APP=appA
 ### Примеры для приложений
 
 - Go (sarama): `examples/kafka/go-sarama/`
-- Laravel 12 (php-rdkafka): `examples/kafka/laravel-rdkafka/`
+- Laravel (php-rdkafka): `examples/kafka/laravel-rdkafka/`
 
 ### Управление топиками (partitions/retention/cleanup/max.message.bytes/compression)
 
@@ -382,7 +382,7 @@ make clickhouse-app-create APP=appA
 ### Примеры для приложений
 
 - Go (minio-go/v7): `examples/minio/go-minio/`
-- Laravel 12 (S3 Storage): `examples/minio/laravel-s3/`
+- Laravel (S3 Storage): `examples/minio/laravel-s3/`
 
 ### Публичный доступ из интернета (nginx ingress, path-style, домены приложений)
 
