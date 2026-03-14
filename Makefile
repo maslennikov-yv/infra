@@ -4,7 +4,7 @@
 	postgres-verify redis-verify minio-verify clickhouse-verify \
 	check-updates postgres-check-updates redis-check-updates kafka-check-updates \
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
-	pg-app-create redis-app-create kafka-app-create minio-app-create clickhouse-app-create rabbitmq-app-create \
+	pg-app-create pg-app-show-creds pg-app-drop redis-app-create kafka-app-create minio-app-create clickhouse-app-create rabbitmq-app-create \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
 	postgres-status postgres-logs postgres-shell postgres-up postgres-diff postgres-down \
 	redis-status redis-logs redis-shell redis-up redis-diff redis-down \
@@ -93,7 +93,9 @@ help:
 	@echo "  make {service}-check-updates - проверить обновления для конкретного сервиса"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)App accounts (per-app isolation):$(RESET)"
-	@echo "  make pg-app-create    $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
+	@echo "  make pg-app-create    $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)] [$(YELLOW)POSTGRES_ADMIN_PASSWORD=...$(RESET)]"
+	@echo "  make pg-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - показать креды из Secret app-postgres"
+	@echo "  make pg-app-drop      $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - удалить БД, роль и Secret приложения"
 	@echo "  make redis-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
 	@echo "  make kafka-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
 	@echo "  make minio-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
@@ -111,6 +113,9 @@ help:
 	@echo "  make postgres-status $(YELLOW)ENV=$(ENV)$(RESET)  - статус PostgreSQL"
 	@echo "  make postgres-logs $(YELLOW)ENV=$(ENV)$(RESET)     - логи PostgreSQL"
 	@echo "  make postgres-shell $(YELLOW)ENV=$(ENV)$(RESET)    - shell в контейнер PostgreSQL"
+	@echo "  make postgres-backup $(YELLOW)ENV=$(ENV)$(RESET)   - бэкап PostgreSQL"
+	@echo "  make postgres-restore $(YELLOW)BACKUP_FILE=... ENV=$(ENV)$(RESET) - восстановление из бэкапа"
+	@echo "  make postgres-recreate-prep $(YELLOW)ENV=$(ENV)$(RESET) - подготовка к пересозданию с новым размером PVC (бэкап, down, delete PVC)"
 	@echo "  make redis-status $(YELLOW)ENV=$(ENV)$(RESET)     - статус Redis"
 	@echo "  make redis-logs $(YELLOW)ENV=$(ENV)$(RESET)        - логи Redis"
 	@echo "  make redis-shell $(YELLOW)ENV=$(ENV)$(RESET)       - shell в контейнер Redis"
@@ -311,7 +316,13 @@ rabbitmq-check-updates:
 	@$(MAKE) -C rabbitmq check-updates
 
 pg-app-create:
-	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)"
+	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"
+pg-app-show-creds:
+	@$(MAKE) -C postgres app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+pg-app-drop:
+	@$(MAKE) -C postgres app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"
+pg-app-verify:
+	@$(MAKE) -C postgres app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
 redis-app-create:
 	@$(MAKE) -C redis app-create APP="$(APP)" APP_NS="$(APP_NS)"
@@ -332,6 +343,26 @@ postgres-logs:
 	@$(MAKE) -C postgres logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 postgres-shell:
 	@$(MAKE) -C postgres shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+postgres-backup:
+	@$(MAKE) -C postgres backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+postgres-restore:
+	@$(MAKE) -C postgres restore ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)"
+postgres-delete-pvcs:
+	@$(MAKE) -C postgres delete-pvcs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+postgres-recreate-prep:
+	@echo "=== 1/3 Бэкап ==="
+	@$(MAKE) postgres-backup ENV="$(ENV)"
+	@echo ""
+	@echo "=== 2/3 Удаление release ==="
+	@$(MAKE) postgres-down ENV="$(ENV)"
+	@echo ""
+	@echo "=== 3/3 Удаление PVC ==="
+	@$(MAKE) postgres-delete-pvcs ENV="$(ENV)"
+	@echo ""
+	@echo "Дальше: отредактируйте postgres/values-$(ENV).yaml (primary.persistence.size), затем:"
+	@echo "  make postgres-up ENV=$(ENV)"
+	@echo "  make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=$(ENV)"
+	@echo "(путь BACKUP_FILE — относительно postgres/, см. postgres/list-backups)"
 
 redis-status:
 	@$(MAKE) -C redis status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"

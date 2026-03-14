@@ -18,6 +18,7 @@ infra/
 │   ├── images/        # tar-файлы образов
 │   ├── values-dev.yaml
 │   ├── values-prod.yaml
+│   ├── values-stage.yaml
 │   └── Makefile
 ├── redis/             # Redis (standalone)
 │   ├── redis/         # Helm chart
@@ -171,7 +172,7 @@ make env-new ENV=staging
 Это создаст:
 - `environments/staging.mk` (сюда пишете SSH_HOST/SSH_KEY/REGISTRY/KUBECONFIG)
 - `k8s/config/staging` (файл-плейсхолдер под kubeconfig)
-- `*/values-staging.yaml` (копия values-dev.yaml или values-prod.yaml)
+- `*/values-stage.yaml`, `*/values-staging.yaml` (копия values-dev.yaml или values-prod.yaml)
 
 Скачать kubeconfig с удалённого microk8s по SSH:
 
@@ -226,6 +227,7 @@ make check-registry         # Проверить доступность registry
 Каждый сервис имеет два values-файла:
 - `values-dev.yaml` - для dev окружения
 - `values-prod.yaml` - для prod окружения
+- `values-stage.yaml` - для stage окружения (если есть)
 
 В них указано:
 - `image.registry: localhost:32000` - использовать локальный registry
@@ -277,6 +279,25 @@ make images-sync-from-files
 # Развернуть
 make up ENV=dev
 ```
+
+## PostgreSQL: для приложений
+
+Создание отдельной БД и роли для приложения, Secret с кредами:
+
+```bash
+make pg-app-create APP=myapp ENV=stage
+make pg-app-show-creds APP=myapp ENV=stage   # показать креды
+make pg-app-drop APP=myapp ENV=stage         # удалить БД, роль и Secret
+make pg-app-verify APP=myapp ENV=stage       # проверить подключение
+```
+
+Бэкап и восстановление:
+```bash
+make postgres-backup ENV=stage
+make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
+```
+
+Пересоздание с новым размером PVC: `make postgres-recreate-prep ENV=stage` (см. `postgres/TROUBLESHOOTING.md`).
 
 ## Kafka: для приложений
 
@@ -545,7 +566,7 @@ microk8s enable metrics-server
 - **`k8s/config/<env>`**: kubeconfig для окружения. Создаётся плейсхолдером: `make env-new ENV=<env>`, затем заполняется/скачивается: `make kubeconfig-fetch ENV=<env> ...` (см. `k8s/config/README.md`).
 - **`<service>/images/*.tar`**: tar-файлы Docker образов для offline/registry. Создаются: `make images-save ENV=<env>` (или `make images-save ENV=<env> SERVICE=<service>`).
 - **`environments/backups/`**: бэкапы Kubernetes secrets/configmaps сервисов. Создаются: `make env-backup ENV=<env> [CONFIRM=1]` (см. раздел "Бэкап конфигов/секретов").
-- **`postgres/backups/`**: бэкапы PostgreSQL. Создаются командами в `postgres/` (см. `postgres/README.md` и `postgres/BACKUP.md`).
+- **`postgres/backups/`**: бэкапы PostgreSQL. Создаются `make postgres-backup ENV=...` или `make -C postgres backup ENV=...` (см. `postgres/README.md` и `postgres/BACKUP.md`).
 
 Важно: **values-файлы, чарты и lock-файлы чартов (`Chart.lock`) коммитятся** — их намеренно не игнорируем, чтобы “чистый клон” работал одинаково у всех.
 

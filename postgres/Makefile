@@ -1,5 +1,6 @@
 # Makefile для загрузки Docker образов в local repository (microk8s)
 # Использует образы из https://hub.docker.com/u/bitnamilegacy
+SHELL := /bin/bash
 
 # Регистр microk8s (по умолчанию localhost:32000)
 REGISTRY ?= localhost:32000
@@ -36,7 +37,8 @@ POSTGRES_EXPORTER_LOCAL = $(REGISTRY)/bitnami/postgres-exporter:$(POSTGRES_EXPOR
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	pull-images tag-images push-images load-all save-images save-all load-from-files clean clean-images clean-all \
 	check-registry list-images list-saved-images \
-	install upgrade uninstall helm-status app-create \
+	install upgrade uninstall helm-status app-create app-show-creds app-drop app-verify \
+	delete-pvcs \
 	troubleshoot status logs shell describe events \
 	backup backup-single view-backup view-backup-head view-backup-search list-backups restore restore-single restore-from-file \
 	check-updates
@@ -217,11 +219,16 @@ uninstall:
 helm-status:
 	@helm status $(RELEASE) --namespace $(NAMESPACE) 2>/dev/null || echo "Helm release не найден"
 
+## Пересоздание с новым размером PVC
+delete-pvcs:
+	@kubectl delete pvc -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE) --ignore-not-found
+	@echo "✓ PVC удалены. Обновите primary.persistence.size в values-$(ENV).yaml и выполните make postgres-up ENV=$(ENV)"
+
 ## =========================
 ## App accounts (per-app isolation)
 ## =========================
 
-# Usage: make app-create APP=myapp [APP_NS=myapp] [APP_PASSWORD=...]
+# Usage: make app-create APP=myapp [APP_NS=myapp] [POSTGRES_ADMIN_PASSWORD=...]
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
 	@APP_NS=$${APP_NS:-$(APP)}; \
@@ -235,30 +242,11 @@ app-create:
 	fi; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
-	ADMIN_PASSWORD=$$(kubectl get secret $(RELEASE)-postgresql -n $(NAMESPACE) -o jsonpath='{.data.postgres-password}' 2>/dev/null | base64 -d); \
-	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить postgres-password из секрета $(RELEASE)-postgresql"; exit 1; fi; \
+	ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"; \
 	PG_HOST="$(RELEASE)-postgresql.$(NAMESPACE).svc.cluster.local"; \
 	PG_PORT=5432; \
 	echo "Creating role/db: $$APP_USER / $$APP_DB"; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- bash -ec "\
-		export PGPASSWORD='$$ADMIN_PASSWORD'; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c \\\"DO \\\\\\$$BEGIN \
-IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$$APP_USER') THEN \
-  CREATE ROLE \\\\\\\"$$APP_USER\\\\\\\" LOGIN PASSWORD '\\\\\\\\"$$APP_PASSWORD\\\\\\\"'; \
-END IF; \
-END\\\\\\$$;\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c \\\"DO \\\\\\$$BEGIN \
-IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='$$APP_DB') THEN \
-  CREATE DATABASE \\\\\\\"$$APP_DB\\\\\\\" OWNER \\\\\\\"$$APP_USER\\\\\\\"; \
-END IF; \
-END\\\\\\$$;\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c \\\"REVOKE CONNECT ON DATABASE postgres FROM \\\\\\\"$$APP_USER\\\\\\\";\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d \\\"$$APP_DB\\\" -c \\\"REVOKE ALL ON SCHEMA public FROM PUBLIC; GRANT ALL ON SCHEMA public TO \\\\\\\"$$APP_USER\\\\\\\";\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d \\\"$$APP_DB\\\" -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \\\\\\\"$$APP_USER\\\\\\\";\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d \\\"$$APP_DB\\\" -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \\\\\\\"$$APP_USER\\\\\\\";\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d \\\"$$APP_DB\\\" -c \\\"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO \\\\\\\"$$APP_USER\\\\\\\";\\\"; \
-		psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c \\\"ALTER ROLE \\\\\\\"$$APP_USER\\\\\\\" IN DATABASE \\\\\\\"$$APP_DB\\\\\\\" SET search_path TO public;\\\"; \
-	"; \
+	kubectl exec -i "$$POD" -n $(NAMESPACE) -- env ADMIN_PASSWORD="$$ADMIN_PASSWORD" APP_USER="$$APP_USER" APP_DB="$$APP_DB" APP_PASSWORD="$$APP_PASSWORD" bash -s < "scripts/app-create-in-pod.sh"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -268,9 +256,69 @@ END\\\\\\$$;\\\"; \
 		--from-literal=PGDATABASE="$$APP_DB" \
 		--from-literal=PGUSER="$$APP_USER" \
 		--from-literal=PGPASSWORD="$$APP_PASSWORD" \
-		--from-literal=DATABASE_URL="postgresql://$$APP_USER:$$APP_PASSWORD@$$PG_HOST:$$PG_PORT/$$APP_DB" \
+		--from-literal=DATABASE_URL="postgresql://$$APP_USER:$$APP_PASSWORD@$$PG_HOST:$$PG_PORT/$$APP_DB?sslmode=disable" \
 		>/dev/null; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+
+app-show-creds:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=mcp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-postgres}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	echo "Secret: $$APP_NS/$$APP_SECRET_NAME"; \
+	echo "---"; \
+	echo "PGHOST=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGHOST}' 2>/dev/null | base64 -d)"; \
+	echo "PGPORT=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGPORT}' 2>/dev/null | base64 -d)"; \
+	echo "PGDATABASE=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGDATABASE}' 2>/dev/null | base64 -d)"; \
+	echo "PGUSER=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGUSER}' 2>/dev/null | base64 -d)"; \
+	echo "PGPASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGPASSWORD}' 2>/dev/null | base64 -d)"; \
+	URL=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.DATABASE_URL}' 2>/dev/null | base64 -d); \
+	if echo "$$URL" | grep -q 'sslmode='; then echo "DATABASE_URL=$$URL"; elif echo "$$URL" | grep -q '?'; then echo "DATABASE_URL=$$URL\&sslmode=disable"; else echo "DATABASE_URL=$$URL?sslmode=disable"; fi
+
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [POSTGRES_ADMIN_PASSWORD=...]
+app-drop:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_DB=$${APP_DB:-app_$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-postgres}; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"; \
+	if [ -z "$$ADMIN_PASSWORD" ]; then \
+		ADMIN_PASSWORD=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- cat /opt/bitnami/postgresql/secrets/postgres-password 2>/dev/null | tr -d '\n'); \
+	fi; \
+	if [ -z "$$ADMIN_PASSWORD" ]; then \
+		ADMIN_PASSWORD=$$(kubectl get secret $(RELEASE)-postgresql -n $(NAMESPACE) -o jsonpath='{.data.postgres-password}' 2>/dev/null | base64 -d); \
+	fi; \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить пароль postgres (задайте POSTGRES_ADMIN_PASSWORD=... или проверьте секрет $(RELEASE)-postgresql)"; exit 1; fi; \
+	echo "Dropping database $$APP_DB and role $$APP_USER..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$$APP_DB' AND pid <> pg_backend_pid();" 2>/dev/null || true; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c "DROP DATABASE IF EXISTS \"$$APP_DB\";"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c "DROP ROLE IF EXISTS \"$$APP_USER\";"; \
+	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
+	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	echo "✓ БД $$APP_DB, роль $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
+
+# Usage: make app-verify APP=mcp
+app-verify:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=mcp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_DB=$${APP_DB:-app_$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-postgres}; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	APP_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGPASSWORD}' 2>/dev/null | base64 -d); \
+	if [ -z "$$APP_PASSWORD" ]; then echo "✗ Secret $$APP_SECRET_NAME не найден или нет PGPASSWORD в namespace $$APP_NS"; exit 1; fi; \
+	echo "Проверка подключения $$APP_USER@$$APP_DB..."; \
+	if kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$$APP_USER" -d "$$APP_DB" -t -c 'SELECT 1' | grep -q 1; then \
+		echo "✓ Подключение успешно"; \
+	else \
+		echo "✗ Подключение не удалось (пароль или роль не совпадают)"; exit 1; \
+	fi
 
 ## =========================
 ## Images (унифицированные targets)

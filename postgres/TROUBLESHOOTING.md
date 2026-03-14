@@ -71,6 +71,84 @@ kubectl get events -n postgres --field-selector involvedObject.name=postgres-pos
 
 ---
 
+### pg-app-create: пароль postgres и проверка кредов
+
+При создании роли и БД для приложения (`make pg-app-create APP=myapp ENV=...`) пароль суперпользователя postgres берётся в таком порядке:
+
+1. **POSTGRES_ADMIN_PASSWORD** — если задан при вызове (ручной override).
+2. **Файл в поде** — `kubectl exec ... cat /opt/bitnami/postgresql/secrets/postgres-password` (тот же источник, что использует процесс Postgres).
+3. **Секрет Kubernetes** — ключ `postgres-password` в секрете `postgres-postgresql` в namespace `postgres`.
+
+Если секрет в API не совпадает с реальным паролем в БД, задайте пароль явно:
+
+```bash
+make pg-app-create APP=mcp ENV=prod POSTGRES_ADMIN_PASSWORD='фактический_пароль_postgres'
+```
+
+После создания роли и Secret выполняется **проверка подключения** под ролью приложения (`SELECT 1`). Если она падает, выведется сообщение «Проверка подключения под ролью ... не удалась» — значит, роль или пароль в БД не совпадают с записанным в Secret; проверьте логи выше и при необходимости повторите вызов с правильным `POSTGRES_ADMIN_PASSWORD` или `APP_PASSWORD`.
+
+Креды, которые записываются в Secret приложения, можно посмотреть командой `make pg-app-show-creds APP=myapp ENV=...`.
+
+---
+
+### Пересоздание StatefulSet с новым размером диска (PVC)
+
+У StatefulSet нельзя изменить `volumeClaimTemplates` (в т.ч. размер тома) после создания. Чтобы выставить новый размер:
+
+**Через make (из корня репозитория):**
+
+```bash
+# 1. Подготовка: бэкап → down → удаление PVC
+make postgres-recreate-prep ENV=stage
+
+# 2. Отредактировать postgres/values-stage.yaml: primary.persistence.size: 16Gi
+
+# 3. Развернуть и восстановить
+make postgres-up ENV=stage
+make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
+```
+
+**Вручную:**
+
+1. **Сделать бэкап** (обязательно, данные при пересоздании PVC теряются):
+   ```bash
+   make postgres-backup ENV=stage
+   ```
+
+2. **Удалить release** (StatefulSet и поды удалятся, PVC по умолчанию останутся):
+   ```bash
+   make postgres-down ENV=stage
+   ```
+
+3. **Удалить PVC** в namespace `postgres`:
+   ```bash
+   make postgres-delete-pvcs ENV=stage
+   # или вручную: kubectl delete pvc -n postgres -l app.kubernetes.io/instance=postgres
+   ```
+
+4. **Задать новый размер** в `postgres/values-<env>.yaml`:
+   ```yaml
+   primary:
+     persistence:
+       size: 16Gi   # новый размер
+   ```
+
+5. **Развернуть заново** и при необходимости восстановить:
+   ```bash
+   make postgres-up ENV=stage
+   make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
+   ```
+
+**Альтернатива — только увеличить диск** (без пересоздания): если StorageClass поддерживает расширение (`allowVolumeExpansion: true`), можно увеличить размер без удаления PVC:
+   ```bash
+   kubectl get storageclass
+   kubectl edit pvc data-postgres-postgresql-0 -n postgres
+   # Увеличить spec.resources.requests.storage (уменьшать нельзя).
+   ```
+   После этого файловая система внутри пода может потребовать расширения (например, `resize2fs`). Уменьшить размер тома без пересоздания PVC нельзя.
+
+---
+
 ### Проблема 2: Pod в статусе ImagePullBackOff или ErrImagePull
 
 **Симптомы:**
