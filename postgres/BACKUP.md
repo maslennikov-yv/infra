@@ -7,20 +7,24 @@
 Создает бэкап всех баз данных PostgreSQL с автоматической архивацией (gzip):
 
 ```bash
-make backup
+# Из корня репозитория
+make postgres-backup ENV=stage
+
+# Или из postgres/
+make backup ENV=stage
 ```
 
-Бэкап будет сохранен в `backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz`
+Бэкап будет сохранен в `postgres/backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz`
 
 ### Бэкап конкретной базы данных
 
 Создает бэкап только указанной базы данных:
 
 ```bash
-make backup-single DB_NAME=app_db
+make backup-single DB_NAME=app_db ENV=stage
 ```
 
-Бэкап будет сохранен в `backups/app_db-backup-YYYYMMDD-HHMMSS.sql.gz`
+Бэкап будет сохранен в `postgres/backups/app_db-backup-YYYYMMDD-HHMMSS.sql.gz`
 
 ### Настройка директории для бэкапов
 
@@ -95,7 +99,11 @@ make list-backups
 Восстанавливает все базы данных из полного бэкапа (pg_dumpall):
 
 ```bash
-make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+# Из корня репозитория (BACKUP_FILE относительно postgres/)
+make postgres-restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz ENV=stage
+
+# Или из postgres/
+make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz ENV=stage
 ```
 
 Команда запросит подтверждение перед восстановлением.
@@ -105,7 +113,7 @@ make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
 Восстанавливает только указанную базу данных:
 
 ```bash
-make restore-single BACKUP_FILE=backups/app_db-backup-20231103-143022.sql.gz DB_NAME=app_db
+make restore-single BACKUP_FILE=backups/app_db-backup-20231103-143022.sql.gz DB_NAME=app_db ENV=stage
 ```
 
 ### Восстановление из неархивированного SQL файла

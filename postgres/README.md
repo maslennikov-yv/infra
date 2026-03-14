@@ -156,42 +156,68 @@ REGISTRY=my-registry.local:5000 make load-all
 IMAGES_DIR=/path/to/images make save-all
 ```
 
+## App accounts (изоляция по приложениям)
+
+Создание отдельной БД и роли для приложения, Secret с кредами в namespace приложения:
+
+```bash
+# Из корня репозитория
+make pg-app-create APP=myapp ENV=stage
+make pg-app-show-creds APP=myapp ENV=stage   # показать креды из Secret
+make pg-app-drop APP=myapp ENV=stage         # удалить БД, роль и Secret
+make pg-app-verify APP=myapp ENV=stage      # проверить подключение
+
+# Или из postgres/
+make app-create APP=myapp ENV=stage
+make app-show-creds APP=myapp ENV=stage
+make app-drop APP=myapp ENV=stage
+make app-verify APP=myapp ENV=stage
+```
+
+При несовпадении пароля postgres в Secret и в БД: `make pg-app-create APP=myapp ENV=prod POSTGRES_ADMIN_PASSWORD='фактический_пароль'`
+
 ## Бэкапы и восстановление
 
 ### Создание бэкапов
 
 ```bash
-# Полный бэкап всех БД
-make backup
+# Из корня репозитория
+make postgres-backup ENV=stage
 
-# Бэкап конкретной БД
-make backup-single DB_NAME=app_db
+# Или из postgres/
+make backup ENV=stage
+make backup-single DB_NAME=app_db ENV=stage
 ```
 
 ### Просмотр бэкапов (с потоковой декомпрессией)
 
 ```bash
-# Просмотр полного содержимого
 make view-backup BACKUP_FILE=backups/postgres-backup-20231103.sql.gz
-
-# Просмотр начала файла
 make view-backup-head BACKUP_FILE=backups/postgres-backup-20231103.sql.gz
-
-# Поиск в бэкапе
 make view-backup-search BACKUP_FILE=backups/postgres-backup-20231103.sql.gz SEARCH='CREATE TABLE'
-
-# Список всех бэкапов
 make list-backups
 ```
 
 ### Восстановление
 
 ```bash
-# Восстановить все БД
-make restore BACKUP_FILE=backups/postgres-backup-20231103.sql.gz
+# Из корня репозитория
+make postgres-restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz ENV=stage
 
-# Восстановить одну БД
-make restore-single BACKUP_FILE=backups/app_db-backup-20231103.sql.gz DB_NAME=app_db
+# Или из postgres/
+make restore BACKUP_FILE=backups/postgres-backup-20231103.sql.gz ENV=stage
+make restore-single BACKUP_FILE=backups/app_db-backup-20231103.sql.gz DB_NAME=app_db ENV=stage
+```
+
+### Пересоздание с новым размером PVC
+
+StatefulSet не позволяет изменить размер тома после создания. Для смены размера:
+
+```bash
+make postgres-recreate-prep ENV=stage   # бэкап → down → удаление PVC
+# Отредактировать postgres/values-stage.yaml: primary.persistence.size
+make postgres-up ENV=stage
+make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
 ```
 
 📖 **Подробное руководство**: См. [BACKUP.md](BACKUP.md)
@@ -201,8 +227,8 @@ make restore-single BACKUP_FILE=backups/app_db-backup-20231103.sql.gz DB_NAME=ap
 Для диагностики проблем используйте:
 
 ```bash
-# Автоматическая диагностика
-./scripts/troubleshoot.sh
+# Автоматическая диагностика (из postgres/)
+make troubleshoot
 
 # Или вручную
 kubectl get pods,statefulset,svc,pvc -n postgres

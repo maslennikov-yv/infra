@@ -1,0 +1,17 @@
+registry: localhost:32000
+
+postgres:
+  namespace: postgres
+  release: postgres
+
+kafka:
+  namespace: kafka
+  release: kafka
+
+redis:
+  namespace: redis
+  release: redis
+
+minio:
+  namespace: minio
+  release: minio
