@@ -21,6 +21,7 @@
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all \
+	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
 	infra-control-parity-check infra-lab \
 	tools-check doctor
 
@@ -68,6 +69,10 @@ SCP := scp $(SSH_OPTS) -P $(SSH_PORT) -i $(SSH_KEY)
 
 # Локальный snap MicroK8s: команда для `config` (при ошибке прав: MICROK8S_CMD='sudo microk8s' или группа microk8s).
 MICROK8S_CMD ?= microk8s
+
+# snap channel для microk8s-setup. По умолчанию закреплено на 1.30/stable, чтобы избежать дрейфа
+# на новых машинах. Переопределите в environments/<env>.mk при необходимости (например, 1.31/stable).
+MICROK8S_CHANNEL ?= 1.30/stable
 
 # ANSI color codes
 CYAN := \033[0;36m
@@ -254,6 +259,7 @@ help:
 	@echo "  make postgres-backup $(YELLOW)ENV=$(ENV)$(RESET)   - бэкап PostgreSQL"
 	@echo "  make postgres-restore $(YELLOW)BACKUP_FILE=... ENV=$(ENV)$(RESET) - восстановление из бэкапа"
 	@echo "  make postgres-recreate-prep $(YELLOW)ENV=$(ENV)$(RESET) - подготовка к пересозданию с новым размером PVC (бэкап, down, delete PVC)"
+	@echo "  make {redis|kafka|minio|clickhouse|rabbitmq}-recreate-prep $(YELLOW)ENV=$(ENV)$(RESET) - аналогично postgres (backup-meta + down + delete PVC; ⚠ объёмные данные теряются — см. <svc>/BACKUP.md)"
 	@echo "  make redis-status $(YELLOW)ENV=$(ENV)$(RESET)     - статус Redis"
 	@echo "  make redis-logs $(YELLOW)ENV=$(ENV)$(RESET)        - логи Redis"
 	@echo "  make redis-shell $(YELLOW)ENV=$(ENV)$(RESET)       - shell в контейнер Redis"
@@ -285,7 +291,7 @@ help:
 	@echo "  make kubeconfig-fetch $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)SSH_HOST=... SSH_KEY=...$(RESET)  - kubeconfig с удалённой ноды по SSH (microk8s config)"
 	@echo "  make kubeconfig-microk8s-local $(YELLOW)ENV=$(ENV)$(RESET)  - kubeconfig локального MicroK8s на этой машине (без SSH; см. MICROK8S_CMD)"
 	@echo "  make kubeconfig-info $(YELLOW)ENV=$(ENV)$(RESET)  - kubectl cluster-info"
-	@echo "  make microk8s-setup $(YELLOW)ENV=$(ENV)$(RESET)   - проверить/установить microk8s, необходимые модули и docker на удалённом сервере"
+	@echo "  make microk8s-setup $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)MICROK8S_CHANNEL=1.30/stable$(RESET)] - проверить/установить microk8s, аддоны и docker на удалённом сервере (channel закреплён, переопределите при необходимости)"
 	@echo "  make microk8s-uninstall $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)REMOVE_DOCKER=1$(RESET)] - удалить microk8s (и опционально docker) на удалённом сервере"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)k8s port expose (microk8s ingress TCP):$(RESET)"
@@ -611,6 +617,102 @@ postgres-recreate-prep:
 	@echo "  make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=$(ENV)"
 	@echo "(путь BACKUP_FILE — относительно postgres/, см. postgres/list-backups)"
 
+# <svc>-recreate-prep для остальных сервисов: backup definitions → down → delete PVC → инструкции.
+# ⚠ Объёмные данные (RDB Redis, объекты MinIO, таблицы ClickHouse, сообщения RabbitMQ) теряются.
+# Восстанавливаются по сервис-специфичной процедуре (см. <svc>/BACKUP.md).
+redis-recreate-prep:
+	@echo "=== 1/3 Бэкап Redis (RDB + ACL) ==="
+	@$(MAKE) redis-backup ENV="$(ENV)"
+	@echo ""
+	@echo "=== 2/3 Удаление release ==="
+	@$(MAKE) redis-down ENV="$(ENV)"
+	@echo ""
+	@echo "=== 3/3 Удаление PVC ==="
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n redis -l app.kubernetes.io/instance=redis --ignore-not-found
+	@echo "✓ PVC redis удалены"
+	@echo ""
+	@echo "Дальше:"
+	@echo "  1. Отредактируйте redis/values-$(ENV).yaml (master.persistence.size)"
+	@echo "  2. make redis-up ENV=$(ENV)"
+	@echo "  3. make redis-restore-acl BACKUP_FILE=redis/backups/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  4. (Опц.) восстановление RDB-данных — см. redis/BACKUP.md"
+
+# ⚠ Kafka: pересоздание удаляет KRaft cluster-id (Secret kafka-kraft + meta.properties в PVC).
+# Пользователи и ACL восстанавливаются через apps-apply.
+kafka-recreate-prep:
+	@echo "=== 1/3 Бэкап Kafka meta (topics + ACL + SCRAM list) ==="
+	@$(MAKE) kafka-backup-meta ENV="$(ENV)"
+	@echo ""
+	@echo "=== 2/3 Удаление release ==="
+	@$(MAKE) kafka-down ENV="$(ENV)"
+	@echo ""
+	@echo "=== 3/3 Удаление PVC и Secret kafka-kraft ==="
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n kafka -l app.kubernetes.io/instance=kafka --ignore-not-found
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete secret kafka-kraft -n kafka --ignore-not-found
+	@echo "✓ PVC и kafka-kraft Secret удалены (новый кластер получит новый cluster-id)"
+	@echo ""
+	@echo "Дальше:"
+	@echo "  1. Отредактируйте kafka/values-$(ENV).yaml (controller.persistence.size / broker.persistence.size)"
+	@echo "  2. make kafka-bootstrap ENV=$(ENV)   (двухфазная установка с нуля — KRaft + ACL)"
+	@echo "  3. make kafka-restore-meta-topics BACKUP_FILE=kafka/backups/kafka-meta-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=kafka   (SCRAM-пользователи + ACL)"
+
+minio-recreate-prep:
+	@echo "=== 1/3 Бэкап MinIO meta (users + policies + tracking secrets) ==="
+	@$(MAKE) minio-backup-meta ENV="$(ENV)"
+	@echo ""
+	@echo "⚠ Объекты бакетов НЕ бэкапятся make backup-meta. Если данные нужны — выполните 'mc mirror' до этого шага."
+	@echo "=== 2/3 Удаление release ==="
+	@$(MAKE) minio-down ENV="$(ENV)"
+	@echo ""
+	@echo "=== 3/3 Удаление PVC ==="
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n minio -l app.kubernetes.io/instance=minio --ignore-not-found
+	@echo "✓ PVC minio удалены (объекты бакетов потеряны)"
+	@echo ""
+	@echo "Дальше:"
+	@echo "  1. Отредактируйте minio/values-$(ENV).yaml (persistence.size)"
+	@echo "  2. make minio-up ENV=$(ENV)"
+	@echo "  3. make minio-restore-meta BACKUP_FILE=minio/backups/minio-meta-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=minio   (IAM users + Secret приложений)"
+	@echo "  5. (Опц.) восстановление объектов через mc mirror — см. minio/BACKUP.md"
+
+clickhouse-recreate-prep:
+	@echo "=== 1/3 Бэкап ClickHouse (schemas + users + grants) ==="
+	@$(MAKE) clickhouse-backup ENV="$(ENV)"
+	@echo ""
+	@echo "⚠ Данные таблиц НЕ бэкапятся make backup. Если данные нужны — используйте BACKUP TO Disk() или SELECT INTO OUTFILE до этого шага."
+	@echo "=== 2/3 Удаление release ==="
+	@$(MAKE) clickhouse-down ENV="$(ENV)"
+	@echo ""
+	@echo "=== 3/3 Удаление PVC ==="
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n clickhouse -l app.kubernetes.io/instance=clickhouse --ignore-not-found
+	@echo "✓ PVC clickhouse удалены (данные таблиц потеряны)"
+	@echo ""
+	@echo "Дальше:"
+	@echo "  1. Отредактируйте clickhouse/values-$(ENV).yaml (persistence.size)"
+	@echo "  2. make clickhouse-up ENV=$(ENV)"
+	@echo "  3. make clickhouse-restore BACKUP_FILE=clickhouse/backups/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=clickhouse   (пользователи приложений с актуальными паролями)"
+	@echo "  5. (Опц.) восстановление данных — см. clickhouse/BACKUP.md"
+
+rabbitmq-recreate-prep:
+	@echo "=== 1/3 Бэкап RabbitMQ definitions (vhosts + users + queues + bindings) ==="
+	@$(MAKE) rabbitmq-backup-defs ENV="$(ENV)"
+	@echo ""
+	@echo "⚠ Сообщения в очередях НЕ бэкапятся (для durability используйте federation/shovel + persistent queues)."
+	@echo "=== 2/3 Удаление release ==="
+	@$(MAKE) rabbitmq-down ENV="$(ENV)"
+	@echo ""
+	@echo "=== 3/3 Удаление PVC ==="
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n rabbitmq -l app.kubernetes.io/instance=rabbitmq --ignore-not-found
+	@echo "✓ PVC rabbitmq удалены (mnesia/durable-сообщения потеряны)"
+	@echo ""
+	@echo "Дальше:"
+	@echo "  1. Отредактируйте rabbitmq/values-$(ENV).yaml (persistence.size)"
+	@echo "  2. make rabbitmq-up ENV=$(ENV)"
+	@echo "  3. make rabbitmq-restore-defs BACKUP_FILE=rabbitmq/backups/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz ENV=$(ENV)"
+	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=rabbitmq   (актуальные пароли пользователей приложений)"
+
 redis-status:
 	@$(MAKE) -C redis status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 redis-logs:
@@ -918,7 +1020,7 @@ microk8s-setup:
 		'if ! snap list microk8s >/dev/null 2>&1; then' \
 		'  echo "  ✗ microk8s не установлен"' \
 		'  echo "  → Устанавливаю microk8s..."' \
-		'  sudo snap install microk8s --classic --channel=latest/stable 2>&1 | grep -v "^$$" || true' \
+		'  sudo snap install microk8s --classic --channel=$(MICROK8S_CHANNEL) 2>&1 | grep -v "^$$" || true' \
 		'  echo "  ✓ microk8s установлен"' \
 		'  echo "  → Ожидание готовности microk8s [до 120 сек]..."' \
 		'  if ! sudo microk8s status --wait-ready --timeout 120 2>&1; then' \
@@ -1136,6 +1238,10 @@ env-new:
 			echo "⚠ $$s: missing values-local.yaml (skip)"; \
 		fi; \
 	done
+	@if [ ! -f "k8s-port-expose/ports-$(ENV).yaml" ] && [ -f "k8s-port-expose/ports.example.yaml" ]; then \
+		cp "k8s-port-expose/ports.example.yaml" "k8s-port-expose/ports-$(ENV).yaml"; \
+		echo "✓ created k8s-port-expose/ports-$(ENV).yaml (from ports.example.yaml; отредактируйте exposes под свои порты)"; \
+	fi
 	@echo "✓ Environment skeleton created: $(ENV)"
 
 env-backup:

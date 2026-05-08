@@ -66,5 +66,10 @@ apps/conf/**
 apps/src/**
 !apps/src/.gitkeep
 
+# k8s-port-expose: per-env конфиг локально (содержит ns/svc:port пробросы — не секретно, но env-specific).
+# Шаблон ports.example.yaml — в git. ports-<env>.yaml создаётся по make env-new.
+k8s-port-expose/ports-*.yaml
+!k8s-port-expose/ports.example.yaml
+
 # Examples (reference implementations, not part of infrastructure)
 examples/
