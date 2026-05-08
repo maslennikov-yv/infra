@@ -59,12 +59,13 @@ node_modules/
 
 # apps/conf — opt-in inclusion: только _example/ и зашифрованные *.enc.yaml в git;
 # plain *.yaml/*.yml локально (gitignored). См. docs/runbooks/secrets-management.md.
-# Стандартный gitignore-паттерн: ignore parent → re-include directory → ignore content → re-include subset.
+# Порядок правил критичен: ignore parent → whitelist directories → ignore subdir content → whitelist subset.
+# `!apps/conf/_example/**` ДОЛЖНО быть после `apps/conf/*/*` (последнее правило побеждает).
 apps/conf/*
 !apps/conf/_example/
-!apps/conf/_example/**
 !apps/conf/*/
 apps/conf/*/*
+!apps/conf/_example/**
 !apps/conf/*/*.enc.yaml
 !apps/conf/*/*.enc.yml
 

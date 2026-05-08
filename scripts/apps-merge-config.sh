@@ -45,6 +45,7 @@ decrypted_tmps=()
 cleanup_merge() {
 	rm -f "$result"
 	for t in "${decrypted_tmps[@]:-}"; do [[ -n "${t:-}" ]] && rm -f "$t"; done
+	return 0
 }
 trap cleanup_merge EXIT INT TERM
 
