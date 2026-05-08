@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Инфраструктура данных в Kubernetes (microk8s): локальные Helm-чарты для PostgreSQL, Redis, Kafka, RabbitMQ, MinIO, ClickHouse и Netdata, оркестрируемые через `helmfile` и корневой `Makefile`. Образы тянутся из `docker.io/bitnamilegacy/*`, сохраняются в tar и публикуются в локальный registry microk8s (`localhost:32000`) — это даёт офлайн-сборку и независимость от закрытия старых тегов в Bitnami.
 
-Подробности эксплуатации — в `README.md` и README внутри каталогов сервисов; сценарии работы — `docs/runbooks/usage-scenarios.md`.
+Подробности эксплуатации — в `README.md` и README внутри каталогов сервисов; сценарии работы — `docs/runbooks/usage-scenarios.md`. Расширенные сценарии: `docs/runbooks/disaster-recovery.md` (восстановление на новом сервере), `docs/onboarding-admin.md` (онбординг нового админа), `docs/runbooks/config-driven-audit.md` (план закрытия гепов воспроизводимости), `<service>/BACKUP.md` (backup/restore по сервисам).
 
 ## Архитектура
 
