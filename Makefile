@@ -7,7 +7,7 @@
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
 	pg-app-create pg-app-show-creds pg-app-psql pg-app-drop redis-app-create redis-app-show-creds redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-drop minio-app-create minio-app-show-creds minio-app-drop clickhouse-app-create clickhouse-app-show-creds clickhouse-app-drop rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-drop \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
-	apps-merge-print apps-local-src-helm-sets apps-apply apps-conf-template apps-src-clone app-local-src-hostpath-mount \
+	apps-merge-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
 	postgres-status postgres-logs postgres-shell postgres-db postgres-up postgres-diff postgres-down \
 	redis-status redis-logs redis-shell redis-up redis-diff redis-down \
 	clickhouse-status clickhouse-logs clickhouse-shell clickhouse-up clickhouse-diff clickhouse-down \
@@ -16,7 +16,7 @@
 	minio-status minio-logs minio-shell minio-up minio-diff minio-down \
 	minio-app-append \
 	env-new env-backup env-restore kubeconfig-fetch kubeconfig-microk8s-local kubeconfig-info microk8s-setup microk8s-uninstall ssh \
-	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply \
+	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply k8s-port-expose-diff \
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
@@ -105,7 +105,8 @@ help:
 	@echo "$(BOLD)$(GREEN)Apps конфигурация:$(RESET)"
 	@echo "  make apps-merge-print $(YELLOW)[APPS_REGISTRY=...$(RESET)] $(YELLOW)[YQ=path/to/yq$(RESET)] - сырый merge (stdout, mikefarah yq v4)"
 	@echo "  make apps-local-src-helm-sets $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) — stdout: $(YELLOW)--set$(RESET) для $(YELLOW)app.volumes.$(RESET)* (hostPath=$(YELLOW)apps/src/<APP>$(RESET)) в вашем helm upgrade приложения"
-	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] - учётки из apps/conf; по умолчанию останов на первой ошибке make"
+	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] $(YELLOW)[APPS_APPLY_DROP_DISABLED=1$(RESET)] - учётки из apps/conf; APPS_APPLY_DROP_DISABLED=1 — дропать учётки disabled приложений"
+	@echo "  make apps-apply-diff $(YELLOW)ENV=$(ENV)$(RESET) - печатает дельту (would create/update/drop/drift), ничего не меняет"
 	@echo "  make apps-conf-template $(YELLOW)APP=myapp$(RESET) $(YELLOW)[SKIP_REGISTRY=1$(RESET)] - шаблон apps/conf из apps/conf/_example + по умолчанию запись в registry (enabled: false)"
 	@echo "  make apps-src-clone $(YELLOW)APP=<name>$(RESET) [$(YELLOW)APPS_REGISTRY=...$(RESET)] - git clone по repo_url (+ repo_branch) из registry → apps/src/<APP>"
 	@echo "  make app-local-src-hostpath-mount $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) $(YELLOW)APP_LOCAL_K8S_WORKLOAD=<kind>/<имя>$(RESET) [$(YELLOW)pod/…|deployment/…|sts/…|ds/…$(RESET)] — hostPath $(YELLOW)apps/src/<APP>$(RESET); initContainers+containers; [$(YELLOW)APP_LOCAL_SRC_READ_ONLY=1$(RESET)] [$(YELLOW)APP_LOCAL_SRC_CONTAINER=…$(RESET)]"
@@ -213,6 +214,7 @@ help:
 	@echo "  make k8s-port-expose-patch $(YELLOW)ENV=$(ENV) LAYER=hostport OP=add HOST_PORT=1883 CONTAINER_PORT=1883 PORT_NAME=mqtt$(RESET)"
 	@echo "  make k8s-port-expose-patch $(YELLOW)ENV=$(ENV) LAYER=hostport OP=rm HOST_PORT=1883$(RESET) - убрать hostPort из DS"
 	@echo "  make k8s-port-expose-apply $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)PORT_EXPOSE_CONFIG=...$(RESET)] — применить $(YELLOW)k8s-port-expose/ports-$(ENV).yaml$(RESET) (или указанный файл)"
+	@echo "  make k8s-port-expose-diff $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)PORT_EXPOSE_CONFIG=...$(RESET)] — drift: дельта YAML vs live DaemonSet+ConfigMap (без изменений)"
 	@echo "  опция: $(YELLOW)DRY_RUN=client|server$(RESET) — проверка без записи (server = admission)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Environment skeleton:$(RESET)"
@@ -404,6 +406,16 @@ apps-apply:
 	@APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" \
 	ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" \
 	APPS_APPLY_CONTINUE_ON_ERROR="$(APPS_APPLY_CONTINUE_ON_ERROR)" \
+	APPS_APPLY_DROP_DISABLED="$(APPS_APPLY_DROP_DISABLED)" \
+	"$(REPO_ROOT)/scripts/apps-apply.sh"
+
+# apps-apply-diff: тот же скрипт в режиме DRY-RUN — печатает «would create / would update / would drop / drift»
+# для активных и disabled приложений, ничего не меняя в кластере.
+apps-apply-diff:
+	@APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" \
+	ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" \
+	APPS_APPLY_DRY_RUN=1 \
+	APPS_APPLY_DROP_DISABLED="$(APPS_APPLY_DROP_DISABLED)" \
 	"$(REPO_ROOT)/scripts/apps-apply.sh"
 
 # Usage: make apps-conf-template APP=myapp [SKIP_REGISTRY=1]
@@ -1149,6 +1161,11 @@ k8s-port-expose-apply:
 	@$(MAKE) -C k8s-port-expose apply-config ENV=$(ENV) REPO_ROOT="$(REPO_ROOT)" \
 		PORT_EXPOSE_CONFIG="$(PORT_EXPOSE_CONFIG)" \
 		DRY_RUN="$(DRY_RUN)"
+
+# Drift detection для k8s-port-expose: дельта между ports-$(ENV).yaml и live DaemonSet+ConfigMap.
+k8s-port-expose-diff:
+	@$(MAKE) -C k8s-port-expose diff-config ENV=$(ENV) REPO_ROOT="$(REPO_ROOT)" \
+		PORT_EXPOSE_CONFIG="$(PORT_EXPOSE_CONFIG)"
 
 ## =========================
 ## Backup / Restore wrappers (stateful services)

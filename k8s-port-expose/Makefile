@@ -1,5 +1,5 @@
 # microk8s nginx ingress TCP: DaemonSet hostPort + ConfigMap nginx-ingress-tcp-microk8s-conf
-.PHONY: help show patch patch-tcp patch-hostport apply-config
+.PHONY: help show patch patch-tcp patch-hostport apply-config diff-config
 
 ENV ?= local
 REPO_ROOT ?= $(abspath $(CURDIR)/..)
@@ -54,7 +54,17 @@ apply-config:
 	@"$(REPO_ROOT)/scripts/apps-yq-probe.sh"
 	@ENV="$(ENV)" REPO_ROOT="$(REPO_ROOT)" PORT_EXPOSE_CONFIG="$(PORT_EXPOSE_CONFIG)" \
 		INGRESS_NS="$(INGRESS_NS)" INGRESS_DS="$(INGRESS_DS)" INGRESS_TCP_CM="$(INGRESS_TCP_CM)" INGRESS_CONTAINER="$(INGRESS_CONTAINER)" \
-		DRY_RUN="$(DRY_RUN)" \
+		DRY_RUN="$(DRY_RUN)" MODE="apply" \
+		"$(REPO_ROOT)/scripts/k8s-port-expose-apply-config.sh"
+
+# diff-config: показать дельту между ports-$(ENV).yaml и live (DaemonSet hostPorts + TCP ConfigMap), без изменений.
+diff-config:
+	@command -v kubectl >/dev/null 2>&1 || { echo "✗ kubectl не найден"; exit 1; }
+	@command -v jq >/dev/null 2>&1 || { echo "✗ нужен jq"; exit 1; }
+	@"$(REPO_ROOT)/scripts/apps-yq-probe.sh"
+	@ENV="$(ENV)" REPO_ROOT="$(REPO_ROOT)" PORT_EXPOSE_CONFIG="$(PORT_EXPOSE_CONFIG)" \
+		INGRESS_NS="$(INGRESS_NS)" INGRESS_DS="$(INGRESS_DS)" INGRESS_TCP_CM="$(INGRESS_TCP_CM)" INGRESS_CONTAINER="$(INGRESS_CONTAINER)" \
+		MODE="diff" \
 		"$(REPO_ROOT)/scripts/k8s-port-expose-apply-config.sh"
 
 show:
