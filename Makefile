@@ -615,6 +615,43 @@ up:
 			--from-literal=rabbitmq-erlang-cookie="$$RABBITMQ_COOKIE" \
 			>/dev/null; \
 	fi; \
+	if ! kubectl get secret -n postgres postgres-postgresql >/dev/null 2>&1; then \
+		echo "PostgreSQL admin secret not found (postgres/postgres-postgresql). Creating one for first install..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+		PG_PASSWORD=$$(openssl rand -hex 16); \
+		kubectl create namespace postgres --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+		kubectl create secret generic postgres-postgresql -n postgres \
+			--from-literal=postgres-password="$$PG_PASSWORD" \
+			>/dev/null; \
+	fi; \
+	if ! kubectl get secret -n minio minio >/dev/null 2>&1; then \
+		echo "MinIO root secret not found (minio/minio). Creating one for first install..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+		MINIO_ROOT_PASSWORD=$$(openssl rand -hex 16); \
+		kubectl create namespace minio --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+		kubectl create secret generic minio -n minio \
+			--from-literal=root-user="admin" \
+			--from-literal=root-password="$$MINIO_ROOT_PASSWORD" \
+			>/dev/null; \
+	fi; \
+	if ! kubectl get secret -n clickhouse clickhouse >/dev/null 2>&1; then \
+		echo "ClickHouse admin secret not found (clickhouse/clickhouse). Creating one for first install..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+		CH_PASSWORD=$$(openssl rand -hex 16); \
+		kubectl create namespace clickhouse --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+		kubectl create secret generic clickhouse -n clickhouse \
+			--from-literal=admin-password="$$CH_PASSWORD" \
+			>/dev/null; \
+	fi; \
+	kafka_active=0; \
+	if [ -n "$(ENABLED_SERVICES)" ]; then \
+		echo ",$(ENABLED_SERVICES)," | grep -qF ",kafka," && kafka_active=1; \
+	else \
+		echo ",$(EXCLUDE_SERVICES)," | grep -qF ",kafka," || kafka_active=1; \
+	fi; \
+	if [ $$kafka_active -eq 1 ]; then \
+		$(MAKE) -C kafka secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
+	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
 	if [ "$(SKIP_APPS_APPLY)" != "1" ]; then \
 		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" APPS_APPLY_CONTINUE_ON_ERROR="$(APPS_APPLY_CONTINUE_ON_ERROR)" "$(REPO_ROOT)/scripts/apps-apply.sh"; \

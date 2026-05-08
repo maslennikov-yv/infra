@@ -20,13 +20,12 @@ metrics:
     repository: bitnami/postgres-exporter
     tag: "0.18.1"
 
-# Базовая аутентификация (пример; при необходимости замените на Secret)
+# Пароль superuser postgres хранится в Secret postgres/postgres-postgresql
+# (создаётся корневой целью `make up` через openssl rand при первом запуске).
+# Изоляция приложений — через `make pg-app-create` / apps-apply, не здесь.
 auth:
   enablePostgresUser: true
-  postgresPassword: "postgres123"
-  username: "app_user"
-  password: "app_password"
-  database: "app_db"
+  existingSecret: postgres-postgresql
 
 architecture: standalone
 

@@ -33,8 +33,9 @@ persistence:
   enabled: true
   size: 8Gi
 
+# Пароль admin хранится в Secret clickhouse/clickhouse
+# (создаётся корневой целью `make up` через openssl rand при первом запуске).
 auth:
   username: admin
-  password: ""
-  existingSecret: ""
-  existingSecretKey: ""
+  existingSecret: clickhouse
+  existingSecretKey: admin-password
