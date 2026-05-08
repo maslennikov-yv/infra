@@ -1,0 +1,19 @@
+# Пример манифеста пробросов TCP (microk8s nginx ingress).
+# Скопируйте в k8s-port-expose/ports-<ENV>.yaml и поправьте backend под свой кластер.
+#
+# Применение: make k8s-port-expose-apply ENV=<env>
+# Явный файл: make k8s-port-expose-apply PORT_EXPOSE_CONFIG=/полный/путь.yaml
+
+# Необязательно: переопределения имён ресурсов ingress (по умолчанию как в k8s-port-expose/Makefile)
+# ingressNamespace: ingress
+# daemonSet: nginx-ingress-microk8s-controller
+# tcpConfigMap: nginx-ingress-tcp-microk8s-conf
+# containerName: nginx-ingress-microk8s
+
+exposes:
+  # Узловой порт → сервис кластера (namespace/service:servicePort)
+  - hostPort: 1883
+    backend: example-ns/example-mqtt:1883
+    # containerPort: 1883   # по умолчанию = hostPort
+    # portName: mqtt       # по умолчанию tcp-<hostPort>
+    # proto: TCP           # по умолчанию TCP

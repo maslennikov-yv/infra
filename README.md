@@ -16,44 +16,51 @@ infra/
 ├── postgres/          # PostgreSQL
 │   ├── postgresql/    # Helm chart
 │   ├── images/        # tar-файлы образов
-│   ├── values-dev.yaml
+│   ├── values-local.yaml
 │   ├── values-prod.yaml
-│   ├── values-stage.yaml
+│   ├── values-stage.yaml   # пример: ENV=stage → helmfile подключает values-stage.yaml
 │   └── Makefile
 ├── redis/             # Redis (standalone)
 │   ├── redis/         # Helm chart
 │   ├── images/
-│   ├── values-dev.yaml
+│   ├── values-local.yaml
 │   ├── values-prod.yaml
 │   └── Makefile
 ├── kafka/             # Kafka
 │   ├── kafka/         # Helm chart
 │   ├── images/
-│   ├── values-dev.yaml
+│   ├── values-local.yaml
 │   ├── values-prod.yaml
 │   └── Makefile
 ├── rabbitmq/          # RabbitMQ
 │   ├── rabbitmq/      # Helm chart
 │   ├── images/
-│   ├── values-dev.yaml
+│   ├── values-local.yaml
 │   ├── values-prod.yaml
 │   └── Makefile
 ├── clickhouse/        # ClickHouse (standalone)
 │   ├── clickhouse/    # Helm chart
 │   ├── images/
-│   ├── values-dev.yaml
+│   ├── values-local.yaml
 │   ├── values-prod.yaml
 │   └── Makefile
 ├── minio/             # MinIO (S3)
 │   ├── minio/         # Helm chart
 │   ├── images/
-│   ├── values-dev.yaml
+│   ├── values-local.yaml
 │   ├── values-prod.yaml
 │   └── Makefile
-├── helmfile.yaml.gotmpl  # Развертывание всех сервисов
-├── environments/      # Настройки окружений (dev/prod)
-└── Makefile          # Корневые команды
+├── monitoring/netdata/  # Netdata (опционально через ENABLED_SERVICES)
+├── apps/                # registry.yaml; секреты в apps/conf/<app>/ (не в git)
+├── scripts/             # merge/apply конфигов приложений и утилиты
+├── helmfile.yaml.gotmpl # Развертывание всего стека из корня
+├── environments/        # mk + yaml (список релизов для env-backup и т.п.)
+└── Makefile             # Корневые команды (helmfile, образы, приложения)
 ```
+
+## Сценарии эксплуатации
+
+Типичные потоки: разные наборы сервисов на local и prod, подключение приложений и учёток, изменение состава стека, ротация секретов, проверка здоровья кластера, работа через TUI [`node scripts/infra-lab.mjs`](docs/infra-control/README.md) — см. **[docs/runbooks/usage-scenarios.md](docs/runbooks/usage-scenarios.md)**.
 
 ## Быстрый старт
 
@@ -62,17 +69,17 @@ infra/
 Скачать и сохранить все образы в tar-файлы:
 
 ```bash
-make images-save ENV=dev
+make images-save ENV=local
 ```
 
 Эта команда:
-- Скачает образы из `bitnamilegacy` (или `bitnami` как fallback)
+- Скачает образы из `docker.io/bitnamilegacy/*`
 - Сохранит их в `*/images/*.tar`
 
 ### 2. Загрузка образов в microk8s registry
 
 ```bash
-make images-push ENV=dev
+make images-push ENV=local
 ```
 
 Эта команда:
@@ -83,30 +90,32 @@ make images-push ENV=dev
 ### 3. Развертывание всех сервисов
 
 ```bash
-make up ENV=dev
+make up ENV=local
 ```
 
 Или развернуть по отдельности:
 
 ```bash
 # PostgreSQL
-make postgres-up ENV=dev
+make postgres-up ENV=local
 
 # Redis
-make redis-up ENV=dev
+make redis-up ENV=local
 
 # Kafka
-make kafka-up ENV=dev
+make kafka-up ENV=local
 
 # RabbitMQ
-make rabbitmq-up ENV=dev
+make rabbitmq-up ENV=local
 
 # ClickHouse
-make clickhouse-up ENV=dev
+make clickhouse-up ENV=local
 
 # MinIO
-make minio-up ENV=dev
+make minio-up ENV=local
 ```
+
+Цели **`make postgres-up`** / **`redis-up`** и т.д. вызывают общий **`make up`** с **`ENABLED_SERVICES=...`**, поэтому после Helm выполняется и **`apps-apply`** (те же правила, что и при полном **`make up`**). Чтобы применить только чарты без учёток приложений, задайте **`SKIP_APPS_APPLY=1`**. Отдельный запуск: **`make apps-apply ENV=...`** (при необходимости **`ENABLED_SERVICES=...`**).
 
 ## Основные команды
 
@@ -114,27 +123,27 @@ make minio-up ENV=dev
 
 ```bash
 # Образы
-make images-save ENV=dev      # Скачать/сохранить образы всех сервисов
-make images-push ENV=dev      # Загрузить образы в registry
-make images-push-remote ENV=dev  # Загрузить tar-файлы на удалённый сервер и опубликовать в его registry
+make images-save ENV=local      # Скачать/сохранить образы всех сервисов
+make images-push ENV=local      # Загрузить образы в registry
+make images-push-remote ENV=local  # Загрузить tar-файлы на удалённый сервер и опубликовать в его registry
 
 # Развертывание
-make up ENV=dev              # Развернуть все (dev)
-make diff ENV=dev            # Показать изменения (dev)
-make down ENV=dev            # Удалить все (dev)
+make up ENV=local              # Развернуть все (local)
+make diff ENV=local            # Показать изменения (local)
+make down ENV=local            # Удалить все (local)
 
 make up ENV=prod             # Развернуть все (prod)
 
 # Указать только устанавливаемые сервисы
-make up ENV=dev ENABLED_SERVICES=postgres,redis    # Развернуть только postgres и redis
+make up ENV=local ENABLED_SERVICES=postgres,redis    # Развернуть только postgres и redis
 make up ENV=prod ENABLED_SERVICES=minio            # Развернуть только minio
 
 # Исключить сервисы из развертывания (игнорируется если задан ENABLED_SERVICES)
-make up ENV=dev EXCLUDE_SERVICES=kafka,clickhouse  # Развернуть все кроме kafka и clickhouse
+make up ENV=local EXCLUDE_SERVICES=kafka,clickhouse  # Развернуть все кроме kafka и clickhouse
 make up ENV=prod EXCLUDE_SERVICES=minio            # Развернуть все кроме minio
 ```
 
-#### Окружения (dev/prod/staging/…)
+#### Окружения (local/prod/staging/…)
 
 Все корневые команды принимают параметр `ENV=<name>`.
 
@@ -143,13 +152,13 @@ make up ENV=prod EXCLUDE_SERVICES=minio            # Развернуть все
 Можно указать только устанавливаемые сервисы через `ENABLED_SERVICES` (приоритетнее, чем `EXCLUDE_SERVICES`):
 
 ```bash
-make up ENV=dev ENABLED_SERVICES=postgres,redis
+make up ENV=local ENABLED_SERVICES=postgres,redis
 ```
 
 Или исключить отдельные сервисы через `EXCLUDE_SERVICES`:
 
 ```bash
-make up ENV=dev EXCLUDE_SERVICES=kafka,clickhouse
+make up ENV=local EXCLUDE_SERVICES=kafka,clickhouse
 ```
 
 Или задать в `environments/$(ENV).mk`:
@@ -171,22 +180,25 @@ make env-new ENV=staging
 
 Это создаст:
 - `environments/staging.mk` (сюда пишете SSH_HOST/SSH_KEY/REGISTRY/KUBECONFIG)
+- `environments/staging.yaml` (реестр сервисов/namespace для `make env-backup` и т.п.; при необходимости отредактируйте)
 - `k8s/config/staging` (файл-плейсхолдер под kubeconfig)
-- `*/values-stage.yaml`, `*/values-staging.yaml` (копия values-dev.yaml или values-prod.yaml)
+- `*/values-staging.yaml` (копия values-local.yaml или values-prod.yaml)
+
+Имя **`ENV` должно совпадать с суффиксом** `values-<ENV>.yaml`, который подставляет helmfile. Файл **`postgres/values-stage.yaml`** в репозитории соответствует **`ENV=stage`**, а не `ENV=staging`.
 
 Скачать kubeconfig с удалённого microk8s по SSH:
 
 ```bash
-make kubeconfig-fetch ENV=dev SSH_HOST=1.2.3.4 SSH_KEY=~/.ssh/id_ed25519
+make kubeconfig-fetch ENV=local SSH_HOST=1.2.3.4 SSH_KEY=~/.ssh/id_ed25519
 ```
 
 ### Команды для отдельного сервиса
 
-Зайти в директорию сервиса (`postgres/`, `redis/`, `kafka/`, `minio/`, `clickhouse/`) и использовать:
+Зайти в директорию сервиса (`postgres/`, `redis/`, `kafka/`, `rabbitmq/`, `minio/`, `clickhouse/`) и использовать:
 
 ```bash
 # Образы
-make images-pull            # Скачать образы
+make images-pull            # Скачать образы (docker.io/bitnamilegacy)
 make images-save            # Сохранить в tar
 make images-load            # Загрузить из tar
 make images-tag             # Перетегировать для registry
@@ -194,11 +206,14 @@ make images-push            # Загрузить в registry
 make images-sync            # pull + tag + push
 make images-sync-from-files # load + tag + push
 
-# Helm (через helmfile)
-make up                     # Развернуть/обновить
-make diff                   # Показать изменения
-make down                   # Удалить
-make status                 # Статус
+# Helm в каталоге сервиса (напрямую helm, не helmfile)
+make install                # установить / обновить релиз (часто то же, что make upgrade)
+make upgrade
+make uninstall              # удалить релиз (см. документацию чарта про PVC)
+make status                 # статус релиза и ресурсов в namespace
+
+# Весь стек и единый diff — из корня репозитория
+# make up / make diff / make down ENV=... (helmfile.yaml.gotmpl)
 
 # Проверка
 make check-registry         # Проверить доступность registry
@@ -218,27 +233,30 @@ make check-registry         # Проверить доступность registry
 - **ClickHouse**: `clickhouse`, `clickhouse-keeper`, `os-shell`
 
 Все образы:
-- Скачиваются из `bitnamilegacy` (fallback на `bitnami`)
+- Скачиваются из `docker.io/bitnamilegacy/*` (фиксированные теги в `*/Makefile`)
 - Сохраняются в `*/images/*.tar`
 - Публикуются в `localhost:32000/bitnami/*` с фиксированными тегами
 
 ### 2. Values-файлы
 
-Каждый сервис имеет два values-файла:
-- `values-dev.yaml` - для dev окружения
-- `values-prod.yaml` - для prod окружения
-- `values-stage.yaml` - для stage окружения (если есть)
+Обычно у каждого сервиса есть как минимум:
+- `values-local.yaml` — local
+- `values-prod.yaml` — prod
 
-В них указано:
-- `image.registry: localhost:32000` - использовать локальный registry
-- `global.security.allowInsecureImages: true` - разрешить локальные образы
-- Фиксированные теги образов
+Дополнительные окружения — отдельные файлы `values-<ENV>.yaml` (например в репозитории есть `postgres/values-stage.yaml` для `ENV=stage`; Netdata может иметь только local/prod).
+
+В них (для схемы с локальным registry) как правило задано:
+- `image.registry: localhost:32000`
+- `global.security.allowInsecureImages: true`
+- фиксированные теги образов
 
 ### 3. Helmfile
 
-`helmfile.yaml.gotmpl` описывает все 5 релизов:
-- Использует локальные чарты (`./postgres/postgresql`, `./redis/redis`, `./kafka/kafka`, `./minio/minio`, `./clickhouse/clickhouse`)
+`helmfile.yaml.gotmpl` описывает **семь** релизов (включаемость — через `ENABLED_SERVICES` / `EXCLUDE_SERVICES`):
+- Локальные чарты: `./postgres/postgresql`, `./redis/redis`, `./kafka/kafka`, `./rabbitmq/rabbitmq`, `./minio/minio`, `./clickhouse/clickhouse`, `./monitoring/netdata/netdata`
 - Подставляет нужный values-файл в зависимости от окружения (`values-{{ $env }}.yaml`)
+
+`make diff` / `make up` читают пароли Redis и RabbitMQ из Secret в кластере; для **первого** просмотра шаблонов без кластера используйте `helmfile template` (см. раздел «Helmfile не работает»). Для рендеринга без реальных секретов передайте заглушки: `REDIS_PASSWORD=…`, `RABBITMQ_PASSWORD=…`, `RABBITMQ_ERLANG_COOKIE=…`.
 
 ## Примеры использования
 
@@ -246,23 +264,23 @@ make check-registry         # Проверить доступность registry
 
 ```bash
 # 1. Скачать образы
-make images-save ENV=dev
+make images-save ENV=local
 
 # 2. Загрузить в registry
-make images-push ENV=dev
+make images-push ENV=local
 
 # 3. Развернуть
-make up ENV=dev
+make up ENV=local
 ```
 
 ### Обновление после изменений
 
 ```bash
 # Посмотреть что изменится
-make diff ENV=dev
+make diff ENV=local
 
 # Применить изменения
-make up ENV=dev
+make up ENV=local
 ```
 
 ### Работа с одним сервисом
@@ -271,25 +289,34 @@ make up ENV=dev
 cd postgres
 
 # Скачать образы только для PostgreSQL
-make images-save
+make images-save ENV=local
 
 # Загрузить в registry
-make images-sync-from-files
+make images-sync-from-files ENV=local
 
-# Развернуть
-make up ENV=dev
+# Развернуть только этот сервис (helm в каталоге; не helmfile)
+make install ENV=local
 ```
 
 ## PostgreSQL: для приложений
 
-Создание отдельной БД и роли для приложения, Secret с кредами:
+Создание **отдельной БД и роли в Postgres** и **учётки Redis** (ACL + префикс ключей; опционально логический номер БД `REDIS_DB` в Secret — не то же самое, что отдельная БД Postgres, см. `docs/pg-app.md`) — по одному приложению:
+
+В **`apps/registry.yaml`** перечисляйте приложения (у каждой записи обязательно **`enabled: true|false`**; среди **`enabled: true`** поля **`name`** не должны повторяться — проверяется при merge). Секреты — в **`apps/conf/<APP>/*.yaml`** (deep-merge с реестром; образец **`apps/conf/_example/`**). Нужен [**yq** mikefarah v4](https://github.com/mikefarah/yq): переменная **`YQ=…`** или бинарь **`./.tools/yq-mikefarah`** (см. корневой `Makefile`). **`make apps-merge-print`** — собранный merge в stdout; **`make apps-apply`** идемпотентно создаёт учётки там, где в merge есть пароли/ключи (**`ENABLED_SERVICES`** / **`EXCLUDE_SERVICES`** как у helmfile); по умолчанию процесс прерывается на **первой** ошибке `make`, для попытки остальных шагов подряд используйте **`APPS_APPLY_CONTINUE_ON_ERROR=1`** (код выхода всё равно будет ненулевым, если хоть один шаг упал); после **`make up`** автоматически вызывается **`apps-apply`**, если не задан **`SKIP_APPS_APPLY=1`**.
+
+Поле **`redis_db`** в реестре необязательно: если не указано, `make redis-app-create` без `REDIS_DB=…` назначает **следующий свободный** номер **1..127** ([`scripts/redis-next-db.sh`](scripts/redis-next-db.sh); нужен **yq** mikefarah v4). Явный **`redis_db`** фиксирует номер. Переопределение: **`REDIS_DB=…`** в CLI.
 
 ```bash
 make pg-app-create APP=myapp ENV=stage
+make redis-app-create APP=myapp ENV=stage              # ACL + Secret; следующий свободный redis_db из merged
+make redis-app-create APP=myapp ENV=stage REDIS_DB=3   # явно задать логический номер БД Redis
 make pg-app-show-creds APP=myapp ENV=stage   # показать креды
-make pg-app-drop APP=myapp ENV=stage         # удалить БД, роль и Secret
+make redis-app-show-creds APP=myapp ENV=stage   # креды Redis (Secret app-redis, префикс и REDIS_DB)
+make pg-app-drop APP=myapp ENV=stage         # удалить БД, роль и Secret (y/N; SKIP_CONFIRM=1)
 make pg-app-verify APP=myapp ENV=stage       # проверить подключение
 ```
+
+Секреты в namespace приложения: `APP-postgres`, `APP-redis`.
 
 Бэкап и восстановление:
 ```bash
@@ -504,6 +531,9 @@ make minio-app-append APP=appA BUCKET=appA-archive ACCESS_MODE=private_ro
 - Docker
 - helmfile
 - kubectl
+- Файл kubeconfig по пути **`k8s/config/<ENV>`** (переменная **`KUBECONFIG`** в корневом `Makefile`; без файла команды с `kubectl` завершатся ошибкой). Плейсхолдер: **`make env-new ENV=<env>`**, загрузка с ноды: **`make kubeconfig-fetch ...`**
+- Для учёток приложений (**`apps/registry.yaml`**, merge, `make apps-apply`) — [**yq** mikefarah v4](https://github.com/mikefarah/yq) или **`./.tools/yq-mikefarah`**
+- Для **infra-lab** (`node scripts/infra-lab.mjs`) — Node.js **18+** и **`npm install`** в корне репозитория (зависимость `@clack/prompts`)
 
 ## Рекомендации по железу
 
@@ -513,7 +543,7 @@ make minio-app-append APP=appA BUCKET=appA-archive ACCESS_MODE=private_ro
 
 | Окружение | Минимум (все сервисы + Netdata) | Рекомендуемый запас |
 |-----------|---------------------------------|----------------------|
-| **dev**   | 4 CPU, 8 Gi RAM                 | 4 CPU, 12 Gi RAM (запас для сборок, rollout) |
+| **local** | 4 CPU, 8 Gi RAM                 | 4 CPU, 12 Gi RAM (запас для сборок, rollout) |
 | **prod**  | 4 CPU, 12 Gi RAM                | 6+ CPU, 16 Gi RAM (пики, мониторинг, запас под Pending) |
 
 - **Диск:** для каждого сервиса с `persistence.enabled: true` закладывайте объём из `persistence.size` в values (PostgreSQL, Kafka, MinIO, ClickHouse, RabbitMQ). Плюс место под образы и системные компоненты (registry, system pods).
@@ -523,15 +553,15 @@ make minio-app-append APP=appA BUCKET=appA-archive ACCESS_MODE=private_ro
 
 | Сервис     | CPU (requests / limits) | Память (requests / limits) | Диск (persistence) | Примечание |
 |------------|-------------------------|----------------------------|--------------------|------------|
-| **PostgreSQL** | 250m / 500m         | 256Mi / 512Mi              | из `primary.persistence.size` | В values-dev/prod заданы явно. |
+| **PostgreSQL** | 250m / 500m         | 256Mi / 512Mi              | из `primary.persistence.size` | В values-local/prod заданы явно. |
 | **Redis**     | по пресету (nano ≈ 50m / 256Mi) | —                  | при включённой persistence | В values ресурсы не переопределены. |
-| **Kafka**    | по пресету (small ≈ 256m / 512Mi на broker/controller) | — | data + logs PVC из chart | 1 broker в dev; при росте нагрузки увеличить replicas и ресурсы. |
+| **Kafka**    | по пресету (small ≈ 256m / 512Mi на broker/controller) | — | data + logs PVC из chart | 1 broker в local; при росте нагрузки увеличить replicas и ресурсы. |
 | **MinIO**    | по пресету (micro ≈ 100m / 256Mi) | —                 | из `persistence.size` | Плюс консоль (console), если включена. |
-| **ClickHouse** | по пресету (small ≈ 256m / 512Mi) | —               | 8Gi в values-dev | Keeper выключен в dev; при включении — отдельные запросы. |
+| **ClickHouse** | по пресету (small ≈ 256m / 512Mi) | —               | 8Gi в values-local | Keeper выключен в local; при включении — отдельные запросы. |
 | **RabbitMQ** | 250m / 1               | 512Mi / 1Gi                | из `persistence.size` | В values-prod заданы явно. |
-| **Netdata**  | dev: 100m/500m, prod: 200m/1 | dev: 128Mi/512Mi, prod: 256Mi/1Gi | — | В values-dev/prod заданы явно. |
+| **Netdata**  | local: 100m/500m, prod: 200m/1 | local: 128Mi/512Mi, prod: 256Mi/1Gi | — | В values-local/prod заданы явно. |
 
-- **Где смотреть точные значения:** `*/values-dev.yaml`, `*/values-prod.yaml` (секции `resources`, `primary.resources`, `controller.resources`, `broker.resources` и т.п.). Если не задано — используются пресеты чарта (см. `resourcesPreset` в `*/chart/values.yaml`).
+- **Где смотреть точные значения:** `*/values-local.yaml`, `*/values-prod.yaml` (секции `resources`, `primary.resources`, `controller.resources`, `broker.resources` и т.п.). Если не задано — используются пресеты чарта (см. `resourcesPreset` в `*/chart/values.yaml`).
 - **Проверка по кластеру:** `make monitoring-top-nodes ENV=prod` — загрузка нод; при Pending — `make monitoring-pod-events ENV=prod POD=<имя-пода>` или `make monitoring-describe-pod ENV=prod POD=<имя-пода>`.
 
 ## Настройка microk8s
@@ -556,7 +586,7 @@ microk8s enable metrics-server
 1. **Образы нужно скачивать заранее** - пока доступен `bitnamilegacy`, иначе потом не получится
 2. **Все образы публикуются в `localhost:32000/bitnami/*`** - это важно для работы чартов
 3. **Теги фиксированы** - см. `*/Makefile` для списка используемых тегов
-4. **Values-файлы не редактируются через sed** - используются отдельные файлы для dev/prod
+4. **Values-файлы не редактируются через sed** - используются отдельные файлы для local/prod
 
 ## Файлы, которые не коммитятся (gitignore)
 
@@ -588,10 +618,10 @@ Netdata Cloud не подключается: в чарте нет claim-token и
 ### Установка
 
 1. Проверьте hostname для ingress в `monitoring/netdata/values-$(ENV).yaml`:
-   - `netdata.dev.local` / `netdata.prod.local` — замените на свои домены.
+   - `netdata.local.local` / `netdata.prod.local` — замените на свои домены.
 2. Установите:
 ```bash
-make monitoring-up ENV=dev
+make monitoring-up ENV=local
 ```
 
 ### Доступ к UI
@@ -599,7 +629,7 @@ make monitoring-up ENV=dev
 - Через ingress: `http(s)://<ваш-домен>`
 - Или временно через port-forward:
 ```bash
-make monitoring-port-forward ENV=dev
+make monitoring-port-forward ENV=local
 ```
 Откройте: `http://localhost:19999`
 
@@ -719,17 +749,20 @@ ls -lh redis/images/
 ls -lh kafka/images/
 
 # Если пусто - скачать заново
-make images-save ENV=dev
+make images-save ENV=local
 ```
 
 ### Helmfile не работает
 
-```bash
-# Проверить синтаксис
-helmfile -f helmfile.yaml.gotmpl -e dev template
+Окружение helmfile в репозитории — `default`; целевое окружение задаётся переменной `ENV` (см. `Makefile`).
 
-# Посмотреть что будет развернуто
-helmfile -f helmfile.yaml.gotmpl -e dev diff
+```bash
+# Проверить синтаксис (без кластера; заглушки нужны для чартов Redis/RabbitMQ)
+ENV=local REDIS_PASSWORD=x RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
+  helmfile -f helmfile.yaml.gotmpl -e default template
+
+# Сравнение с кластером — после make up и появления Secret redis/redis и rabbitmq/rabbitmq
+make diff ENV=local
 ```
 
 ## Repository topics (discoverability)

@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
 	check-registry check-updates
 
 # Локальный registry MicroK8s
@@ -10,8 +10,11 @@ REGISTRY ?= localhost:32000
 NAMESPACE ?= rabbitmq
 RELEASE ?= rabbitmq
 CHART_PATH ?= rabbitmq
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
+
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 
 # Secret used by the chart (auth.existingPasswordSecret / auth.existingErlangSecret)
 RABBITMQ_SECRET_NAME ?= rabbitmq
@@ -24,7 +27,7 @@ OS_SHELL_TAG ?= 12-debian-12-r50
 RABBITMQ_SRC_TAG ?= $(RABBITMQ_TAG)
 OS_SHELL_SRC_TAG ?= $(OS_SHELL_TAG)
 
-# Source images (bitnamilegacy -> bitnami fallback)
+# Source images (только docker.io/bitnamilegacy)
 RABBITMQ_IMAGE_SRC := docker.io/bitnamilegacy/rabbitmq:$(RABBITMQ_SRC_TAG)
 OS_SHELL_IMAGE_SRC := docker.io/bitnamilegacy/os-shell:$(OS_SHELL_SRC_TAG)
 
@@ -53,6 +56,8 @@ help:
 	@echo ""
 	@echo "App accounts:"
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [APP_VHOST=myapp] [APP_USER=app_myapp]"
+	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (APP-rabbitmq)"
+	@echo "  make app-drop APP=myapp — удалить vhost, пользователя RabbitMQ и Secret (⚠ y/N; SKIP_CONFIRM=1)"
 
 check-registry:
 	@echo "Проверка MicroK8s registry..."
@@ -64,23 +69,25 @@ check-registry:
 ## App accounts (per-app isolation)
 ## =========================
 
-# Usage: make app-create APP=myapp [APP_NS=myapp] [APP_VHOST=myapp] [APP_USER=app_myapp] [APP_PASSWORD=...]
+# Usage: make app-create APP=myapp — пароль только из merged (rabbitmq.password).
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@{ set -euo pipefail; \
+	INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
+	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	APP_VHOST=$${APP_VHOST:-$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-rabbitmq}; \
-	APP_PASSWORD=$${APP_PASSWORD:-}; \
-	ADMIN_USER=$${ADMIN_USER:-admin}; \
-	if [ -z "$$APP_PASSWORD" ]; then \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (передайте APP_PASSWORD=... или установите openssl)"; exit 1; }; \
-		APP_PASSWORD=$$(openssl rand -hex 16); \
-	fi; \
+	PW_RAW=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" rabbitmq.password || true); \
+	if [ -z "$$PW_RAW" ] || [ "$$PW_RAW" = "null" ]; then echo "✗ Для приложения \"$(APP)\" нет rabbitmq.password в merged"; exit 1; fi; \
+	APP_PASSWORD="$$PW_RAW"; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
-	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден"; exit 1; fi; \
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RABBITMQ_SECRET_NAME) -o jsonpath='{.data.rabbitmq-password}' 2>/dev/null | base64 -d); \
-	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить rabbitmq-password из секрета $(RABBITMQ_SECRET_NAME) в namespace $(NAMESPACE)"; exit 1; fi; \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить rabbitmq-password"; exit 1; fi; \
 	RMQ_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
 	RMQ_PORT=5672; \
 	RMQ_MGMT_PORT=15672; \
@@ -108,7 +115,56 @@ app-create:
 		--from-literal=RABBITMQ_PASSWORD="$$APP_PASSWORD" \
 		--from-literal=RABBITMQ_AMQP_URL="$$AMQP_URL" \
 		>/dev/null; \
-	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+	printf '%s\n' \
+		'rabbitmq:' \
+		"  password: \"$$APP_PASSWORD\"" \
+		"  username: \"$$APP_USER\"" \
+		"  vhost: \"$$APP_VHOST\"" \
+		"  host: \"$$RMQ_HOST\"" \
+		"  amqp_port: $$RMQ_PORT" \
+		"  management_port: $$RMQ_MGMT_PORT" \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"; \
+	}
+
+# Usage: make app-show-creds APP=myapp [APP_NS=myapp]
+app-show-creds:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-rabbitmq}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	echo "Secret: $$APP_NS/$$APP_SECRET_NAME"; \
+	echo "---"; \
+	for k in RABBITMQ_HOST RABBITMQ_PORT RABBITMQ_MANAGEMENT_PORT RABBITMQ_VHOST RABBITMQ_USERNAME RABBITMQ_PASSWORD RABBITMQ_AMQP_URL; do \
+		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
+		echo "$$k=$$v"; \
+	done
+
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [APP_VHOST=myapp] [APP_USER=app_myapp] [SKIP_CONFIRM=1]
+app-drop:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_VHOST=$${APP_VHOST:-$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-rabbitmq}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будут удалены vhost \"$$APP_VHOST\", пользователь \"$$APP_USER\" и Secret \"$$APP_NS/$$APP_SECRET_NAME\" (очереди и сообщения в vhost будут потеряны)."; \
+		read -p "Вы уверены? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	echo "Deleting vhost $$APP_VHOST and user $$APP_USER..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- bash -ec "\
+		rabbitmqctl delete_vhost \"$$APP_VHOST\" 2>/dev/null || true; \
+		rabbitmqctl delete_user \"$$APP_USER\" 2>/dev/null || true; \
+	"; \
+	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
+	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" rabbitmq || true; \
+	echo "✓ vhost $$APP_VHOST, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 images-verify:
 	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
@@ -207,9 +263,9 @@ shell:
 	fi
 
 images-pull:
-	@echo "Загрузка образов (bitnamilegacy -> bitnami fallback)..."
-	@if docker pull $(RABBITMQ_IMAGE_SRC) 2>/dev/null; then echo "✓ $(RABBITMQ_IMAGE_SRC)"; else docker pull docker.io/bitnami/rabbitmq:$(RABBITMQ_SRC_TAG); docker tag docker.io/bitnami/rabbitmq:$(RABBITMQ_SRC_TAG) $(RABBITMQ_IMAGE_SRC); fi
-	@if docker pull $(OS_SHELL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(OS_SHELL_IMAGE_SRC)"; else docker pull docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG); docker tag docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG) $(OS_SHELL_IMAGE_SRC); fi
+	@echo "Загрузка образов из docker.io/bitnamilegacy..."
+	@docker pull $(RABBITMQ_IMAGE_SRC)
+	@docker pull $(OS_SHELL_IMAGE_SRC)
 	@echo "✓ Все образы загружены"
 
 images-tag: images-pull

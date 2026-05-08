@@ -35,9 +35,9 @@ defaultInitContainers:
       tag: "12-debian-12-r50"
 
 ingress:
-  enabled: false
+  enabled: true
   ingressClassName: nginx
-  hostname: files.appA.com
+  hostname: s3.natalya-maslennikova.ru
   path: /
   pathType: Prefix
   annotations:
@@ -46,14 +46,7 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/cluster-issuer: "letsencrypt"
   tls: true
-  extraHosts:
-    - name: files.appB.com
-      path: /
-  extraTls:
-    - hosts:
-        - files.appA.com
-        - files.appB.com
-      secretName: minio-s3-tls
-
+  extraHosts: []
+  extraTls: []

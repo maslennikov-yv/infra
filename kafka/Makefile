@@ -3,7 +3,7 @@
 	pull-images tag-images push-images load-images save-images load-images-from-file clean clean-images-files \
 	check-registry setup-local-registry setup \
 	secrets-init bootstrap reset \
-	install upgrade uninstall status logs shell app-create app-print-env \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-print-env \
 	topic-create topic-alter topic-describe topic-list \
 	test-producer test-consumer test-clean test-client-properties test-create-topic \
 	check-updates
@@ -17,13 +17,16 @@ ifneq ($(KUBECONFIG),)
 export KUBECONFIG
 endif
 
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
+
 # Образы, используемые chart'ом (см. kafka/kafka/values.yaml и Chart.yaml annotations)
 KAFKA_TAG ?= 4.0.0-debian-12-r10
 OS_SHELL_TAG ?= 12-debian-12-r51
 KUBECTL_TAG ?= 1.33.4-debian-12-r0
 JMX_EXPORTER_TAG ?= 1.4.0-debian-12-r0
 
-# Source images (пытаемся скачать из bitnamilegacy; fallback на bitnami)
+# Source images (только docker.io/bitnamilegacy)
 KAFKA_IMAGE_SRC := docker.io/bitnamilegacy/kafka:$(KAFKA_TAG)
 OS_SHELL_IMAGE_SRC := docker.io/bitnamilegacy/os-shell:$(OS_SHELL_TAG)
 KUBECTL_IMAGE_SRC := docker.io/bitnamilegacy/kubectl:$(KUBECTL_TAG)
@@ -51,7 +54,7 @@ KAFKA_CLIENT_NAME := kafka-client
 # Настройки Helm release
 HELM_RELEASE_NAME ?= kafka
 CHART_PATH := kafka
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
 BOOTSTRAP_VALUES_FILE ?= values-bootstrap.yaml
 
@@ -73,7 +76,7 @@ help:
 	@echo "Управление образами (offline / microk8s registry):"
 	@echo "  make check-registry         - Проверить доступность registry $(REGISTRY)"
 	@echo "  make images-verify          - Проверить доступность всех тегов в docker.io/bitnamilegacy"
-	@echo "  make images-pull            - Скачать все образы (bitnamilegacy -> bitnami fallback)"
+	@echo "  make images-pull            - Скачать все образы (docker.io/bitnamilegacy)"
 	@echo "  make images-tag             - Тегировать образы для $(REGISTRY)/bitnami/*"
 	@echo "  make images-push            - Загрузить образы в microk8s registry"
 	@echo "  make images-sync            - pull + tag + push"
@@ -84,7 +87,7 @@ help:
 	@echo "  make images-clean-files     - Удалить сохраненные tar"
 	@echo ""
 	@echo "Values:"
-	@echo "  values-dev.yaml / values-prod.yaml - использовать registry $(REGISTRY) в чарте"
+	@echo "  values-local.yaml / values-prod.yaml - использовать registry $(REGISTRY) в чарте"
 	@echo "  values-bootstrap.yaml   - bootstrap-safe values (без authorizer)"
 	@echo ""
 	@echo "Тестирование Kafka:"
@@ -96,6 +99,8 @@ help:
 	@echo ""
 	@echo "App accounts (per-app isolation):"
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [APP_PASSWORD=...]"
+	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (имя: APP-kafka)"
+	@echo "  make app-drop APP=myapp — SCRAM, ACL и Secret приложения (⚠ y/N; SKIP_CONFIRM=1). Топики не удаляются"
 	@echo "  make app-print-env APP=myapp   - Показать рекомендуемые env/топики/группы для приложения"
 	@echo ""
 	@echo "Topics:"
@@ -182,20 +187,23 @@ reset:
 	kubectl -n $(KAFKA_NAMESPACE) scale sts/$(HELM_RELEASE_NAME)-controller --replicas=3 >/dev/null 2>&1 || true; \
 	kubectl -n $(KAFKA_NAMESPACE) rollout status sts/$(HELM_RELEASE_NAME)-controller --timeout=300s || true
 
-# Usage: make app-create APP=myapp [APP_NS=myapp] [APP_PASSWORD=...]
+# Usage: make app-create APP=myapp — kafka.password только из merged.
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@{ set -euo pipefail; \
+	INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
+	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
-	APP_PASSWORD=$${APP_PASSWORD:-}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-kafka}; \
-	if [ -z "$$APP_PASSWORD" ]; then \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (передайте APP_PASSWORD=... или установите openssl)"; exit 1; }; \
-		APP_PASSWORD=$$(openssl rand -hex 16); \
-	fi; \
+	PW_RAW=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" kafka.password || true); \
+	if [ -z "$$PW_RAW" ] || [ "$$PW_RAW" = "null" ]; then echo "✗ Для приложения \"$(APP)\" нет kafka.password в merged"; exit 1; fi; \
+	APP_PASSWORD="$$PW_RAW"; \
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then \
-		echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords (нужно включить SASL в values)"; \
+		echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; \
 		exit 1; \
 	fi; \
 	echo "Creating Kafka user/ACL for $$APP_USER (topic prefix: $(APP)., group prefix: $(APP).)"; \
@@ -230,6 +238,14 @@ EOF\n\
 		--from-literal=KAFKA_TOPIC_PREFIX="$(APP)." \
 		--from-literal=KAFKA_GROUP_PREFIX="$(APP)." \
 		>/dev/null; \
+	printf '%s\n' \
+		'kafka:' \
+		"  password: \"$$APP_PASSWORD\"" \
+		"  username: \"$$APP_USER\"" \
+		"  topic_prefix: \"$(APP).\"" \
+		"  group_prefix: \"$(APP).\"" \
+		"  bootstrap: \"$(KAFKA_BOOTSTRAP_SERVER)\"" \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
 	echo ""; \
 	echo "App connection info:"; \
 	echo "  - bootstrap: $(KAFKA_BOOTSTRAP_SERVER)"; \
@@ -239,7 +255,64 @@ EOF\n\
 	echo "  - topic prefix: $(APP)."; \
 	echo "  - group prefix: $(APP)."; \
 	echo "  - examples: /home/user/projects/infra/examples/kafka/"; \
-	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"; \
+	}
+
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [APP_USER=app_myapp] [SKIP_CONFIRM=1]
+app-drop:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-kafka}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будут удалены SCRAM-пользователь \"$$APP_USER\", ACL для префиксов топиков/групп \"$(APP).\" и Secret \"$$APP_NS/$$APP_SECRET_NAME\". Топики и данные в них не удаляются."; \
+		read -p "Вы уверены? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
+	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then \
+		echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; \
+		exit 1; \
+	fi; \
+	echo "Removing ACLs and SCRAM user $$APP_USER..."; \
+	kubectl run kafka-drop-$$(date +%s) \
+		--restart='Never' \
+		--image=$(KAFKA_IMAGE_LOCAL) \
+		--namespace=$(KAFKA_NAMESPACE) \
+		--rm -i --env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" --env="APP_USER=$$APP_USER" --command -- bash -ec "\
+			cat > /tmp/admin.properties <<'EOF'\n\
+security.protocol=SASL_PLAINTEXT\n\
+sasl.mechanism=SCRAM-SHA-256\n\
+sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
+EOF\n\
+			kafka-acls.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
+				--remove --allow-principal \"User:$${APP_USER}\" --operation Read --operation Write --operation Describe --operation Create \\\n\
+				--topic \"$(APP).\" --resource-pattern-type prefixed 2>/dev/null || true;\n\
+			kafka-acls.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
+				--remove --allow-principal \"User:$${APP_USER}\" --operation Read --operation Describe \\\n\
+				--group \"$(APP).\" --resource-pattern-type prefixed 2>/dev/null || true;\n\
+			kafka-configs.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
+				--alter --delete-config SCRAM-SHA-256 --entity-type users --entity-name \"$${APP_USER}\" 2>/dev/null || true;\n\
+		"; \
+	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
+	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" kafka || true; \
+	echo "✓ Пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены (топики с префиксом $(APP). сохранены)"
+
+# Usage: make app-show-creds APP=myapp [APP_NS=myapp]
+app-show-creds:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-kafka}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	echo "Secret: $$APP_NS/$$APP_SECRET_NAME"; \
+	echo "---"; \
+	for k in KAFKA_BOOTSTRAP_SERVER KAFKA_SECURITY_PROTOCOL KAFKA_SASL_MECHANISM KAFKA_USERNAME KAFKA_PASSWORD KAFKA_TOPIC_PREFIX KAFKA_GROUP_PREFIX; do \
+		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
+		echo "$$k=$$v"; \
+	done
 
 # Print recommended env vars/topics/groups for an app (does not reveal passwords)
 # Usage: make app-print-env APP=myapp
@@ -608,11 +681,11 @@ check-updates: ## Проверить наличие новых версий ча
 
 # Скачать все образы
 images-pull:
-	@echo "Загрузка образов (bitnamilegacy -> bitnami fallback)..."
-	@if docker pull $(KAFKA_IMAGE_SRC) 2>/dev/null; then echo "✓ $(KAFKA_IMAGE_SRC)"; else docker pull docker.io/bitnami/kafka:$(KAFKA_TAG); docker tag docker.io/bitnami/kafka:$(KAFKA_TAG) $(KAFKA_IMAGE_SRC); fi
-	@if docker pull $(OS_SHELL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(OS_SHELL_IMAGE_SRC)"; else docker pull docker.io/bitnami/os-shell:$(OS_SHELL_TAG); docker tag docker.io/bitnami/os-shell:$(OS_SHELL_TAG) $(OS_SHELL_IMAGE_SRC); fi
-	@if docker pull $(KUBECTL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(KUBECTL_IMAGE_SRC)"; else docker pull docker.io/bitnami/kubectl:$(KUBECTL_TAG); docker tag docker.io/bitnami/kubectl:$(KUBECTL_TAG) $(KUBECTL_IMAGE_SRC); fi
-	@if docker pull $(JMX_EXPORTER_IMAGE_SRC) 2>/dev/null; then echo "✓ $(JMX_EXPORTER_IMAGE_SRC)"; else docker pull docker.io/bitnami/jmx-exporter:$(JMX_EXPORTER_TAG); docker tag docker.io/bitnami/jmx-exporter:$(JMX_EXPORTER_TAG) $(JMX_EXPORTER_IMAGE_SRC); fi
+	@echo "Загрузка образов из docker.io/bitnamilegacy..."
+	@docker pull $(KAFKA_IMAGE_SRC)
+	@docker pull $(OS_SHELL_IMAGE_SRC)
+	@docker pull $(KUBECTL_IMAGE_SRC)
+	@docker pull $(JMX_EXPORTER_IMAGE_SRC)
 	@echo "✓ Все образы загружены"
 
 # Тегировать для локального registry

@@ -6,7 +6,7 @@ ingress:
   enabled: true
   className: nginx
   hosts:
-    - host: netdata.dev.local
+    - host: netdata.local.local
       paths:
         - /
 

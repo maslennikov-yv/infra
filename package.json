@@ -1,0 +1,13 @@
+{
+  "name": "infra-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@clack/core": "^0.3.5",
+    "@clack/prompts": "^0.7.0"
+  }
+}

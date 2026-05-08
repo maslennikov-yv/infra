@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
 	check-registry check-updates
 
 REGISTRY ?= localhost:32000
@@ -8,8 +8,11 @@ REGISTRY ?= localhost:32000
 NAMESPACE ?= minio
 RELEASE ?= minio
 CHART_PATH ?= minio
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
+
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 
 # Image tags pinned from chart values.yaml/Chart.yaml annotations
 MINIO_TAG ?= 2025.7.23-debian-12-r3
@@ -23,7 +26,7 @@ MINIO_CLIENT_SRC_TAG ?= $(MINIO_CLIENT_TAG)
 MINIO_OBJECT_BROWSER_SRC_TAG ?= $(MINIO_OBJECT_BROWSER_TAG)
 OS_SHELL_SRC_TAG ?= $(OS_SHELL_TAG)
 
-# Source images (bitnamilegacy -> bitnami fallback)
+# Source images (только docker.io/bitnamilegacy)
 MINIO_IMAGE_SRC := docker.io/bitnamilegacy/minio:$(MINIO_SRC_TAG)
 MINIO_CLIENT_IMAGE_SRC := docker.io/bitnamilegacy/minio-client:$(MINIO_CLIENT_SRC_TAG)
 MINIO_OBJECT_BROWSER_IMAGE_SRC := docker.io/bitnamilegacy/minio-object-browser:$(MINIO_OBJECT_BROWSER_SRC_TAG)
@@ -53,6 +56,12 @@ help:
 	@echo "  make images-verify       - проверить доступность тегов в docker.io/bitnamilegacy"
 	@echo "  make images-save         - Скачать и сохранить tar"
 	@echo "  make images-sync-from-files - docker load + tag + push в $(REGISTRY)"
+	@echo ""
+	@echo "App accounts:"
+	@echo "  make app-create APP=myapp [APP_NS=...] — см. комментарии в Makefile"
+	@echo "  make app-show-creds APP=myapp [APP_NS=...] — креды из Secret приложения (APP-minio)"
+	@echo "  make app-drop APP=myapp — пользователь, политика, Secret (⚠ y/N; SKIP_CONFIRM=1). MINIO_REMOVE_BUCKETS=1 — удалить bucket (второй запрос y/N)"
+	@echo "  make app-append APP=myapp BUCKET=... — добавить bucket к существующей учётке"
 
 ## =========================
 ## App accounts (per-app isolation)
@@ -68,7 +77,11 @@ help:
 #     [APP_PUBLIC_ENDPOINT=https://files.appA.com]
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
+	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	BUCKET=$${BUCKET:-$(APP)}; \
 	PREFIX=$${PREFIX:-}; \
 	ACCESS_MODE=$${ACCESS_MODE:-private_rw}; \
@@ -82,13 +95,18 @@ app-create:
 	RETENTION_DAYS=$${RETENTION_DAYS:-}; \
 	MINIO_SCHEME=$${MINIO_SCHEME:-http}; \
 	APP_PUBLIC_ENDPOINT=$${APP_PUBLIC_ENDPOINT:-}; \
-	ACCESS_KEY=$${ACCESS_KEY:-app_$(APP)}; \
-	SECRET_KEY=$${SECRET_KEY:-}; \
-	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-minio}; \
-	if [ -z "$$SECRET_KEY" ]; then \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (передайте SECRET_KEY=... или установите openssl)"; exit 1; }; \
-		SECRET_KEY=$$(openssl rand -hex 24); \
+	SK_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.secret_key || true); \
+	AK_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.access_key || true); \
+	ACCESS_KEY_RAW=$${ACCESS_KEY:-}; \
+	if [ -n "$$ACCESS_KEY_RAW" ] && [ "$$ACCESS_KEY_RAW" != "null" ]; then ACCESS_KEY="$$ACCESS_KEY_RAW"; \
+	elif [ -n "$$AK_MERGED" ] && [ "$$AK_MERGED" != "null" ]; then ACCESS_KEY="$$AK_MERGED"; \
+	else ACCESS_KEY=app_$(APP); fi; \
+	SECRET_KEY_RAW=$${SECRET_KEY:-}; \
+	if [ -n "$$SECRET_KEY_RAW" ]; then SECRET_KEY="$$SECRET_KEY_RAW"; else SECRET_KEY="$$SK_MERGED"; fi; \
+	if [ -z "$$SECRET_KEY" ] || [ "$$SECRET_KEY" = "null" ]; then \
+		echo "✗ Задайте minio.secret_key для $(APP) в apps/conf/$(APP)/ (или передайте SECRET_KEY=...)"; exit 1; \
 	fi; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-minio}; \
 	LIFECYCLE_B64=""; \
 	if [ "$$LIFECYCLE_JSON" != "skip" ]; then \
 		if [ ! -f "$$LIFECYCLE_JSON" ]; then echo "✗ LIFECYCLE_JSON файл не найден: $$LIFECYCLE_JSON"; exit 1; fi; \
@@ -247,7 +265,32 @@ EOF\n\
 	kubectl delete secret "minio-app-$(APP)" -n "$(NAMESPACE)" --ignore-not-found >/dev/null; \
 	printf '%s' "[{\"bucket\":\"$$BUCKET\",\"prefix\":\"$$PREFIX\",\"access_mode\":\"$$ACCESS_MODE\",\"public_read\":$${PUBLIC_READ},\"public_list\":$${PUBLIC_LIST}}]" | \
 		kubectl create secret generic "minio-app-$(APP)" -n "$(NAMESPACE)" --from-file=buckets.json=/dev/stdin >/dev/null; \
+	printf '%s\n' \
+		'minio:' \
+		"  access_key: \"$$ACCESS_KEY\"" \
+		"  secret_key: \"$$SECRET_KEY\"" \
+		"  bucket: \"$$BUCKET\"" \
+		"  prefix: \"$$PREFIX\"" \
+		"  scheme: \"$$MINIO_SCHEME\"" \
+		"  endpoint: \"$$MINIO_ENDPOINT\"" \
+		"  public_endpoint: \"$$MINIO_PUBLIC_ENDPOINT\"" \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+
+# Usage: make app-show-creds APP=myapp [APP_NS=myapp]
+app-show-creds:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-minio}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	echo "Secret: $$APP_NS/$$APP_SECRET_NAME"; \
+	echo "---"; \
+	for k in MINIO_ENDPOINT MINIO_PUBLIC_ENDPOINT AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY S3_BUCKET S3_PREFIX AWS_REGION; do \
+		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
+		echo "$$k=$$v"; \
+	done
 
 # Append one bucket/prefix to existing app account (rebuild policy from tracking secret)
 # Usage: make app-append APP=myapp BUCKET=b2 [PREFIX=data/] [ACCESS_MODE=private_rw|private_ro|private_wo] [PUBLIC_READ=true|false] [PUBLIC_LIST=true|false] [APP_PUBLIC_ENDPOINT=https://files.appA.com]
@@ -389,6 +432,77 @@ EOF\n\
 	kubectl create secret generic "minio-app-$(APP)" -n "$(NAMESPACE)" --from-file=buckets.json=/tmp/minio-buckets.json >/dev/null; \
 	echo "✓ Done (updated tracking secret: $(NAMESPACE)/minio-app-$(APP))"
 
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [ACCESS_KEY=...] [SKIP_CONFIRM=1] [MINIO_REMOVE_BUCKETS=1]
+app-drop:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-minio}; \
+	POLICY_NAME="app-$(APP)"; \
+	AK_FROM_SECRET=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d); \
+	if [ -n "$(ACCESS_KEY)" ]; then ACCESS_KEY_VAL="$(ACCESS_KEY)"; \
+	elif [ -n "$$AK_FROM_SECRET" ]; then ACCESS_KEY_VAL="$$AK_FROM_SECRET"; \
+	else ACCESS_KEY_VAL="app_$(APP)"; fi; \
+	MINIO_ENDPOINT=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.MINIO_ENDPOINT}' 2>/dev/null | base64 -d); \
+	if [ -z "$$MINIO_ENDPOINT" ]; then MINIO_ENDPOINT="http://$(RELEASE).$(NAMESPACE).svc.cluster.local:9000"; fi; \
+	ROOT_USER=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
+	ROOT_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ROOT_USER" ] || [ -z "$$ROOT_PASSWORD" ]; then \
+		echo "✗ Не удалось получить root creds из секрета $(RELEASE) в namespace $(NAMESPACE)"; exit 1; \
+	fi; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будут удалены IAM-пользователь \"$$ACCESS_KEY_VAL\", политика \"$$POLICY_NAME\", Secret \"$$APP_NS/$$APP_SECRET_NAME\" и tracking Secret \"$(NAMESPACE)/minio-app-$(APP)\"."; \
+		read -p "Вы уверены? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
+	DO_RB=0; \
+	BUCKETS_CSV=""; \
+	if [ "$(MINIO_REMOVE_BUCKETS)" = "1" ]; then \
+		if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+			echo "⚠ Дополнительно: будут удалены bucket из tracking Secret (mc rb --force), объекты будут потеряны."; \
+			read -p "Удалить bucket с данными? (y/N): " confirm2; \
+			if [ "$$confirm2" = "y" ] || [ "$$confirm2" = "Y" ]; then DO_RB=1; fi; \
+		else DO_RB=1; \
+		fi; \
+		if [ $$DO_RB -eq 1 ]; then \
+			TRACK=$$(kubectl get secret -n $(NAMESPACE) "minio-app-$(APP)" -o jsonpath='{.data.buckets\\.json}' 2>/dev/null | base64 -d); \
+			if command -v jq >/dev/null 2>&1; then \
+				BUCKETS_CSV=$$(echo "$$TRACK" | jq -r '[.[].bucket] | unique | join(",")' 2>/dev/null || true); \
+			else \
+				echo "✗ jq не найден: для MINIO_REMOVE_BUCKETS=1 установите jq или удалите bucket вручную"; exit 1; \
+			fi; \
+		fi; \
+	fi; \
+	echo "Removing MinIO user/policy..."; \
+	kubectl run minio-drop-$$(date +%s) \
+		--restart='Never' \
+		--image=$(MINIO_CLIENT_IMAGE_LOCAL) \
+		--namespace=$(NAMESPACE) \
+		--rm -i \
+		--env="ROOT_USER=$$ROOT_USER" \
+		--env="ROOT_PASSWORD=$$ROOT_PASSWORD" \
+		--env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" \
+		--env="ACCESS_KEY=$$ACCESS_KEY_VAL" \
+		--env="POLICY_NAME=$$POLICY_NAME" \
+		--env="BUCKETS_CSV=$$BUCKETS_CSV" \
+		--env="DO_RB=$$DO_RB" \
+		--command -- sh -ec "\
+			mc alias set minio \"\$$MINIO_ENDPOINT\" \"\$$ROOT_USER\" \"\$$ROOT_PASSWORD\";\n\
+			mc admin policy detach minio \"\$$POLICY_NAME\" --user \"\$$ACCESS_KEY\" 2>/dev/null || true;\n\
+			mc admin user remove minio \"\$$ACCESS_KEY\" 2>/dev/null || true;\n\
+			mc admin policy remove minio \"\$$POLICY_NAME\" 2>/dev/null || true;\n\
+			if [ \"\$$DO_RB\" = \"1\" ] && [ -n \"\$$BUCKETS_CSV\" ]; then\n\
+			  echo \"\$$BUCKETS_CSV\" | tr ',' '\\n' | while read -r b; do\n\
+			    [ -z \"\$$b\" ] && continue;\n\
+			    mc rb --force \"minio/\$$b\" 2>/dev/null || true;\n\
+			  done;\n\
+			fi;\n\
+		"; \
+	echo "Deleting Secrets..."; \
+	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	kubectl delete secret "minio-app-$(APP)" -n "$(NAMESPACE)" --ignore-not-found; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" minio || true; \
+	if [ $$DO_RB -eq 1 ]; then echo "✓ Учётка MinIO для $(APP) удалена; bucket из tracking Secret удалены (mc rb --force)"; else echo "✓ Учётка MinIO для $(APP) удалена; bucket не удалялись"; fi
+
 images-verify:
 	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
 	@command -v docker >/dev/null 2>&1 || { echo "✗ docker не установлен"; exit 1; }
@@ -453,7 +567,7 @@ install:
 	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE)
 
 upgrade:
-	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE)
+	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) --create-namespace -f $(VALUES_FILE)
 
 uninstall:
 	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)!"
@@ -489,11 +603,11 @@ shell:
 	fi
 
 images-pull:
-	@echo "Загрузка образов (bitnamilegacy -> bitnami fallback)..."
-	@if docker pull $(MINIO_IMAGE_SRC) 2>/dev/null; then echo "✓ $(MINIO_IMAGE_SRC)"; else docker pull docker.io/bitnami/minio:$(MINIO_SRC_TAG); docker tag docker.io/bitnami/minio:$(MINIO_SRC_TAG) $(MINIO_IMAGE_SRC); fi
-	@if docker pull $(MINIO_CLIENT_IMAGE_SRC) 2>/dev/null; then echo "✓ $(MINIO_CLIENT_IMAGE_SRC)"; else docker pull docker.io/bitnami/minio-client:$(MINIO_CLIENT_SRC_TAG); docker tag docker.io/bitnami/minio-client:$(MINIO_CLIENT_SRC_TAG) $(MINIO_CLIENT_IMAGE_SRC); fi
-	@if docker pull $(MINIO_OBJECT_BROWSER_IMAGE_SRC) 2>/dev/null; then echo "✓ $(MINIO_OBJECT_BROWSER_IMAGE_SRC)"; else docker pull docker.io/bitnami/minio-object-browser:$(MINIO_OBJECT_BROWSER_SRC_TAG); docker tag docker.io/bitnami/minio-object-browser:$(MINIO_OBJECT_BROWSER_SRC_TAG) $(MINIO_OBJECT_BROWSER_IMAGE_SRC); fi
-	@if docker pull $(OS_SHELL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(OS_SHELL_IMAGE_SRC)"; else docker pull docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG); docker tag docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG) $(OS_SHELL_IMAGE_SRC); fi
+	@echo "Загрузка образов из docker.io/bitnamilegacy..."
+	@docker pull $(MINIO_IMAGE_SRC)
+	@docker pull $(MINIO_CLIENT_IMAGE_SRC)
+	@docker pull $(MINIO_OBJECT_BROWSER_IMAGE_SRC)
+	@docker pull $(OS_SHELL_IMAGE_SRC)
 	@echo "✓ Все образы загружены"
 
 images-tag: images-pull

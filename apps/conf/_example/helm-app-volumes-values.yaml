@@ -1,0 +1,11 @@
+# Заготовка для репозитория ПРИЛОЖЕНИЯ (не merge с apps/registry).
+# Чарт должен читать .Values.app.volumes.* и в шаблоне Pod/Deployment включать volume + volumeMounts.
+# По умолчанию enabled: false — монтирование только после явного включения (совпадает с типичным values-local без сюрпризов).
+# Инструкция и фрагмент Helm-шаблона: ../../docs/runbooks/app-local-sources-helm.md
+app:
+  volumes:
+    enabled: false
+    # Абсолютный путь на ноде с microk8s (та же машина при однонодовом кластере).
+    # Быстро: из корня репозитория infra — `make apps-local-src-helm-sets ENV=local APP=<name>`
+    hostPath: ""
+  # При необходимости задайте в своём чарте mountPath (частый пример приложения на PHP/nginx: /var/www/html).

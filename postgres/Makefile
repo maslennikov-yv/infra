@@ -9,8 +9,11 @@ REGISTRY ?= localhost:32000
 NAMESPACE ?= postgres
 RELEASE ?= postgres
 CHART_PATH ?= postgresql
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
+
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 
 # Локальные теги, которые будут использоваться в chart'е (НЕ latest)
 POSTGRESQL_TAG ?= 18.0.0
@@ -23,7 +26,7 @@ POSTGRESQL_SRC_TAG ?= sha256-6cd40dfda6ab6c08acfe7c965231f814e7003ea3a3ff0fbad33
 OS_SHELL_SRC_TAG ?= 12-debian-12-r51
 POSTGRES_EXPORTER_SRC_TAG ?= sha256-f3c2274492470e718af1bb22bd79b5c7bca2d24058bf0ea4e595d2d22347e5ed
 
-# Source images (пытаемся скачать из bitnamilegacy; fallback на bitnami)
+# Source images (только bitnamilegacy)
 POSTGRESQL_IMAGE = bitnamilegacy/postgresql:$(POSTGRESQL_SRC_TAG)
 OS_SHELL_IMAGE = bitnamilegacy/os-shell:$(OS_SHELL_SRC_TAG)
 POSTGRES_EXPORTER_IMAGE = bitnamilegacy/postgres-exporter:$(POSTGRES_EXPORTER_SRC_TAG)
@@ -37,7 +40,7 @@ POSTGRES_EXPORTER_LOCAL = $(REGISTRY)/bitnami/postgres-exporter:$(POSTGRES_EXPOR
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	pull-images tag-images push-images load-all save-images save-all load-from-files clean clean-images clean-all \
 	check-registry list-images list-saved-images \
-	install upgrade uninstall helm-status app-create app-show-creds app-drop app-verify \
+	install upgrade uninstall helm-status app-create app-show-creds app-drop app-verify app-psql \
 	delete-pvcs \
 	troubleshoot status logs shell describe events \
 	backup backup-single view-backup view-backup-head view-backup-search list-backups restore restore-single restore-from-file \
@@ -69,6 +72,11 @@ help: ## Показать справку
 	@echo "  make describe     - Показать детальную информацию о поде"
 	@echo "  make events       - Показать последние события namespace"
 	@echo ""
+	@echo "### App accounts (per-app isolation):"
+	@echo "  make app-create APP=myapp [APP_NS=...] — БД, роль, Secret"
+	@echo "  make app-drop APP=myapp [APP_NS=...] — удалить БД, роль, Secret (⚠ запрос y/N; SKIP_CONFIRM=1 без запроса)"
+	@echo "  make app-show-creds / app-verify / app-psql APP=myapp"
+	@echo ""
 	@echo "### Бэкапы и восстановление:"
 	@echo "  make backup              - Создать бэкап всех БД"
 	@echo "  make backup-single       - Создать бэкап одной БД (DB_NAME=app_db)"
@@ -91,7 +99,8 @@ help: ## Показать справку
 	@echo "  POSTGRESQL_SRC_TAG=latest      - Source тег (скачивание)"
 	@echo "  OS_SHELL_SRC_TAG=latest        - Source тег (скачивание)"
 	@echo "  POSTGRES_EXPORTER_SRC_TAG=latest - Source тег (скачивание)"
-	@echo "  VALUES_FILE=values-dev.yaml    - Values файл для helm install/upgrade"
+	@echo "  VALUES_FILE=values-local.yaml    - Values файл для helm install/upgrade"
+	@echo "  SKIP_CONFIRM=1                 - для app-drop: не спрашивать подтверждение (CI/скрипты)"
 
 check-registry: ## Проверить доступность microk8s registry
 	@echo "Проверка доступности registry $(REGISTRY)..."
@@ -229,17 +238,27 @@ delete-pvcs:
 ## =========================
 
 # Usage: make app-create APP=myapp [APP_NS=myapp] [POSTGRES_ADMIN_PASSWORD=...]
+# Требует apps-merge-config + postgres.password для APP (см. apps/conf/<APP>/).
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@{ set -euo pipefail; \
+	INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
+	MG="$${APPS_MERGED_FILE:-}"; \
+	CLEAN_MG=0; \
+	if [ -z "$$MG" ]; then \
+		MG=$$(mktemp); CLEAN_MG=1; \
+		"$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; \
+	fi; \
+	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	APP_DB=$${APP_DB:-app_$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-postgres}; \
-	APP_PASSWORD=$${APP_PASSWORD:-}; \
-	if [ -z "$$APP_PASSWORD" ]; then \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (передайте APP_PASSWORD=... или установите openssl)"; exit 1; }; \
-		APP_PASSWORD=$$(openssl rand -hex 16); \
+	PW_RAW=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" postgres.password || true); \
+	if [ -z "$$PW_RAW" ] || [ "$$PW_RAW" = "null" ]; then \
+		echo "✗ Для приложения \"$(APP)\" нет postgres.password во merged конфигурации (см. apps/conf/$(APP)/ и apps/registry.yaml)"; exit 1; \
 	fi; \
+	APP_PASSWORD="$$PW_RAW"; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"; \
@@ -258,7 +277,16 @@ app-create:
 		--from-literal=PGPASSWORD="$$APP_PASSWORD" \
 		--from-literal=DATABASE_URL="postgresql://$$APP_USER:$$APP_PASSWORD@$$PG_HOST:$$PG_PORT/$$APP_DB?sslmode=disable" \
 		>/dev/null; \
-	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+	printf '%s\n' \
+		'postgres:' \
+		"  password: \"$$APP_PASSWORD\"" \
+		"  username: \"$$APP_USER\"" \
+		"  database: \"$$APP_DB\"" \
+		"  host: \"$$PG_HOST\"" \
+		"  port: $$PG_PORT" \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"; \
+	}
 
 app-show-creds:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=mcp)"; exit 1; fi
@@ -277,13 +305,18 @@ app-show-creds:
 	URL=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.DATABASE_URL}' 2>/dev/null | base64 -d); \
 	if echo "$$URL" | grep -q 'sslmode='; then echo "DATABASE_URL=$$URL"; elif echo "$$URL" | grep -q '?'; then echo "DATABASE_URL=$$URL\&sslmode=disable"; else echo "DATABASE_URL=$$URL?sslmode=disable"; fi
 
-# Usage: make app-drop APP=myapp [APP_NS=myapp] [POSTGRES_ADMIN_PASSWORD=...]
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [POSTGRES_ADMIN_PASSWORD=...] [SKIP_CONFIRM=1]
 app-drop:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
 	@APP_NS=$${APP_NS:-$(APP)}; \
 	APP_DB=$${APP_DB:-app_$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-postgres}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будут безвозвратно удалены БД \"$$APP_DB\", роль \"$$APP_USER\" и Secret \"$$APP_NS/$$APP_SECRET_NAME\"."; \
+		read -p "Вы уверены? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"; \
@@ -300,6 +333,7 @@ app-drop:
 	kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c "DROP ROLE IF EXISTS \"$$APP_USER\";"; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" postgres || true; \
 	echo "✓ БД $$APP_DB, роль $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 # Usage: make app-verify APP=mcp
@@ -320,6 +354,20 @@ app-verify:
 		echo "✗ Подключение не удалось (пароль или роль не совпадают)"; exit 1; \
 	fi
 
+# Usage: make app-psql APP=mcp — интерактивный psql под ролью приложения
+app-psql:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-psql APP=mcp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_DB=$${APP_DB:-app_$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-postgres}; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	APP_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.PGPASSWORD}' 2>/dev/null | base64 -d); \
+	if [ -z "$$APP_PASSWORD" ]; then echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS (сначала: make app-create APP=$(APP) ENV=$(ENV))"; exit 1; fi; \
+	echo "Подключение к БД $$APP_DB как $$APP_USER (\\q для выхода)..."; \
+	kubectl exec -it "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$APP_PASSWORD" psql -U "$$APP_USER" -d "$$APP_DB"
+
 ## =========================
 ## Images (унифицированные targets)
 ## =========================
@@ -335,40 +383,19 @@ images-clean: clean
 images-clean-files: clean-images
 
 pull-postgresql: ## Скачать образ PostgreSQL
-	@echo "Скачивание образа PostgreSQL..."
-	@if docker pull $(POSTGRESQL_IMAGE) 2>/dev/null; then \
-		echo "✓ Загружен с bitnamilegacy"; \
-	elif docker pull bitnami/postgresql:$(POSTGRESQL_SRC_TAG); then \
-		echo "✓ Загружен с bitnami (fallback)"; \
-		docker tag bitnami/postgresql:$(POSTGRESQL_SRC_TAG) $(POSTGRESQL_IMAGE); \
-	else \
-		echo "✗ Ошибка: образ не найден ни в bitnamilegacy, ни в bitnami"; \
-		exit 1; \
-	fi
+	@echo "Скачивание образа PostgreSQL из bitnamilegacy..."
+	@docker pull $(POSTGRESQL_IMAGE)
+	@echo "✓ $(POSTGRESQL_IMAGE)"
 
 pull-os-shell: ## Скачать образ os-shell
-	@echo "Скачивание образа os-shell..."
-	@if docker pull $(OS_SHELL_IMAGE) 2>/dev/null; then \
-		echo "✓ Загружен с bitnamilegacy"; \
-	elif docker pull bitnami/os-shell:$(OS_SHELL_SRC_TAG); then \
-		echo "✓ Загружен с bitnami (fallback)"; \
-		docker tag bitnami/os-shell:$(OS_SHELL_SRC_TAG) $(OS_SHELL_IMAGE); \
-	else \
-		echo "✗ Ошибка: образ не найден ни в bitnamilegacy, ни в bitnami"; \
-		exit 1; \
-	fi
+	@echo "Скачивание образа os-shell из bitnamilegacy..."
+	@docker pull $(OS_SHELL_IMAGE)
+	@echo "✓ $(OS_SHELL_IMAGE)"
 
 pull-postgres-exporter: ## Скачать образ postgres-exporter
-	@echo "Скачивание образа postgres-exporter..."
-	@if docker pull $(POSTGRES_EXPORTER_IMAGE) 2>/dev/null; then \
-		echo "✓ Загружен с bitnamilegacy"; \
-	elif docker pull bitnami/postgres-exporter:$(POSTGRES_EXPORTER_SRC_TAG); then \
-		echo "✓ Загружен с bitnami (fallback)"; \
-		docker tag bitnami/postgres-exporter:$(POSTGRES_EXPORTER_SRC_TAG) $(POSTGRES_EXPORTER_IMAGE); \
-	else \
-		echo "✗ Ошибка: образ не найден ни в bitnamilegacy, ни в bitnami"; \
-		exit 1; \
-	fi
+	@echo "Скачивание образа postgres-exporter из bitnamilegacy..."
+	@docker pull $(POSTGRES_EXPORTER_IMAGE)
+	@echo "✓ $(POSTGRES_EXPORTER_IMAGE)"
 
 pull-images: pull-postgresql pull-os-shell pull-postgres-exporter ## Скачать все образы
 
@@ -404,27 +431,21 @@ push-images: push-postgresql push-os-shell push-postgres-exporter ## Загру�
 # Использует те же теги что и в chart (registry-1.docker.io/bitnami/*)
 import-postgresql: pull-postgresql ## Импортировать образ PostgreSQL напрямую в containerd
 	@echo "Импорт $(POSTGRESQL_IMAGE) в microk8s containerd..."
-	@docker save $(POSTGRESQL_IMAGE) | microk8s ctr image import - 2>/dev/null || \
-		docker save bitnami/postgresql:$(POSTGRESQL_TAG) | microk8s ctr image import -
+	@docker save $(POSTGRESQL_IMAGE) | microk8s ctr image import -
 	@echo "Тегирование для использования в кластере (registry-1.docker.io/bitnami/postgresql:$(POSTGRESQL_TAG))..."
-	@microk8s ctr image tag $(POSTGRESQL_IMAGE) registry-1.docker.io/bitnami/postgresql:$(POSTGRESQL_TAG) 2>/dev/null || \
-		microk8s ctr image tag bitnami/postgresql:$(POSTGRESQL_TAG) registry-1.docker.io/bitnami/postgresql:$(POSTGRESQL_TAG) 2>/dev/null || true
+	@microk8s ctr image tag $(POSTGRESQL_IMAGE) registry-1.docker.io/bitnami/postgresql:$(POSTGRESQL_TAG)
 
 import-os-shell: pull-os-shell ## Импортировать образ os-shell напрямую в containerd
 	@echo "Импорт $(OS_SHELL_IMAGE) в microk8s containerd..."
-	@docker save $(OS_SHELL_IMAGE) | microk8s ctr image import - 2>/dev/null || \
-		docker save bitnami/os-shell:$(OS_SHELL_TAG) | microk8s ctr image import -
+	@docker save $(OS_SHELL_IMAGE) | microk8s ctr image import -
 	@echo "Тегирование для использования в кластере (registry-1.docker.io/bitnami/os-shell:$(OS_SHELL_TAG))..."
-	@microk8s ctr image tag $(OS_SHELL_IMAGE) registry-1.docker.io/bitnami/os-shell:$(OS_SHELL_TAG) 2>/dev/null || \
-		microk8s ctr image tag bitnami/os-shell:$(OS_SHELL_TAG) registry-1.docker.io/bitnami/os-shell:$(OS_SHELL_TAG) 2>/dev/null || true
+	@microk8s ctr image tag $(OS_SHELL_IMAGE) registry-1.docker.io/bitnami/os-shell:$(OS_SHELL_TAG)
 
 import-postgres-exporter: pull-postgres-exporter ## Импортировать образ postgres-exporter напрямую в containerd
 	@echo "Импорт $(POSTGRES_EXPORTER_IMAGE) в microk8s containerd..."
-	@docker save $(POSTGRES_EXPORTER_IMAGE) | microk8s ctr image import - 2>/dev/null || \
-		docker save bitnami/postgres-exporter:$(POSTGRES_EXPORTER_TAG) | microk8s ctr image import -
+	@docker save $(POSTGRES_EXPORTER_IMAGE) | microk8s ctr image import -
 	@echo "Тегирование для использования в кластере (registry-1.docker.io/bitnami/postgres-exporter:$(POSTGRES_EXPORTER_TAG))..."
-	@microk8s ctr image tag $(POSTGRES_EXPORTER_IMAGE) registry-1.docker.io/bitnami/postgres-exporter:$(POSTGRES_EXPORTER_TAG) 2>/dev/null || \
-		microk8s ctr image tag bitnami/postgres-exporter:$(POSTGRES_EXPORTER_TAG) registry-1.docker.io/bitnami/postgres-exporter:$(POSTGRES_EXPORTER_TAG) 2>/dev/null || true
+	@microk8s ctr image tag $(POSTGRES_EXPORTER_IMAGE) registry-1.docker.io/bitnami/postgres-exporter:$(POSTGRES_EXPORTER_TAG)
 
 import-images: import-postgresql import-os-shell import-postgres-exporter ## Импортировать все образы в containerd
 

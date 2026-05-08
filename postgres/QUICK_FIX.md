@@ -135,7 +135,7 @@ helm uninstall postgres -n postgres
 kubectl delete pvc -l app.kubernetes.io/name=postgresql -n postgres
 
 # 3. Переустановить
-helm install postgres ./postgresql -f values-custom.yaml -n postgres
+helm install postgres ./postgresql -f values-local.yaml -n postgres
 ```
 
 ## 📋 Чеклист диагностики

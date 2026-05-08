@@ -1,26 +1,41 @@
 .PHONY: help \
+	status top-totals \
 	images-save images-push images-push-remote up diff down \
 	kafka-verify rabbitmq-verify \
 	postgres-verify redis-verify minio-verify clickhouse-verify \
 	check-updates postgres-check-updates redis-check-updates kafka-check-updates \
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
-	pg-app-create pg-app-show-creds pg-app-drop redis-app-create kafka-app-create minio-app-create clickhouse-app-create rabbitmq-app-create \
+	pg-app-create pg-app-show-creds pg-app-psql pg-app-drop redis-app-create redis-app-show-creds redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-drop minio-app-create minio-app-show-creds minio-app-drop clickhouse-app-create clickhouse-app-show-creds clickhouse-app-drop rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-drop \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
-	postgres-status postgres-logs postgres-shell postgres-up postgres-diff postgres-down \
+	apps-merge-print apps-local-src-helm-sets apps-apply apps-conf-template apps-src-clone app-local-src-hostpath-mount \
+	postgres-status postgres-logs postgres-shell postgres-db postgres-up postgres-diff postgres-down \
 	redis-status redis-logs redis-shell redis-up redis-diff redis-down \
 	clickhouse-status clickhouse-logs clickhouse-shell clickhouse-up clickhouse-diff clickhouse-down \
 	rabbitmq-status rabbitmq-logs rabbitmq-shell rabbitmq-up rabbitmq-diff rabbitmq-down \
 	kafka-bootstrap kafka-reset kafka-status kafka-logs kafka-shell kafka-up kafka-diff kafka-down \
 	minio-status minio-logs minio-shell minio-up minio-diff minio-down \
 	minio-app-append \
-	env-new env-backup kubeconfig-fetch kubeconfig-info microk8s-setup microk8s-uninstall ssh \
+	env-new env-backup kubeconfig-fetch kubeconfig-microk8s-local kubeconfig-info microk8s-setup microk8s-uninstall ssh \
+	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply \
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
-	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod
+	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
+	infra-control-parity-check infra-lab
 
 # Do not print "Entering/Leaving directory ..." on recursive make
 MAKEFLAGS += --no-print-directory
 
-ENV ?= dev
+ENV ?= local
+
+# Реестр приложений: apps/registry.yaml; секреты — apps/conf/<app>/*.yaml (не в git).
+REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+APPS_REGISTRY ?= $(REPO_ROOT)/apps/registry.yaml
+
+ifneq ($(wildcard $(REPO_ROOT)/.tools/yq-mikefarah),)
+YQ ?= $(REPO_ROOT)/.tools/yq-mikefarah
+else
+YQ ?= yq
+endif
+export YQ
 
 # per-environment overrides (SSH_HOST/SSH_KEY/KUBECONFIG/REGISTRY/etc)
 -include environments/$(ENV).mk
@@ -29,9 +44,13 @@ SERVICES := postgres kafka redis minio clickhouse rabbitmq
 
 REGISTRY ?= localhost:32000
 
+# k8s-port-expose: локальный манифест TCP (пусто → k8s-port-expose/ports-$(ENV).yaml)
+PORT_EXPOSE_CONFIG ?=
+
 KUBECONFIG ?= k8s/config/$(ENV)
-# Always export an absolute kubeconfig path (important for `make -C <service> ...`)
+# Always use an absolute kubeconfig path (important for `make -C <service> ...`)
 KUBECONFIG := $(abspath $(KUBECONFIG))
+# Всегда экспортируем путь: при отсутствии файла kubectl завершится с явной ошибкой (без тихого ~/.kube/config).
 export KUBECONFIG
 
 SSH_USER ?= ubuntu
@@ -44,6 +63,9 @@ REMOTE ?= $(SSH_USER)@$(SSH_HOST)
 SSH := ssh $(SSH_OPTS) -p $(SSH_PORT) -i $(SSH_KEY)
 SCP := scp $(SSH_OPTS) -P $(SSH_PORT) -i $(SSH_KEY)
 
+# Локальный snap MicroK8s: команда для `config` (при ошибке прав: MICROK8S_CMD='sudo microk8s' или группа microk8s).
+MICROK8S_CMD ?= microk8s
+
 # ANSI color codes
 CYAN := \033[0;36m
 GREEN := \033[0;32m
@@ -54,19 +76,39 @@ RED := \033[0;31m
 BOLD := \033[1m
 RESET := \033[0m
 
+infra-lab:
+	@node "$(REPO_ROOT)/scripts/infra-lab.mjs"
+
+infra-control-parity-check:
+	@node "$(REPO_ROOT)/docs/infra-control/parity-check.mjs"
+
 help:
 	@echo "$(BOLD)$(GREEN)infra$(RESET)"
 	@echo ""
+	@echo "$(BOLD)$(GREEN)С чего начать:$(RESET)"
+	@echo "  Точка входа — $(YELLOW)Бутстрап$(RESET) (TUI: $(YELLOW)make infra-lab$(RESET)): для удалённой среды настройте SSH ($(YELLOW)environments/<ENV>.mk$(RESET), $(YELLOW)make ssh ENV=...$(RESET)) и получите kubeconfig ($(YELLOW)make kubeconfig-fetch ...$(RESET)); для работы только с локальным кластером на этой машине достаточно $(YELLOW)make kubeconfig-microk8s-local ENV=...$(RESET) (без SSH)."
+	@echo ""
 	@echo "$(BOLD)$(GREEN)ENV:$(RESET)"
-	@echo "  make <target> $(YELLOW)ENV=dev|prod|staging$(RESET) ..."
+	@echo "  make <target> $(YELLOW)ENV=local|prod|staging$(RESET) ..."
+	@echo "  make status $(YELLOW)ENV=$(ENV)$(RESET)              - ноды, поды (все namespace), helm list -A"
+	@echo "  make top-totals $(YELLOW)ENV=$(ENV)$(RESET)          - CPU/память: занято и доступно (allocatable; Metrics API; jq)"
+	@echo "  make infra-lab          - интерактивное меню (npm install → node scripts/infra-lab.mjs)"
+	@echo "  make infra-control-parity-check — сверить цели Makefile с docs/infra-control/targets.json"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Images:$(RESET)"
 	@echo "  make images-save $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)SERVICE=redis$(RESET)] - Скачать/сохранить tar во всех сервисах (или только SERVICE)"
 	@echo "  make images-push $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)SERVICE=redis$(RESET)] - docker load -> tag -> push в registry (см. REGISTRY в сервисах)"
 	@echo "  make images-push-remote $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)SERVICE=redis$(RESET)] - scp *.tar на удалённый сервер + docker load/tag/push в registry на сервере"
 	@echo ""
-	@echo "$(BOLD)$(GREEN)Helmfile:$(RESET)"
-	@echo "  make up $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=postgres,redis$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=kafka,clickhouse$(RESET)] - helmfile apply"
+	@echo "$(BOLD)$(GREEN)Apps конфигурация:$(RESET)"
+	@echo "  make apps-merge-print $(YELLOW)[APPS_REGISTRY=...$(RESET)] $(YELLOW)[YQ=path/to/yq$(RESET)] - сырый merge (stdout, mikefarah yq v4)"
+	@echo "  make apps-local-src-helm-sets $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) — stdout: $(YELLOW)--set$(RESET) для $(YELLOW)app.volumes.$(RESET)* (hostPath=$(YELLOW)apps/src/<APP>$(RESET)) в вашем helm upgrade приложения"
+	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] - учётки из apps/conf; по умолчанию останов на первой ошибке make"
+	@echo "  make apps-conf-template $(YELLOW)APP=myapp$(RESET) $(YELLOW)[SKIP_REGISTRY=1$(RESET)] - шаблон apps/conf из apps/conf/_example + по умолчанию запись в registry (enabled: false)"
+	@echo "  make apps-src-clone $(YELLOW)APP=<name>$(RESET) [$(YELLOW)APPS_REGISTRY=...$(RESET)] - git clone по repo_url (+ repo_branch) из registry → apps/src/<APP>"
+	@echo "  make app-local-src-hostpath-mount $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) $(YELLOW)APP_LOCAL_K8S_WORKLOAD=<kind>/<имя>$(RESET) [$(YELLOW)pod/…|deployment/…|sts/…|ds/…$(RESET)] — hostPath $(YELLOW)apps/src/<APP>$(RESET); initContainers+containers; [$(YELLOW)APP_LOCAL_SRC_READ_ONLY=1$(RESET)] [$(YELLOW)APP_LOCAL_SRC_CONTAINER=…$(RESET)]"
+	@echo ""
+	@echo "  make up $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=postgres,redis$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=kafka,clickhouse$(RESET)] [$(YELLOW)SKIP_APPS_APPLY=1$(RESET)] — helmfile apply, затем apps-apply из apps/registry.yaml и apps/conf/..."
 	@echo "  make diff $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=postgres,redis$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=kafka,clickhouse$(RESET)] - helmfile diff"
 	@echo "  make down $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=postgres,redis$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=kafka,clickhouse$(RESET)] - helmfile destroy"
 	@echo ""
@@ -95,12 +137,24 @@ help:
 	@echo "$(BOLD)$(GREEN)App accounts (per-app isolation):$(RESET)"
 	@echo "  make pg-app-create    $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)] [$(YELLOW)POSTGRES_ADMIN_PASSWORD=...$(RESET)]"
 	@echo "  make pg-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - показать креды из Secret app-postgres"
-	@echo "  make pg-app-drop      $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - удалить БД, роль и Secret приложения"
-	@echo "  make redis-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
+	@echo "  make pg-app-psql      $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - интерактивный psql под ролью приложения"
+	@echo "  make pg-app-drop      $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - удалить БД, роль и Secret (⚠ y/N; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
+	@echo "  make postgres-db      $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - открыть psql под ролью приложения (алиас pg-app-psql)"
+	@echo "  make redis-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)] [$(YELLOW)REDIS_DB=0$(RESET)] [$(YELLOW)APPS_REGISTRY=...$(RESET)] — следующий свободный redis_db из registry или REDIS_DB"
+	@echo "  make redis-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - показать креды из Secret app-redis (REDIS_KEY_PREFIX, REDIS_DB)"
+	@echo "  make redis-app-drop     $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - ACL + Secret (⚠ y/N; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
 	@echo "  make kafka-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
+	@echo "  make kafka-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
+	@echo "  make kafka-app-drop     $(YELLOW)APP=myapp$(RESET) - SCRAM, ACL, Secret (топики не удаляются; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
 	@echo "  make minio-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
+	@echo "  make minio-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
+	@echo "  make minio-app-drop     $(YELLOW)APP=myapp$(RESET) [$(YELLOW)MINIO_REMOVE_BUCKETS=1$(RESET)] - пользователь/политика/Secret; bucket — второй запрос"
 	@echo "  make clickhouse-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
+	@echo "  make clickhouse-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
+	@echo "  make clickhouse-app-drop $(YELLOW)APP=myapp$(RESET) - DROP DATABASE/USER + Secret"
 	@echo "  make rabbitmq-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
+	@echo "  make rabbitmq-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
+	@echo "  make rabbitmq-app-drop  $(YELLOW)APP=myapp$(RESET) - vhost, пользователь, Secret"
 	@echo "  make minio-app-append $(YELLOW)APP=myapp BUCKET=b2$(RESET) [$(YELLOW)PREFIX=data/$(RESET)] [$(YELLOW)ACCESS_MODE=...$(RESET)] [$(YELLOW)PUBLIC_READ=true$(RESET)] [$(YELLOW)PUBLIC_LIST=true$(RESET)]"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Kafka topics:$(RESET)"
@@ -135,10 +189,20 @@ help:
 	@echo "  make rabbitmq-shell $(YELLOW)ENV=$(ENV)$(RESET)      - shell в контейнер RabbitMQ"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Kubeconfig/SSH:$(RESET)"
-	@echo "  make kubeconfig-fetch $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)SSH_HOST=... SSH_KEY=...$(RESET)  - скачать kubeconfig (microk8s config)"
+	@echo "  make kubeconfig-fetch $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)SSH_HOST=... SSH_KEY=...$(RESET)  - kubeconfig с удалённой ноды по SSH (microk8s config)"
+	@echo "  make kubeconfig-microk8s-local $(YELLOW)ENV=$(ENV)$(RESET)  - kubeconfig локального MicroK8s на этой машине (без SSH; см. MICROK8S_CMD)"
 	@echo "  make kubeconfig-info $(YELLOW)ENV=$(ENV)$(RESET)  - kubectl cluster-info"
 	@echo "  make microk8s-setup $(YELLOW)ENV=$(ENV)$(RESET)   - проверить/установить microk8s, необходимые модули и docker на удалённом сервере"
 	@echo "  make microk8s-uninstall $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)REMOVE_DOCKER=1$(RESET)] - удалить microk8s (и опционально docker) на удалённом сервере"
+	@echo ""
+	@echo "$(BOLD)$(GREEN)k8s port expose (microk8s ingress TCP):$(RESET)"
+	@echo "  make k8s-port-expose-show $(YELLOW)ENV=$(ENV)$(RESET) - DaemonSet + TCP ConfigMap (ingress)"
+	@echo "  make k8s-port-expose-patch $(YELLOW)ENV=$(ENV) LAYER=tcp HOST_PORT=1883 BACKEND=myns/svc:1883$(RESET)"
+	@echo "  make k8s-port-expose-patch $(YELLOW)ENV=$(ENV) LAYER=tcp HOST_PORT=1883 RM=1$(RESET) - удалить маршрут в ConfigMap"
+	@echo "  make k8s-port-expose-patch $(YELLOW)ENV=$(ENV) LAYER=hostport OP=add HOST_PORT=1883 CONTAINER_PORT=1883 PORT_NAME=mqtt$(RESET)"
+	@echo "  make k8s-port-expose-patch $(YELLOW)ENV=$(ENV) LAYER=hostport OP=rm HOST_PORT=1883$(RESET) - убрать hostPort из DS"
+	@echo "  make k8s-port-expose-apply $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)PORT_EXPOSE_CONFIG=...$(RESET)] — применить $(YELLOW)k8s-port-expose/ports-$(ENV).yaml$(RESET) (или указанный файл)"
+	@echo "  опция: $(YELLOW)DRY_RUN=client|server$(RESET) — проверка без записи (server = admission)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Environment skeleton:$(RESET)"
 	@echo "  make env-new $(YELLOW)ENV=staging$(RESET)        - создать рыбу окружения (mk/yaml/kubeconfig/values)"
@@ -315,23 +379,92 @@ clickhouse-check-updates:
 rabbitmq-check-updates:
 	@$(MAKE) -C rabbitmq check-updates
 
+apps-merge-print:
+	@"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)"
+
+apps-local-src-helm-sets:
+	@test "$(ENV)" = "local" || (echo '✗ apps-local-src-helm-sets только при ENV=local' >&2; exit 1)
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@ENV="$(ENV)" REPO_ROOT="$(REPO_ROOT)" APP="$(APP)" APPS_REGISTRY="$(APPS_REGISTRY)" YQ="$(YQ)" \
+		"$(REPO_ROOT)/scripts/apps-local-src-helm-sets.sh"
+
+apps-apply:
+	@APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" \
+	ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" \
+	APPS_APPLY_CONTINUE_ON_ERROR="$(APPS_APPLY_CONTINUE_ON_ERROR)" \
+	"$(REPO_ROOT)/scripts/apps-apply.sh"
+
+# Usage: make apps-conf-template APP=myapp [SKIP_REGISTRY=1]
+apps-conf-template:
+	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@SKIP_REGISTRY="$(SKIP_REGISTRY)" "$(REPO_ROOT)/scripts/apps-conf-template.sh" "$(REPO_ROOT)" "$(APP)"
+
+# Клон исходников в apps/src/<APP> по полям repo_url / repo_branch в registry (см. apps/registry.yaml).
+apps-src-clone:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name> (поле name из apps/registry.yaml)' >&2; exit 1)
+	@url=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | .repo_url // ""' "$(APPS_REGISTRY)"); \
+	br=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | .repo_branch // ""' "$(APPS_REGISTRY)"); \
+	if [ -z "$$url" ]; then echo "✗ Для APP=$(APP) в registry не задан repo_url" >&2; exit 1; fi; \
+	"$(REPO_ROOT)/scripts/apps-src-clone.sh" "$(REPO_ROOT)" "$(APP)" "$$url" "$$br"
+
+app-local-src-hostpath-mount:
+	@test "$(ENV)" = "local" || (echo '✗ app-local-src-hostpath-mount только при ENV=local' >&2; exit 1)
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@test -n "$(APP_LOCAL_K8S_WORKLOAD)" || (echo '✗ Укажите APP_LOCAL_K8S_WORKLOAD=deployment/<имя> (или statefulset|daemonset)' >&2; exit 1)
+	@ENV="$(ENV)" REPO_ROOT="$(REPO_ROOT)" APP="$(APP)" APPS_REGISTRY="$(APPS_REGISTRY)" \
+		APPS_MERGED_FILE="$(APPS_MERGED_FILE)" APP_NS="$(APP_NS)" \
+		APP_LOCAL_K8S_WORKLOAD="$(APP_LOCAL_K8S_WORKLOAD)" \
+		APP_LOCAL_SRC_MOUNT_PATH="$(APP_LOCAL_SRC_MOUNT_PATH)" \
+		APP_LOCAL_SRC_CONTAINER="$(APP_LOCAL_SRC_CONTAINER)" \
+		APP_LOCAL_SRC_READ_ONLY="$(APP_LOCAL_SRC_READ_ONLY)" \
+		"$(REPO_ROOT)/scripts/app-local-src-hostpath-mount.sh"
+
 pg-app-create:
-	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"
+	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)" APPS_REGISTRY="$(APPS_REGISTRY)"
+postgres-db:
+	@$(MAKE) pg-app-psql APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+pg-app-psql:
+	@$(MAKE) -C postgres app-psql APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 pg-app-show-creds:
 	@$(MAKE) -C postgres app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 pg-app-drop:
-	@$(MAKE) -C postgres app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"
+	@$(MAKE) -C postgres app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 pg-app-verify:
 	@$(MAKE) -C postgres app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
+# Не передаём REDIS_AUTH_* с пустым значением — иначе затираются дефолты redis/Makefile (?=).
 redis-app-create:
-	@$(MAKE) -C redis app-create APP="$(APP)" APP_NS="$(APP_NS)"
+	@$(MAKE) -C redis app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)" \
+		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
+		$(if $(strip $(REDIS_AUTH_SECRET_PASSWORD_KEY)),REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)") \
+		$(if $(filter-out undefined,$(origin REDIS_DB)),REDIS_DB="$(REDIS_DB)")
+redis-app-show-creds:
+	@$(MAKE) -C redis app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+
+redis-app-drop:
+	@$(MAKE) -C redis app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)" \
+		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
+		$(if $(strip $(REDIS_AUTH_SECRET_PASSWORD_KEY)),REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)") \
+		$(if $(strip $(APP_USER)),APP_USER="$(APP_USER)")
 
 kafka-app-create:
-	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)"
+	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+kafka-app-show-creds:
+	@$(MAKE) -C kafka app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" KUBECONFIG="$(KUBECONFIG)"
+
+kafka-app-drop:
+	@$(MAKE) -C kafka app-drop APP="$(APP)" APP_NS="$(APP_NS)" APP_USER="$(APP_USER)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
 rabbitmq-app-create:
-	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)"
+	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+rabbitmq-app-show-creds:
+	@$(MAKE) -C rabbitmq app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+
+rabbitmq-app-drop:
+	@$(MAKE) -C rabbitmq app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		APP_VHOST="$(APP_VHOST)" APP_USER="$(APP_USER)" APP_SECRET_NAME="$(APP_SECRET_NAME)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
 ## =========================
 ## Per-service diagnostics (status/logs/shell)
@@ -420,7 +553,7 @@ kafka-topic-list:
 	@$(MAKE) -C kafka topic-list PREFIX="$(PREFIX)"
 
 minio-app-create:
-	@$(MAKE) -C minio app-create \
+	@$(MAKE) -C minio app-create APPS_REGISTRY="$(APPS_REGISTRY)" \
 		APP="$(APP)" APP_NS="$(APP_NS)" \
 		BUCKET="$(BUCKET)" PREFIX="$(PREFIX)" \
 		ACCESS_MODE="$(ACCESS_MODE)" PUBLIC_READ="$(PUBLIC_READ)" PUBLIC_LIST="$(PUBLIC_LIST)" \
@@ -429,10 +562,27 @@ minio-app-create:
 		ACCESS_KEY="$(ACCESS_KEY)" SECRET_KEY="$(SECRET_KEY)" MINIO_SCHEME="$(MINIO_SCHEME)" \
 		APP_PUBLIC_ENDPOINT="$(APP_PUBLIC_ENDPOINT)"
 
+minio-app-show-creds:
+	@$(MAKE) -C minio app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" APP_SECRET_NAME="$(APP_SECRET_NAME)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+
+minio-app-drop:
+	@$(MAKE) -C minio app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		ACCESS_KEY="$(ACCESS_KEY)" APP_SECRET_NAME="$(APP_SECRET_NAME)" SKIP_CONFIRM="$(SKIP_CONFIRM)" MINIO_REMOVE_BUCKETS="$(MINIO_REMOVE_BUCKETS)"
+
 clickhouse-app-create:
 	@$(MAKE) -C clickhouse app-create \
-		APP="$(APP)" APP_NS="$(APP_NS)" DB="$(DB)" APP_USER="$(APP_USER)" APP_PASSWORD="$(APP_PASSWORD)" \
-		APP_SECRET_NAME="$(APP_SECRET_NAME)" ADMIN_USER="$(ADMIN_USER)"
+		APP="$(APP)" APP_NS="$(APP_NS)" DB="$(DB)" APP_USER="$(APP_USER)" \
+		APP_SECRET_NAME="$(APP_SECRET_NAME)" ADMIN_USER="$(ADMIN_USER)" \
+		KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+clickhouse-app-show-creds:
+	@$(MAKE) -C clickhouse app-show-creds \
+		APP="$(APP)" APP_NS="$(APP_NS)" APP_SECRET_NAME="$(APP_SECRET_NAME)" KUBECONFIG="$(KUBECONFIG)"
+
+clickhouse-app-drop:
+	@$(MAKE) -C clickhouse app-drop \
+		APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		DB="$(DB)" APP_USER="$(APP_USER)" APP_SECRET_NAME="$(APP_SECRET_NAME)" ADMIN_USER="$(ADMIN_USER)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
 minio-app-append:
 	@$(MAKE) -C minio app-append \
@@ -465,7 +615,10 @@ up:
 			--from-literal=rabbitmq-erlang-cookie="$$RABBITMQ_COOKIE" \
 			>/dev/null; \
 	fi; \
-	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply
+	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
+	if [ "$(SKIP_APPS_APPLY)" != "1" ]; then \
+		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" APPS_APPLY_CONTINUE_ON_ERROR="$(APPS_APPLY_CONTINUE_ON_ERROR)" "$(REPO_ROOT)/scripts/apps-apply.sh"; \
+	fi
 
 diff:
 	@REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d || true); \
@@ -545,13 +698,51 @@ kubeconfig-fetch:
 	@chmod 600 "$(KUBECONFIG)"
 	@echo "✓ Saved: $(KUBECONFIG)"
 
+kubeconfig-microk8s-local:
+	@mkdir -p k8s/config
+	@echo "Local MicroK8s ($(MICROK8S_CMD)) -> $(KUBECONFIG)"
+	@$(MICROK8S_CMD) config > "$(KUBECONFIG)"
+	@chmod 600 "$(KUBECONFIG)"
+	@echo "✓ Saved: $(KUBECONFIG)"
+
 kubeconfig-info:
 	@if [ ! -f "$(KUBECONFIG)" ]; then \
 		echo "✗ Файл $(KUBECONFIG) не найден"; \
-		echo "  Сначала выполните: make kubeconfig-fetch ENV=$(ENV)"; \
+		echo "  Сначала: make kubeconfig-fetch ENV=$(ENV) … или make kubeconfig-microk8s-local ENV=$(ENV)"; \
 		exit 1; \
 	fi
 	@kubectl --kubeconfig "$(KUBECONFIG)" cluster-info
+
+# Cluster overview: uses KUBECONFIG from environments/$(ENV).mk when present (see Makefile header)
+status:
+	@echo "$(BOLD)ENV=$(ENV)$(RESET)"
+	@if [ -n "$$KUBECONFIG" ]; then echo "KUBECONFIG=$$KUBECONFIG"; else echo "KUBECONFIG: не задан (kubectl: ~/.kube/config)"; fi
+	@echo ""
+	@echo "$(BOLD)Nodes$(RESET)"
+	@kubectl get nodes -o wide
+	@echo ""
+	@echo "$(BOLD)Pods (all namespaces)$(RESET)"
+	@kubectl get pods -A -o wide
+	@echo ""
+	@echo "$(BOLD)Helm releases$(RESET)"
+	@helm list -A
+	@echo ""
+	@echo "$(BOLD)Resource usage (kubectl top)$(RESET)"
+	@kubectl top nodes 2>/dev/null || echo "  (kubectl top nodes: metrics-server недоступен или нет данных)"
+	@kubectl top pods -A 2>/dev/null || echo "  (kubectl top pods: metrics-server недоступен или нет данных)"
+
+# Занято: metrics.k8s.io/nodes; доступно: sum(status.allocatable) по нодам; нужны metrics-server, jq
+top-totals:
+	@command -v jq >/dev/null 2>&1 || { echo "✗ требуется jq (apt install jq / brew install jq)"; exit 1; }
+	@echo "$(BOLD)ENV=$(ENV)$(RESET) — CPU/память по кластеру (занято = Metrics API; доступно = sum allocatable по нодам)"
+	@if [ -n "$$KUBECONFIG" ]; then echo "KUBECONFIG=$$KUBECONFIG"; fi
+	@echo ""
+	@TMP=$$(mktemp -d); \
+	trap 'rm -rf "$$TMP"' EXIT; \
+	kubectl get --raw /apis/metrics.k8s.io/v1beta1/nodes > $$TMP/metrics.json; \
+	kubectl get nodes -o json > $$TMP/nodes.json; \
+	jq -n -r --slurpfile metrics $$TMP/metrics.json --slurpfile nodes $$TMP/nodes.json \
+	'def cpu_to_cores(s): if s == null then 0 elif (s|type) != "string" then 0 elif (s|endswith("n")) then (s|sub("n$$";"")|tonumber)/1000000000 elif (s|endswith("m")) then (s|sub("m$$";"")|tonumber)/1000 else 0 end; def mem_to_bytes(s): if s == null then 0 elif (s|type) != "string" then 0 elif (s|endswith("Ki")) then (s|sub("Ki$$";"")|tonumber)*1024 elif (s|endswith("Mi")) then (s|sub("Mi$$";"")|tonumber)*1048576 elif (s|endswith("Gi")) then (s|sub("Gi$$";"")|tonumber)*1073741824 else 0 end; def cpu_alloc_to_cores(s): if s == null then 0 elif (s|type) != "string" then 0 elif (s|endswith("m")) then (s|sub("m$$";"")|tonumber)/1000 else (s|tonumber) end; ($$metrics[0].items) as $$mi | ($$nodes[0].items) as $$ni | ([$$mi[].usage.cpu | cpu_to_cores(.)] | add) as $$uc | ([$$mi[].usage.memory | mem_to_bytes(.)] | add) as $$um | ([$$ni[].status.allocatable.cpu | cpu_alloc_to_cores(.)] | add) as $$ac | ([$$ni[].status.allocatable.memory | mem_to_bytes(.)] | add) as $$am | ($$am - $$um) as $$fm | ($$ac - $$uc) as $$fc | "CPU:  занято " + (($$uc * 1000 | round) / 1000 | tostring) + " / доступно " + (($$ac * 1000 | round) / 1000 | tostring) + " cores  (свободно " + (($$fc * 1000 | round) / 1000 | tostring) + ")\nMemory: занято " + (($$um / 1073741824 * 100 | round) / 100 | tostring) + " / доступно " + (($$am / 1073741824 * 100 | round) / 100 | tostring) + " GiB  (свободно " + (($$fm / 1073741824 * 100 | round) / 100 | tostring) + ")"'
 
 # Check and setup microk8s on remote server
 # Required addons: registry, dns, ingress, storage, metrics-server
@@ -740,20 +931,51 @@ env-new:
 	@if [ ! -f "$(KUBECONFIG)" ]; then \
 		echo "# put kubeconfig here (or run: make kubeconfig-fetch ENV=$(ENV) SSH_HOST=... SSH_KEY=...)" > "$(KUBECONFIG)"; \
 	fi
+	@if [ ! -f "environments/$(ENV).yaml" ]; then \
+		printf '%s\n' \
+			"registry: $(REGISTRY)" \
+			"" \
+			"postgres:" \
+			"  namespace: postgres" \
+			"  release: postgres" \
+			"" \
+			"kafka:" \
+			"  namespace: kafka" \
+			"  release: kafka" \
+			"" \
+			"redis:" \
+			"  namespace: redis" \
+			"  release: redis" \
+			"" \
+			"minio:" \
+			"  namespace: minio" \
+			"  release: minio" \
+			"" \
+			"rabbitmq:" \
+			"  namespace: rabbitmq" \
+			"  release: rabbitmq" \
+			"" \
+			"clickhouse:" \
+			"  namespace: clickhouse" \
+			"  release: clickhouse" \
+			"" \
+			"netdata:" \
+			"  namespace: monitoring" \
+			"  release: netdata" \
+			> "environments/$(ENV).yaml"; \
+		echo "✓ created environments/$(ENV).yaml"; \
+	fi
 	@for s in $(SERVICES); do \
-		if [ -f "$$s/values-$(ENV).yaml" ]; then \
-			continue; \
-		fi; \
 		if [ -f "$$s/values-$(ENV).yaml" ]; then \
 			continue; \
 		elif [ "$(ENV)" = "prod" ] && [ -f "$$s/values-prod.yaml" ]; then \
 			cp "$$s/values-prod.yaml" "$$s/values-$(ENV).yaml"; \
 			echo "✓ created $$s/values-$(ENV).yaml (from values-prod.yaml)"; \
-		elif [ -f "$$s/values-dev.yaml" ]; then \
-			cp "$$s/values-dev.yaml" "$$s/values-$(ENV).yaml"; \
-			echo "✓ created $$s/values-$(ENV).yaml (from values-dev.yaml)"; \
+		elif [ -f "$$s/values-local.yaml" ]; then \
+			cp "$$s/values-local.yaml" "$$s/values-$(ENV).yaml"; \
+			echo "✓ created $$s/values-$(ENV).yaml (from values-local.yaml)"; \
 		else \
-			echo "⚠ $$s: missing values-dev.yaml (skip)"; \
+			echo "⚠ $$s: missing values-local.yaml (skip)"; \
 		fi; \
 	done
 	@echo "✓ Environment skeleton created: $(ENV)"
@@ -763,7 +985,7 @@ env-backup:
 	@command -v kubectl >/dev/null 2>&1 || { echo "✗ kubectl не найден"; exit 1; }
 	@if [ ! -f "$(KUBECONFIG)" ]; then \
 		echo "✗ Файл kubeconfig не найден: $(KUBECONFIG)"; \
-		echo "  Сначала выполните: make kubeconfig-fetch ENV=$(ENV)"; \
+		echo "  Сначала: make kubeconfig-fetch ENV=$(ENV) … или make kubeconfig-microk8s-local ENV=$(ENV)"; \
 		exit 1; \
 	fi
 	@if [ ! -f "environments/$(ENV).yaml" ]; then \
@@ -830,3 +1052,19 @@ monitoring-pod-events:
 
 monitoring-describe-pod:
 	@$(MAKE) -C monitoring/netdata describe-pod ENV=$(ENV) POD="$(POD)"
+
+# microk8s nginx ingress: hostPort + TCP ConfigMap (skill: .cursor/skills/k8s-port-expose-microk8s)
+k8s-port-expose-show:
+	@$(MAKE) -C k8s-port-expose show ENV=$(ENV)
+
+k8s-port-expose-patch:
+	@$(MAKE) -C k8s-port-expose patch ENV=$(ENV) \
+		LAYER="$(LAYER)" HOST_PORT="$(HOST_PORT)" BACKEND="$(BACKEND)" RM="$(RM)" \
+		OP="$(OP)" CONTAINER_PORT="$(CONTAINER_PORT)" PORT_NAME="$(PORT_NAME)" PROTO="$(PROTO)" \
+		INGRESS_NS="$(INGRESS_NS)" INGRESS_DS="$(INGRESS_DS)" INGRESS_TCP_CM="$(INGRESS_TCP_CM)" INGRESS_CONTAINER="$(INGRESS_CONTAINER)" \
+		DRY_RUN="$(DRY_RUN)"
+
+k8s-port-expose-apply:
+	@$(MAKE) -C k8s-port-expose apply-config ENV=$(ENV) REPO_ROOT="$(REPO_ROOT)" \
+		PORT_EXPOSE_CONFIG="$(PORT_EXPOSE_CONFIG)" \
+		DRY_RUN="$(DRY_RUN)"

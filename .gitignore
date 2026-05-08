@@ -44,7 +44,11 @@ terraform.tfvars
 *.bak
 *.cache
 
+# Node (infra-lab / @clack/prompts)
+node_modules/
+
 # IDE
+.tools/
 .vscode/
 .idea/
 *.iml
@@ -52,6 +56,15 @@ terraform.tfvars
 .project
 .classpath
 .settings/
+
+# apps: в git — apps/registry.yaml и пример apps/conf/_example/**; остальное apps/conf — локально
+apps/conf/**
+!apps/conf/_example/
+!apps/conf/_example/**
+
+# Клоны исходников приложений (git clone в apps/src/<name>) — не коммитим
+apps/src/**
+!apps/src/.gitkeep
 
 # Examples (reference implementations, not part of infrastructure)
 examples/

@@ -16,3 +16,14 @@ minio:
   namespace: minio
   release: minio
 
+rabbitmq:
+  namespace: rabbitmq
+  release: rabbitmq
+
+clickhouse:
+  namespace: clickhouse
+  release: clickhouse
+
+netdata:
+  namespace: monitoring
+  release: netdata

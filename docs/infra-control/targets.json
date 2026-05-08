@@ -1,0 +1,1496 @@
+{
+  "version": 1,
+  "targets": [
+    {
+      "id": "app-local-src-hostpath-mount",
+      "makeTarget": "app-local-src-hostpath-mount",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Локально (MicroK8s)",
+        "app-local-src-hostpath-mount"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "apps-apply",
+      "makeTarget": "apps-apply",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Приложения и registry",
+        "apps-apply"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "apps-conf-template",
+      "makeTarget": "apps-conf-template",
+      "menuPath": [
+        "Бутстрап",
+        "Приложение",
+        "Приложения и registry",
+        "apps-conf-template"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "apps-local-src-helm-sets",
+      "makeTarget": "apps-local-src-helm-sets",
+      "menuPath": [
+        "Конфигурирование",
+        "Приложение",
+        "Приложения и registry",
+        "apps-local-src-helm-sets"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "apps-merge-print",
+      "makeTarget": "apps-merge-print",
+      "menuPath": [
+        "Конфигурирование",
+        "Приложение",
+        "Приложения и registry",
+        "apps-merge-print"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "apps-src-clone",
+      "makeTarget": "apps-src-clone",
+      "menuPath": [
+        "Бутстрап",
+        "Приложение",
+        "Приложения и registry",
+        "apps-src-clone"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "check-updates",
+      "makeTarget": "check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-app-create",
+      "makeTarget": "clickhouse-app-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "ClickHouse",
+        "clickhouse-app-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-app-drop",
+      "makeTarget": "clickhouse-app-drop",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "ClickHouse",
+        "clickhouse-app-drop"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-app-show-creds",
+      "makeTarget": "clickhouse-app-show-creds",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "ClickHouse",
+        "clickhouse-app-show-creds"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-check-updates",
+      "makeTarget": "clickhouse-check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "clickhouse-check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-diff",
+      "makeTarget": "clickhouse-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "clickhouse",
+        "clickhouse-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-down",
+      "makeTarget": "clickhouse-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "clickhouse",
+        "clickhouse-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-logs",
+      "makeTarget": "clickhouse-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "ClickHouse",
+        "clickhouse-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "clickhouse-shell",
+      "makeTarget": "clickhouse-shell",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "ClickHouse",
+        "clickhouse-shell"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-status",
+      "makeTarget": "clickhouse-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "ClickHouse",
+        "clickhouse-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-up",
+      "makeTarget": "clickhouse-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "clickhouse",
+        "clickhouse-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "clickhouse-verify",
+      "makeTarget": "clickhouse-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "clickhouse-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "diff",
+      "makeTarget": "diff",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Helm / релизы",
+        "diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "down",
+      "makeTarget": "down",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Helm / релизы",
+        "down"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "env-backup",
+      "makeTarget": "env-backup",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Окружения",
+        "env-backup"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "env-new",
+      "makeTarget": "env-new",
+      "menuPath": [
+        "Бутстрап",
+        "Среда",
+        "Окружения",
+        "env-new"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "images-push",
+      "makeTarget": "images-push",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Образы",
+        "images-push"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "images-push-remote",
+      "makeTarget": "images-push-remote",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Образы",
+        "images-push-remote"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "images-save",
+      "makeTarget": "images-save",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Образы",
+        "images-save"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "k8s-port-expose-patch",
+      "makeTarget": "k8s-port-expose-patch",
+      "menuPath": [
+        "Конфигурирование",
+        "Среда",
+        "Сеть — TCP ingress",
+        "k8s-port-expose-patch"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "k8s-port-expose-apply",
+      "makeTarget": "k8s-port-expose-apply",
+      "menuPath": [
+        "Конфигурирование",
+        "Среда",
+        "Сеть — TCP ingress",
+        "k8s-port-expose-apply"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "k8s-port-expose-show",
+      "makeTarget": "k8s-port-expose-show",
+      "menuPath": [
+        "Конфигурирование",
+        "Среда",
+        "Сеть — TCP ingress",
+        "k8s-port-expose-show"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-app-create",
+      "makeTarget": "kafka-app-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "Kafka (учётки)",
+        "kafka-app-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-app-drop",
+      "makeTarget": "kafka-app-drop",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "Kafka (учётки)",
+        "kafka-app-drop"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "kafka-app-show-creds",
+      "makeTarget": "kafka-app-show-creds",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "Kafka (учётки)",
+        "kafka-app-show-creds"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-bootstrap",
+      "makeTarget": "kafka-bootstrap",
+      "menuPath": [
+        "Бутстрап",
+        "Сервис",
+        "Kafka (кластер и топики)",
+        "kafka-bootstrap"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-check-updates",
+      "makeTarget": "kafka-check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "kafka-check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-diff",
+      "makeTarget": "kafka-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "kafka",
+        "kafka-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-down",
+      "makeTarget": "kafka-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "kafka",
+        "kafka-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "kafka-logs",
+      "makeTarget": "kafka-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Kafka",
+        "kafka-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "kafka-reset",
+      "makeTarget": "kafka-reset",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Kafka (кластер и топики)",
+        "kafka-reset"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "kafka-shell",
+      "makeTarget": "kafka-shell",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Kafka",
+        "kafka-shell"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-status",
+      "makeTarget": "kafka-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Kafka",
+        "kafka-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-topic-alter",
+      "makeTarget": "kafka-topic-alter",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Kafka (кластер и топики)",
+        "kafka-topic-alter"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-topic-create",
+      "makeTarget": "kafka-topic-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Kafka (кластер и топики)",
+        "kafka-topic-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-topic-describe",
+      "makeTarget": "kafka-topic-describe",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Kafka (кластер и топики)",
+        "kafka-topic-describe"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-topic-list",
+      "makeTarget": "kafka-topic-list",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Kafka (кластер и топики)",
+        "kafka-topic-list"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-up",
+      "makeTarget": "kafka-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "kafka",
+        "kafka-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kafka-verify",
+      "makeTarget": "kafka-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "kafka-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kubeconfig-fetch",
+      "makeTarget": "kubeconfig-fetch",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "kubeconfig-fetch"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kubeconfig-info",
+      "makeTarget": "kubeconfig-info",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "kubeconfig-info"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "kubeconfig-microk8s-local",
+      "makeTarget": "kubeconfig-microk8s-local",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "kubeconfig-microk8s-local"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "microk8s-setup",
+      "makeTarget": "microk8s-setup",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "microk8s-setup"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "microk8s-uninstall",
+      "makeTarget": "microk8s-uninstall",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "microk8s-uninstall"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "minio-app-append",
+      "makeTarget": "minio-app-append",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "MinIO",
+        "minio-app-append"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-app-create",
+      "makeTarget": "minio-app-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "MinIO",
+        "minio-app-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-app-drop",
+      "makeTarget": "minio-app-drop",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "MinIO",
+        "minio-app-drop"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "minio-app-show-creds",
+      "makeTarget": "minio-app-show-creds",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "MinIO",
+        "minio-app-show-creds"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-check-updates",
+      "makeTarget": "minio-check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "minio-check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-diff",
+      "makeTarget": "minio-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "minio",
+        "minio-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-down",
+      "makeTarget": "minio-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "minio",
+        "minio-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "minio-logs",
+      "makeTarget": "minio-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "MinIO",
+        "minio-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "minio-shell",
+      "makeTarget": "minio-shell",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "MinIO",
+        "minio-shell"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-status",
+      "makeTarget": "minio-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "MinIO",
+        "minio-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-up",
+      "makeTarget": "minio-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "minio",
+        "minio-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "minio-verify",
+      "makeTarget": "minio-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "minio-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-describe-pod",
+      "makeTarget": "monitoring-describe-pod",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-describe-pod"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-diff",
+      "makeTarget": "monitoring-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "monitoring",
+        "monitoring-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-down",
+      "makeTarget": "monitoring-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "monitoring",
+        "monitoring-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-events",
+      "makeTarget": "monitoring-events",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-events"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-logs",
+      "makeTarget": "monitoring-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "monitoring-pod-events",
+      "makeTarget": "monitoring-pod-events",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-pod-events"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-port-forward",
+      "makeTarget": "monitoring-port-forward",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-port-forward"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "monitoring-status",
+      "makeTarget": "monitoring-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-top-nodes",
+      "makeTarget": "monitoring-top-nodes",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Monitoring (netdata)",
+        "monitoring-top-nodes"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "monitoring-up",
+      "makeTarget": "monitoring-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "monitoring",
+        "monitoring-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "pg-app-create",
+      "makeTarget": "pg-app-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "PostgreSQL",
+        "pg-app-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "pg-app-drop",
+      "makeTarget": "pg-app-drop",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "PostgreSQL",
+        "pg-app-drop"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "pg-app-psql",
+      "makeTarget": "pg-app-psql",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "PostgreSQL",
+        "pg-app-psql"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "pg-app-show-creds",
+      "makeTarget": "pg-app-show-creds",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "PostgreSQL",
+        "pg-app-show-creds"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "pg-app-verify",
+      "makeTarget": "pg-app-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "pg-app-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-backup",
+      "makeTarget": "postgres-backup",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-backup"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-check-updates",
+      "makeTarget": "postgres-check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "postgres-check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-db",
+      "makeTarget": "postgres-db",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "PostgreSQL",
+        "postgres-db"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-delete-pvcs",
+      "makeTarget": "postgres-delete-pvcs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-delete-pvcs"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "postgres-diff",
+      "makeTarget": "postgres-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "postgres",
+        "postgres-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-down",
+      "makeTarget": "postgres-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "postgres",
+        "postgres-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "postgres-logs",
+      "makeTarget": "postgres-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "postgres-recreate-prep",
+      "makeTarget": "postgres-recreate-prep",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-recreate-prep"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "postgres-restore",
+      "makeTarget": "postgres-restore",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-restore"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "postgres-shell",
+      "makeTarget": "postgres-shell",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-shell"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-status",
+      "makeTarget": "postgres-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "PostgreSQL",
+        "Данные и доступ",
+        "postgres-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-up",
+      "makeTarget": "postgres-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "postgres",
+        "postgres-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "postgres-verify",
+      "makeTarget": "postgres-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "postgres-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-app-create",
+      "makeTarget": "rabbitmq-app-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "RabbitMQ",
+        "rabbitmq-app-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-app-drop",
+      "makeTarget": "rabbitmq-app-drop",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "RabbitMQ",
+        "rabbitmq-app-drop"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-app-show-creds",
+      "makeTarget": "rabbitmq-app-show-creds",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "RabbitMQ",
+        "rabbitmq-app-show-creds"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-check-updates",
+      "makeTarget": "rabbitmq-check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "rabbitmq-check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-diff",
+      "makeTarget": "rabbitmq-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "rabbitmq",
+        "rabbitmq-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-down",
+      "makeTarget": "rabbitmq-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "rabbitmq",
+        "rabbitmq-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-logs",
+      "makeTarget": "rabbitmq-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "RabbitMQ",
+        "rabbitmq-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "rabbitmq-shell",
+      "makeTarget": "rabbitmq-shell",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "RabbitMQ",
+        "rabbitmq-shell"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-status",
+      "makeTarget": "rabbitmq-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "RabbitMQ",
+        "rabbitmq-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-up",
+      "makeTarget": "rabbitmq-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "rabbitmq",
+        "rabbitmq-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "rabbitmq-verify",
+      "makeTarget": "rabbitmq-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "rabbitmq-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-app-create",
+      "makeTarget": "redis-app-create",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "Redis",
+        "redis-app-create"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-app-drop",
+      "makeTarget": "redis-app-drop",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "Redis",
+        "redis-app-drop"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "redis-app-show-creds",
+      "makeTarget": "redis-app-show-creds",
+      "menuPath": [
+        "Управление",
+        "Приложение",
+        "Учётки приложений",
+        "Redis",
+        "redis-app-show-creds"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-check-updates",
+      "makeTarget": "redis-check-updates",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "redis-check-updates"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-diff",
+      "makeTarget": "redis-diff",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "redis",
+        "redis-diff"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-down",
+      "makeTarget": "redis-down",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "redis",
+        "redis-down"
+      ],
+      "dangerous": true,
+      "sigint": false
+    },
+    {
+      "id": "redis-logs",
+      "makeTarget": "redis-logs",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Redis",
+        "redis-logs"
+      ],
+      "dangerous": false,
+      "sigint": true
+    },
+    {
+      "id": "redis-shell",
+      "makeTarget": "redis-shell",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Redis",
+        "redis-shell"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-status",
+      "makeTarget": "redis-status",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Диагностика и данные",
+        "Redis",
+        "redis-status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-up",
+      "makeTarget": "redis-up",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Helm / релизы",
+        "Поштучно",
+        "redis",
+        "redis-up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "redis-verify",
+      "makeTarget": "redis-verify",
+      "menuPath": [
+        "Управление",
+        "Сервис",
+        "Проверки и обновления",
+        "redis-verify"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "ssh",
+      "makeTarget": "ssh",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "ssh"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "status",
+      "makeTarget": "status",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "status"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "top-totals",
+      "makeTarget": "top-totals",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Кластер и доступ",
+        "top-totals"
+      ],
+      "dangerous": false,
+      "sigint": false
+    },
+    {
+      "id": "up",
+      "makeTarget": "up",
+      "menuPath": [
+        "Управление",
+        "Среда",
+        "Helm / релизы",
+        "up"
+      ],
+      "dangerous": false,
+      "sigint": false
+    }
+  ]
+}

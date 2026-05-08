@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
 	check-registry check-updates
 
 # Локальный registry MicroK8s
@@ -10,8 +10,12 @@ REGISTRY ?= localhost:32000
 NAMESPACE ?= redis
 RELEASE ?= redis
 CHART_PATH ?= redis
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
+
+# Имя и ключ Secret с паролем админа — как в values-*.yaml: auth.existingSecret / auth.existingSecretPasswordKey
+REDIS_AUTH_SECRET_NAME ?= redis
+REDIS_AUTH_SECRET_PASSWORD_KEY ?= redis-password
 
 # Локальные теги (НЕ latest)
 REDIS_TAG ?= 8.4.0
@@ -27,7 +31,7 @@ REDIS_EXPORTER_SRC_TAG ?= sha256-ba2c6a47fd1dc87bd76755b3bce0bdd58381c940e218b68
 OS_SHELL_SRC_TAG ?= 12-debian-12-r51
 KUBECTL_SRC_TAG ?= sha256-f79ebae1ff869758d46262ecb417e3526805669a2c61623e74ff6e4cf1d82bca
 
-# Source images (пытаемся скачать из bitnamilegacy; fallback на bitnami)
+# Source images (только docker.io/bitnamilegacy)
 REDIS_IMAGE_SRC := docker.io/bitnamilegacy/redis:$(REDIS_SRC_TAG)
 REDIS_SENTINEL_IMAGE_SRC := docker.io/bitnamilegacy/redis-sentinel:$(REDIS_SENTINEL_SRC_TAG)
 REDIS_EXPORTER_IMAGE_SRC := docker.io/bitnamilegacy/redis-exporter:$(REDIS_EXPORTER_SRC_TAG)
@@ -58,7 +62,7 @@ help:
 	@echo "Образы (offline / microk8s registry):"
 	@echo "  make check-registry         - Проверить доступность registry $(REGISTRY)"
 	@echo "  make images-verify          - Проверить доступность тегов в docker.io/bitnamilegacy"
-	@echo "  make images-pull            - Скачать все образы (bitnamilegacy -> bitnami fallback)"
+	@echo "  make images-pull            - Скачать все образы (docker.io/bitnamilegacy)"
 	@echo "  make images-tag             - Тегировать образы для $(REGISTRY)/bitnami/*"
 	@echo "  make images-push            - Загрузить образы в microk8s registry"
 	@echo "  make images-sync            - pull + tag + push"
@@ -67,6 +71,11 @@ help:
 	@echo "  make images-sync-from-files - load + tag + push"
 	@echo "  make images-clean           - Удалить локальные docker-образы"
 	@echo "  make images-clean-files     - Удалить сохраненные tar"
+	@echo ""
+	@echo "App accounts:"
+	@echo "  make app-show-creds APP=myapp [APP_NS=...] — показать креды из Secret app-redis"
+	@echo "  make app-create APP=myapp [REDIS_DB=0] — REDIS_DB из CLI; иначе следующий свободный 1..127 по $(APPS_REGISTRY) (yq); без yq — предупреждение и 0"
+	@echo "  make app-drop APP=myapp — удалить ACL-пользователя и Secret (⚠ y/N; SKIP_CONFIRM=1). Ключи по префиксу не удаляются"
 
 check-registry:
 	@echo "Проверка MicroK8s registry..."
@@ -78,33 +87,48 @@ check-registry:
 ## App accounts (per-app isolation)
 ## =========================
 
-# Usage: make app-create APP=myapp [APP_NS=myapp] [APP_PASSWORD=...]
+# Корень репозитория (make -C redis из корня или из redis/)
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+# Поле redis_db для APP задаётся в apps/registry.yaml. Переопределение: APPS_REGISTRY=...
+APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
+# Логический номер БД Redis (SELECT n). CLI REDIS_DB — приоритет; иначе при наличии merged и yq — scripts/redis-next-db.sh.
+# REDIS_DB не задаём через ?= — корневой Makefile передаёт REDIS_DB только при явном REDIS_DB= в вызове.
+
+# Usage: make app-create APP=myapp [REDIS_DB=…] … — пароль только из merged (redis.password).
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@{ set -euo pipefail; \
+	INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
+	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-redis}; \
-	APP_PASSWORD=$${APP_PASSWORD:-}; \
-	if [ -z "$$APP_PASSWORD" ]; then \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (передайте APP_PASSWORD=... или установите openssl)"; exit 1; }; \
-		APP_PASSWORD=$$(openssl rand -hex 16); \
-	fi; \
+	PW_RAW=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" redis.password || true); \
+	if [ -z "$$PW_RAW" ] || [ "$$PW_RAW" = "null" ]; then echo "✗ Для приложения \"$(APP)\" нет redis.password в merged конфигурации"; exit 1; fi; \
+	APP_PASSWORD="$$PW_RAW"; \
+	if [ -n "$(REDIS_DB)" ]; then REDIS_DB_VAL="$(REDIS_DB)"; echo "  → REDIS_DB=$$REDIS_DB_VAL (CLI)"; \
+	else REDIS_DB_VAL=$$("$$INF/scripts/redis-next-db.sh" "$$MG" "$(APP)") || exit 1; echo "  → REDIS_DB=$$REDIS_DB_VAL (merged)"; fi; \
+	case "$$REDIS_DB_VAL" in ''|*[!0-9]*) echo "✗ REDIS_DB должен быть целым числом ≥ 0"; exit 1;; esac; \
+	if [ "$$REDIS_DB_VAL" -gt 127 ]; then echo "✗ REDIS_DB не должен превышать 127"; exit 1; fi; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
-	SECRET=$$(kubectl get secret -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
-	if [ -z "$$SECRET" ]; then echo "✗ Redis secret не найден в namespace $(NAMESPACE)"; exit 1; fi; \
-	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) "$$SECRET" -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d); \
-	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить redis-password из секрета $$SECRET"; exit 1; fi; \
+	if ! kubectl get secret $(REDIS_AUTH_SECRET_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then \
+		echo "✗ Secret $(REDIS_AUTH_SECRET_NAME) не найден"; exit 1; \
+	fi; \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось прочитать ключ $(REDIS_AUTH_SECRET_PASSWORD_KEY) из секрета"; exit 1; fi; \
 	REDIS_SVC=$$(kubectl get svc -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$REDIS_SVC" ]; then echo "✗ Redis master service не найден"; exit 1; fi; \
 	REDIS_HOST="$$REDIS_SVC.$(NAMESPACE).svc.cluster.local"; \
 	REDIS_PORT=6379; \
 	echo "Creating Redis ACL user $$APP_USER (keys: $(APP):*)"; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- bash -ec "\
-		redis-cli -a '$$ADMIN_PASSWORD' ACL SETUSER '$$APP_USER' on '>'\"$$APP_PASSWORD\"' ~'$(APP):*' +@all \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c \
+		'redis-cli -a "$$1" ACL SETUSER "$$2" on ">"$$3 ~"$$4" +@all \
 			-ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL -FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF \
-			-REPLCONF -REPLICAOF -SLAVEOF -SYNC -PSYNC \
-	"; \
+			-REPLCONF -REPLICAOF -SLAVEOF -SYNC -PSYNC' \
+		sh "$$ADMIN_PASSWORD" "$$APP_USER" "$$APP_PASSWORD" "$(APP):*"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -114,8 +138,63 @@ app-create:
 		--from-literal=REDIS_USERNAME="$$APP_USER" \
 		--from-literal=REDIS_PASSWORD="$$APP_PASSWORD" \
 		--from-literal=REDIS_KEY_PREFIX="$(APP):" \
+		--from-literal=REDIS_DB="$$REDIS_DB_VAL" \
 		>/dev/null; \
-	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+	printf '%s\n' \
+		'redis:' \
+		"  password: \"$$APP_PASSWORD\"" \
+		"  username: \"$$APP_USER\"" \
+		"  redis_db: $$REDIS_DB_VAL" \
+		"  key_prefix: \"$(APP):\"" \
+		"  host: \"$$REDIS_HOST\"" \
+		"  port: $$REDIS_PORT" \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME, REDIS_DB=$$REDIS_DB_VAL)"; \
+	}
+
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [SKIP_CONFIRM=1]
+app-drop:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-redis}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будут удалены ACL-пользователь \"$$APP_USER\" и Secret \"$$APP_NS/$$APP_SECRET_NAME\". Ключи с префиксом ключей приложения остаются в Redis до ручной очистки."; \
+		read -p "Вы уверены? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	if ! kubectl get secret $(REDIS_AUTH_SECRET_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then \
+		echo "✗ Secret $(REDIS_AUTH_SECRET_NAME) не найден в namespace $(NAMESPACE)"; exit 1; \
+	fi; \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
+	echo "Removing ACL user $$APP_USER..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c \
+		'redis-cli -a "$$1" ACL DELUSER "$$2" 2>/dev/null || true' \
+		sh "$$ADMIN_PASSWORD" "$$APP_USER"; \
+	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
+	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" redis || true; \
+	echo "✓ ACL-пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены (при отсутствии пользователя ACL DELUSER мог быть пропущен)"
+
+app-show-creds:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-redis}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	echo "Secret: $$APP_NS/$$APP_SECRET_NAME"; \
+	echo "---"; \
+	echo "REDIS_HOST=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_HOST}' 2>/dev/null | base64 -d)"; \
+	echo "REDIS_PORT=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_PORT}' 2>/dev/null | base64 -d)"; \
+	echo "REDIS_USERNAME=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_USERNAME}' 2>/dev/null | base64 -d)"; \
+	echo "REDIS_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_PASSWORD}' 2>/dev/null | base64 -d)"; \
+	echo "REDIS_KEY_PREFIX=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_KEY_PREFIX}' 2>/dev/null | base64 -d)"; \
+	echo "REDIS_DB=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_DB}' 2>/dev/null | base64 -d)"; \
+	echo "Изоляция: ACL по префиксу REDIS_KEY_PREFIX; REDIS_DB — логический номер БД (не отдельный сервер и не аналог отдельной БД Postgres)."
 
 images-verify:
 	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
@@ -222,12 +301,12 @@ shell:
 	fi
 
 images-pull:
-	@echo "Загрузка образов (bitnamilegacy -> bitnami fallback)..."
-	@if docker pull $(REDIS_IMAGE_SRC) 2>/dev/null; then echo "✓ $(REDIS_IMAGE_SRC)"; else docker pull docker.io/bitnami/redis:$(REDIS_SRC_TAG); docker tag docker.io/bitnami/redis:$(REDIS_SRC_TAG) $(REDIS_IMAGE_SRC); fi
-	@if docker pull $(REDIS_SENTINEL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(REDIS_SENTINEL_IMAGE_SRC)"; else docker pull docker.io/bitnami/redis-sentinel:$(REDIS_SENTINEL_SRC_TAG); docker tag docker.io/bitnami/redis-sentinel:$(REDIS_SENTINEL_SRC_TAG) $(REDIS_SENTINEL_IMAGE_SRC); fi
-	@if docker pull $(REDIS_EXPORTER_IMAGE_SRC) 2>/dev/null; then echo "✓ $(REDIS_EXPORTER_IMAGE_SRC)"; else docker pull docker.io/bitnami/redis-exporter:$(REDIS_EXPORTER_SRC_TAG); docker tag docker.io/bitnami/redis-exporter:$(REDIS_EXPORTER_SRC_TAG) $(REDIS_EXPORTER_IMAGE_SRC); fi
-	@if docker pull $(OS_SHELL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(OS_SHELL_IMAGE_SRC)"; else docker pull docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG); docker tag docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG) $(OS_SHELL_IMAGE_SRC); fi
-	@if docker pull $(KUBECTL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(KUBECTL_IMAGE_SRC)"; else docker pull docker.io/bitnami/kubectl:$(KUBECTL_SRC_TAG); docker tag docker.io/bitnami/kubectl:$(KUBECTL_SRC_TAG) $(KUBECTL_IMAGE_SRC); fi
+	@echo "Загрузка образов из docker.io/bitnamilegacy..."
+	@docker pull $(REDIS_IMAGE_SRC)
+	@docker pull $(REDIS_SENTINEL_IMAGE_SRC)
+	@docker pull $(REDIS_EXPORTER_IMAGE_SRC)
+	@docker pull $(OS_SHELL_IMAGE_SRC)
+	@docker pull $(KUBECTL_IMAGE_SRC)
 	@echo "✓ Все образы загружены"
 
 images-tag: images-pull

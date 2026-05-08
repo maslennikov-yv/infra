@@ -3,7 +3,7 @@
 NAMESPACE ?= monitoring
 RELEASE ?= netdata
 CHART_PATH ?= netdata
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
 
 help:

@@ -1,0 +1,13 @@
+# Реестр приложений для `apps-merge-print`, `make apps-apply`, `*-app-create`.
+# У каждого элемента в `apps:` обязательно поле `enabled: true|false`.
+# Чувствительные поля (пароли, ключи) задавайте в `apps/conf/<name>/` — см. `apps/conf/_example/`.
+#
+# Опционально: `repo_url` — Git URL приложения; `repo_branch` — ветка для `git clone -b`.
+# Локальный клон (не в git infra): `make apps-src-clone APP=<name>` или конфигуратор (infra-lab).
+apps:
+  - name: myapp
+    enabled: false
+    app_ns: myapp
+    # redis_db: 5  # необязательно: иначе make redis-app-create подберёт следующий свободный 1..127
+    # repo_url: https://github.com/org/myapp.git
+    # repo_branch: main

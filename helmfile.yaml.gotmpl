@@ -6,7 +6,7 @@ environments:
 
 ---
 
-{{- $env := (env "ENV" | default "dev") -}}
+{{- $env := (env "ENV" | default "local") -}}
 {{- $enabledStr := (env "ENABLED_SERVICES" | default "") | trim -}}
 {{- $excludeStr := (env "EXCLUDE_SERVICES" | default "") | trim -}}
 {{- $enabledList := (splitList "," $enabledStr) -}}

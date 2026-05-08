@@ -1,0 +1,9 @@
+# Сервисы данных с целями *-app-create (apps-apply) и подмножеством helmfile.
+# Порядок строк — порядок в multiselect infra-lab и итерации apps-apply.
+# См. scripts/lib/data-services.mjs (Node) и scripts/apps-apply.sh.
+postgres
+kafka
+redis
+minio
+clickhouse
+rabbitmq

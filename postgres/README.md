@@ -56,14 +56,16 @@ make list-images
 ### Деплой PostgreSQL с 2 нодами
 
 ```bash
-helm install postgres ./postgresql -f values-custom.yaml
+helm install postgres ./postgresql -f values-local.yaml -n postgres
 ```
+
+Для другого окружения подставьте свой файл: `values-<ENV>.yaml` из этого каталога (как в корневом `helmfile`).
 
 ### Использование с local registry
 
 После загрузки образов через `make load-all`, образы будут доступны по адресу `localhost:32000/bitnami/*`.
 
-Если используете microk8s registry, убедитесь что в `values-custom.yaml` указан:
+Если используете microk8s registry, убедитесь что в `values-<ENV>.yaml` указано:
 ```yaml
 image:
   registry: localhost:32000
@@ -164,7 +166,7 @@ IMAGES_DIR=/path/to/images make save-all
 # Из корня репозитория
 make pg-app-create APP=myapp ENV=stage
 make pg-app-show-creds APP=myapp ENV=stage   # показать креды из Secret
-make pg-app-drop APP=myapp ENV=stage         # удалить БД, роль и Secret
+make pg-app-drop APP=myapp ENV=stage         # удалить БД, роль и Secret (y/N; SKIP_CONFIRM=1)
 make pg-app-verify APP=myapp ENV=stage      # проверить подключение
 
 # Или из postgres/

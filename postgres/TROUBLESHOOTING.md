@@ -361,7 +361,7 @@ kubectl exec -it postgres-postgresql-0 -n postgres -- ls -lh /bitnami/postgresql
    kubectl delete pvc data-postgres-postgresql-0 -n postgres
    
    # Переустановить
-   helm install postgres ./postgresql -f values-custom.yaml -n postgres
+   helm install postgres ./postgresql -f values-local.yaml -n postgres
    ```
 
 ---
@@ -419,7 +419,7 @@ helm get values postgres -n postgres
 helm get all postgres -n postgres
 
 # Вывести манифесты (для отладки)
-helm template postgres ./postgresql -f values-custom.yaml -n postgres
+helm template postgres ./postgresql -f values-local.yaml -n postgres
 ```
 
 ---
@@ -439,7 +439,7 @@ kubectl delete pvc -l app.kubernetes.io/name=postgresql -n postgres
 kubectl get all,pvc -n postgres
 
 # 4. Переустановить
-helm install postgres ./postgresql -f values-custom.yaml -n postgres
+helm install postgres ./postgresql -f values-local.yaml -n postgres
 ```
 
 ### Мягкое пересоздание (с сохранением данных)
@@ -455,7 +455,7 @@ kubectl wait --for=delete pod/postgres-postgresql-0 -n postgres --timeout=60s
 kubectl scale statefulset postgres-postgresql -n postgres --replicas=2
 
 # Или через Helm
-helm upgrade postgres ./postgresql -f values-custom.yaml -n postgres
+helm upgrade postgres ./postgresql -f values-local.yaml -n postgres
 ```
 
 ---

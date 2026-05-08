@@ -44,3 +44,14 @@ kubectl:
     repository: bitnami/kubectl
     tag: "1.35.0"
 
+# Синхронизировать с redis/redis/values.yaml commonConfiguration при смене модулей/AOF.
+# Логические БД для REDIS_DB в app-redis Secret (см. docs/pg-app.md): в реестре закрепляйте с 1, 0 — фолбэк; дефолт Redis — 16.
+commonConfiguration: |-
+  databases 128
+  # Enable ReJSON y Redisearch
+  loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
+  loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
+  # Enable AOF https://redis.io/topics/persistence#append-only-file
+  appendonly yes
+  # Disable RDB persistence, AOF persistence already enabled.
+  save ""

@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
 	check-registry check-updates
 
 # Локальный registry MicroK8s
@@ -10,8 +10,11 @@ REGISTRY ?= localhost:32000
 NAMESPACE ?= clickhouse
 RELEASE ?= clickhouse
 CHART_PATH ?= clickhouse
-ENV ?= dev
+ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
+
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 
 # Image tags pinned from chart values.yaml
 CLICKHOUSE_TAG ?= 25.7.5-debian-12-r0
@@ -23,7 +26,7 @@ CLICKHOUSE_SRC_TAG ?= $(CLICKHOUSE_TAG)
 CLICKHOUSE_KEEPER_SRC_TAG ?= $(CLICKHOUSE_KEEPER_TAG)
 OS_SHELL_SRC_TAG ?= $(OS_SHELL_TAG)
 
-# Source images (bitnamilegacy -> bitnami fallback)
+# Source images (только docker.io/bitnamilegacy)
 CLICKHOUSE_IMAGE_SRC := docker.io/bitnamilegacy/clickhouse:$(CLICKHOUSE_SRC_TAG)
 CLICKHOUSE_KEEPER_IMAGE_SRC := docker.io/bitnamilegacy/clickhouse-keeper:$(CLICKHOUSE_KEEPER_SRC_TAG)
 OS_SHELL_IMAGE_SRC := docker.io/bitnamilegacy/os-shell:$(OS_SHELL_SRC_TAG)
@@ -54,6 +57,8 @@ help:
 	@echo ""
 	@echo "App accounts:"
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp]"
+	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (APP-clickhouse)"
+	@echo "  make app-drop APP=myapp — DROP DATABASE, DROP USER и Secret (⚠ y/N; SKIP_CONFIRM=1)"
 
 check-registry:
 	@echo "Проверка MicroK8s registry..."
@@ -65,21 +70,24 @@ check-registry:
 ## App accounts (per-app isolation)
 ## =========================
 
-# Usage: make app-create APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp] [APP_PASSWORD=...]
+# Usage: make app-create APP=myapp — пароль только из merged (clickhouse.password).
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@{ set -euo pipefail; \
+	INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
+	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	DB=$${DB:-$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-clickhouse}; \
-	APP_PASSWORD=$${APP_PASSWORD:-}; \
 	ADMIN_USER=$${ADMIN_USER:-admin}; \
-	if [ -z "$$APP_PASSWORD" ]; then \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (передайте APP_PASSWORD=... или установите openssl)"; exit 1; }; \
-		APP_PASSWORD=$$(openssl rand -hex 16); \
-	fi; \
+	PW_RAW=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" clickhouse.password || true); \
+	if [ -z "$$PW_RAW" ] || [ "$$PW_RAW" = "null" ]; then echo "✗ Для приложения \"$(APP)\" нет clickhouse.password в merged"; exit 1; fi; \
+	APP_PASSWORD="$$PW_RAW"; \
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
-	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password из секрета $(RELEASE) в namespace $(NAMESPACE)"; exit 1; fi; \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password из секрета"; exit 1; fi; \
 	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
 	CH_PORT=9000; \
 	CH_HTTP_PORT=8123; \
@@ -107,7 +115,65 @@ GRANT ALL ON \\\"$$DB\\\".* TO \\\"$$APP_USER\\\";\" \
 		--from-literal=CLICKHOUSE_USER="$$APP_USER" \
 		--from-literal=CLICKHOUSE_PASSWORD="$$APP_PASSWORD" \
 		>/dev/null; \
-	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
+	printf '%s\n' \
+		'clickhouse:' \
+		"  password: \"$$APP_PASSWORD\"" \
+		"  username: \"$$APP_USER\"" \
+		"  database: \"$$DB\"" \
+		"  host: \"$$CH_HOST\"" \
+		"  native_port: $$CH_PORT" \
+		"  http_port: $$CH_HTTP_PORT" \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"; \
+	}
+
+# Usage: make app-show-creds APP=myapp [APP_NS=myapp]
+app-show-creds:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-clickhouse}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	echo "Secret: $$APP_NS/$$APP_SECRET_NAME"; \
+	echo "---"; \
+	for k in CLICKHOUSE_HOST CLICKHOUSE_PORT CLICKHOUSE_HTTP_PORT CLICKHOUSE_DB CLICKHOUSE_USER CLICKHOUSE_PASSWORD; do \
+		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
+		echo "$$k=$$v"; \
+	done
+
+# Usage: make app-drop APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp] [ADMIN_USER=admin] [SKIP_CONFIRM=1]
+app-drop:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	DB=$${DB:-$(APP)}; \
+	APP_USER=$${APP_USER:-app_$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-clickhouse}; \
+	ADMIN_USER=$${ADMIN_USER:-admin}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будут удалены БД \"$$DB\", пользователь ClickHouse \"$$APP_USER\" и Secret \"$$APP_NS/$$APP_SECRET_NAME\"."; \
+		read -p "Вы уверены? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password из секрета $(RELEASE) в namespace $(NAMESPACE)"; exit 1; fi; \
+	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
+	CH_PORT=9000; \
+	echo "Dropping database $$DB and user $$APP_USER..."; \
+	kubectl run clickhouse-drop-$$(date +%s) \
+		--restart='Never' \
+		--image=$(CLICKHOUSE_IMAGE_LOCAL) \
+		--namespace=$(NAMESPACE) \
+		--rm -i \
+		--command -- sh -ec "\
+			clickhouse-client --host $$CH_HOST --port $$CH_PORT \
+			  --user \"$$ADMIN_USER\" --password \"$$ADMIN_PASSWORD\" \
+			  --multiquery --query \"DROP DATABASE IF EXISTS \\\"$$DB\\\"; DROP USER IF EXISTS \\\"$$APP_USER\\\";\" \
+		"; \
+	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
+	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" clickhouse || true; \
+	echo "✓ БД $$DB, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 images-verify:
 	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
@@ -206,10 +272,10 @@ shell:
 	fi
 
 images-pull:
-	@echo "Загрузка образов (bitnamilegacy -> bitnami fallback)..."
-	@if docker pull $(CLICKHOUSE_IMAGE_SRC) 2>/dev/null; then echo "✓ $(CLICKHOUSE_IMAGE_SRC)"; else docker pull docker.io/bitnami/clickhouse:$(CLICKHOUSE_SRC_TAG); docker tag docker.io/bitnami/clickhouse:$(CLICKHOUSE_SRC_TAG) $(CLICKHOUSE_IMAGE_SRC); fi
-	@if docker pull $(CLICKHOUSE_KEEPER_IMAGE_SRC) 2>/dev/null; then echo "✓ $(CLICKHOUSE_KEEPER_IMAGE_SRC)"; else docker pull docker.io/bitnami/clickhouse-keeper:$(CLICKHOUSE_KEEPER_SRC_TAG); docker tag docker.io/bitnami/clickhouse-keeper:$(CLICKHOUSE_KEEPER_SRC_TAG) $(CLICKHOUSE_KEEPER_IMAGE_SRC); fi
-	@if docker pull $(OS_SHELL_IMAGE_SRC) 2>/dev/null; then echo "✓ $(OS_SHELL_IMAGE_SRC)"; else docker pull docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG); docker tag docker.io/bitnami/os-shell:$(OS_SHELL_SRC_TAG) $(OS_SHELL_IMAGE_SRC); fi
+	@echo "Загрузка образов из docker.io/bitnamilegacy..."
+	@docker pull $(CLICKHOUSE_IMAGE_SRC)
+	@docker pull $(CLICKHOUSE_KEEPER_IMAGE_SRC)
+	@docker pull $(OS_SHELL_IMAGE_SRC)
 	@echo "✓ Все образы загружены"
 
 images-tag: images-pull
