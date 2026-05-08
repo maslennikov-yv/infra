@@ -11,7 +11,7 @@
 
 Если в каталоге приложения есть **оба** файла — `secrets.yaml` имеет приоритет (override). Это удобно для локальной разработки: расшифровать в `secrets.yaml` через `make apps-conf-decrypt APP=...`, отредактировать, потом `make apps-conf-encrypt APP=...` обратно.
 
-Включение sops+age — см. [docs/runbooks/secrets-management.md](../../../docs/runbooks/secrets-management.md). Образец конфигурации — [.sops.yaml.example](./.sops.yaml.example).
+Включение sops+age — краткий cheat-sheet [docs/runbooks/sops-quickstart.md](../../../docs/runbooks/sops-quickstart.md), полный runbook [docs/runbooks/secrets-management.md](../../../docs/runbooks/secrets-management.md). Образец конфигурации — [.sops.yaml.example](./.sops.yaml.example).
 
 ## Быстрый старт
 
