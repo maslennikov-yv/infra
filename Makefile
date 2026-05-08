@@ -15,7 +15,7 @@
 	kafka-bootstrap kafka-reset kafka-status kafka-logs kafka-shell kafka-up kafka-diff kafka-down \
 	minio-status minio-logs minio-shell minio-up minio-diff minio-down \
 	minio-app-append \
-	env-new env-backup kubeconfig-fetch kubeconfig-microk8s-local kubeconfig-info microk8s-setup microk8s-uninstall ssh \
+	env-new env-backup env-restore kubeconfig-fetch kubeconfig-microk8s-local kubeconfig-info microk8s-setup microk8s-uninstall ssh \
 	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply \
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
@@ -217,7 +217,8 @@ help:
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Environment skeleton:$(RESET)"
 	@echo "  make env-new $(YELLOW)ENV=staging$(RESET)        - создать рыбу окружения (mk/yaml/kubeconfig/values)"
-	@echo "  make env-backup $(YELLOW)ENV=$(ENV)$(RESET)       - бэкап secrets/configmaps в namespaces из environments/$(ENV).yaml"
+	@echo "  make env-backup $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)CONFIRM=1$(RESET)]  - бэкап Secrets/ConfigMaps + apps/registry.yaml + apps/conf/ (платформенные ns + ns приложений из apps/registry.yaml)"
+	@echo "  make env-restore $(YELLOW)BACKUP_FILE=... ENV=$(ENV)$(RESET) [$(YELLOW)CONFIRM=1$(RESET)] [$(YELLOW)SKIP_APPS_CONF=1$(RESET)] [$(YELLOW)SKIP_K8S=1$(RESET)] - применить tar.gz обратно (Secrets/CM + apps/conf если каталога нет)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Monitoring (Netdata):$(RESET)"
 	@echo "  make monitoring-up $(YELLOW)ENV=$(ENV)$(RESET)          - развернуть Netdata (эквивалент: make up ENABLED_SERVICES=netdata)"
@@ -1042,7 +1043,7 @@ env-backup:
 		exit 1; \
 	fi
 	@if [ "$${CONFIRM:-0}" != "1" ]; then \
-		echo "⚠ Будет сделан локальный бэкап Kubernetes secrets/configmaps (может содержать пароли)."; \
+		echo "⚠ Будет сделан локальный бэкап Kubernetes secrets/configmaps + apps/conf/ (содержит пароли)."; \
 		if [ -t 0 ]; then \
 			printf "Сделать локальный бэкап в tar.gz? [y/N] "; \
 			read -r ans; \
@@ -1060,9 +1061,14 @@ env-backup:
 	OUT_DIR="$$TMP_DIR/$(ENV)"; \
 	mkdir -p "$$OUT_DIR"; \
 	cp "environments/$(ENV).yaml" "$$OUT_DIR/environments.$(ENV).yaml"; \
-	NAMESPACES=$$(awk '/^[A-Za-z0-9_-]+:/{svc=$$1} /namespace:/{print $$2}' "environments/$(ENV).yaml" | sort -u); \
+	PLATFORM_NS=$$(awk '/^[A-Za-z0-9_-]+:/{svc=$$1} /namespace:/{print $$2}' "environments/$(ENV).yaml" | sort -u); \
+	APP_NS=""; \
+	if [ -f "$(APPS_REGISTRY)" ] && command -v "$(YQ)" >/dev/null 2>&1; then \
+		APP_NS=$$("$(YQ)" -r '.apps[] | select(.enabled == true) | (.app_ns // .name)' "$(APPS_REGISTRY)" 2>/dev/null | sort -u); \
+	fi; \
+	NAMESPACES=$$(printf "%s\n%s\n" "$$PLATFORM_NS" "$$APP_NS" | awk 'NF' | sort -u); \
 	if [ -z "$$NAMESPACES" ]; then \
-		echo "✗ Не удалось извлечь namespaces из environments/$(ENV).yaml"; \
+		echo "✗ Не удалось определить ни одного namespace для бэкапа"; \
 		rm -rf "$$TMP_DIR"; \
 		exit 1; \
 	fi; \
@@ -1076,9 +1082,36 @@ env-backup:
 			--field-selector metadata.name!=kube-root-ca.crt \
 			-o yaml > "$$OUT_DIR/namespaces/$$ns/configmaps.yaml" 2>/dev/null || true; \
 	done; \
+	mkdir -p "$$OUT_DIR/apps"; \
+	if [ -f "$(APPS_REGISTRY)" ]; then \
+		echo "=== backup apps/registry.yaml ==="; \
+		cp "$(APPS_REGISTRY)" "$$OUT_DIR/apps/registry.yaml"; \
+	fi; \
+	if [ -d "$(REPO_ROOT)/apps/conf" ]; then \
+		mkdir -p "$$OUT_DIR/apps/conf"; \
+		for d in "$(REPO_ROOT)"/apps/conf/*/; do \
+			[ -d "$$d" ] || continue; \
+			name=$$(basename "$$d"); \
+			[ "$$name" = "_example" ] && continue; \
+			echo "=== backup apps/conf/$$name ==="; \
+			cp -r "$$d" "$$OUT_DIR/apps/conf/$$name"; \
+		done; \
+	fi; \
 	tar -czf "$$ARCHIVE" -C "$$TMP_DIR" "$(ENV)"; \
 	rm -rf "$$TMP_DIR"; \
 	echo "✓ Saved: $$ARCHIVE"
+
+# env-restore: применяет tar.gz обратно. Подробности и флаги — в scripts/env-restore.sh.
+# Существующие apps/conf/<APP>/ НЕ перезатираются; локальный apps/registry.yaml не перезаписывается, если отличается.
+env-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите BACKUP_FILE: make env-restore BACKUP_FILE=environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@BACKUP_FILE="$(BACKUP_FILE)" KUBECONFIG="$(KUBECONFIG)" REPO_ROOT="$(REPO_ROOT)" YQ="$(YQ)" \
+		CONFIRM="$(CONFIRM)" SKIP_APPS_CONF="$(SKIP_APPS_CONF)" SKIP_K8S="$(SKIP_K8S)" \
+		"$(REPO_ROOT)/scripts/env-restore.sh"
 
 monitoring-status:
 	@$(MAKE) -C monitoring/netdata status ENV=$(ENV)
