@@ -54,8 +54,12 @@ echo "Распаковка $BACKUP_FILE..."
 tar -xzf "$BACKUP_FILE" -C "$TMP"
 
 # В архиве ровно один корневой каталог (имя окружения).
-ARCHIVE_ROOT=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
-[ -n "$ARCHIVE_ROOT" ] || { err "✗ Архив пуст или повреждён"; exit 1; }
+mapfile -t roots < <(find "$TMP" -mindepth 1 -maxdepth 1 -type d)
+case "${#roots[@]}" in
+	0) err "✗ Архив пуст или повреждён"; exit 1 ;;
+	1) ARCHIVE_ROOT="${roots[0]}" ;;
+	*) err "✗ Ожидался ровно один корневой каталог в архиве, нашёл ${#roots[@]}: ${roots[*]}"; exit 1 ;;
+esac
 ENV_NAME=$(basename "$ARCHIVE_ROOT")
 echo "Окружение из архива: $ENV_NAME"
 

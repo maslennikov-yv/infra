@@ -389,10 +389,11 @@ backup:
 					clickhouse-client --query "SHOW CREATE TABLE \"$$db\".\"$$tbl\"" | sed -e "s/$$/;/" >> "$$OUT_FILE"; \
 				done; \
 		done < databases.list; \
-		: > users.sql; \
+		: > users.sql; : > users.list; \
 		clickhouse-client --query "SELECT name FROM system.users WHERE name NOT IN ('"'"'default'"'"','"'"'admin'"'"')" \
 			| while IFS= read -r u; do \
 				[ -z "$$u" ] && continue; \
+				echo "$$u" >> users.list; \
 				clickhouse-client --query "SHOW CREATE USER \"$$u\""    | sed -e "s/$$/;/" >> users.sql; \
 				clickhouse-client --query "SHOW GRANTS FOR \"$$u\""     | sed -e "s/$$/;/" >> users.sql; \
 				echo "" >> users.sql; \
@@ -454,11 +455,18 @@ restore:
 				clickhouse-client --multiquery < "$$f"; \
 			done; \
 		fi; \
-		# 2) users: парсим по блокам "CREATE USER ... ; SHOW GRANTS ...; \n"
-		# Перед каждым CREATE USER делаем DROP USER IF EXISTS (имя из CREATE USER строки).
+		# 2) users: сначала DROP USER IF EXISTS для имён из users.list (точные имена из system.users
+		# во время backup — не зависят от awk-парсинга SQL DDL, корректно работают с пробелами/backticks).
+		# Затем применить users.sql (CREATE USER + GRANTS).
 		if [ -f users.sql ]; then \
-			awk '"'"'/^CREATE USER/{print "DROP USER IF EXISTS " $$3 ";"} {print}'"'"' users.sql > /tmp/users-final.sql; \
-			clickhouse-client --multiquery < /tmp/users-final.sql; \
+			: > /tmp/users-drop.sql; \
+			if [ -f users.list ]; then \
+				while IFS= read -r u; do \
+					[ -z "$$u" ] && continue; \
+					printf "DROP USER IF EXISTS \"%s\";\n" "$$u" >> /tmp/users-drop.sql; \
+				done < users.list; \
+			fi; \
+			cat /tmp/users-drop.sql users.sql | clickhouse-client --multiquery; \
 		fi; \
 	'; \
 	echo "✓ Restore schemas + users завершён"

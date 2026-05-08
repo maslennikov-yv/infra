@@ -15,6 +15,13 @@ VALUES_FILE ?= values-$(ENV).yaml
 INFRA_ROOT ?= $(abspath $(CURDIR)/..)
 APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 
+# yq mikefarah v4 (для backup-meta фильтрации metadata). Совпадает с корневым Makefile fallback.
+ifneq ($(wildcard $(INFRA_ROOT)/.tools/yq-mikefarah),)
+YQ ?= $(INFRA_ROOT)/.tools/yq-mikefarah
+else
+YQ ?= yq
+endif
+
 # Image tags pinned from chart values.yaml/Chart.yaml annotations
 MINIO_TAG ?= 2025.7.23-debian-12-r3
 MINIO_CLIENT_TAG ?= 2025.7.21-debian-12-r2
@@ -738,8 +745,9 @@ backup-meta:
 	mkdir -p "$$TMP/tracking-secrets"; \
 	for s in $$(kubectl get secret -n $(NAMESPACE) -o name 2>/dev/null | grep '^secret/minio-app-' || true); do \
 		NAME=$$(basename "$$s"); \
+		# Чистим metadata через yq (как в env-restore.sh) — устойчивее к форматированию kubectl.
 		kubectl get secret -n $(NAMESPACE) "$$NAME" -o yaml \
-			| awk '/^  resourceVersion:/{next} /^  uid:/{next} /^  creationTimestamp:/{next} {print}' \
+			| "$(YQ)" 'del(.metadata.creationTimestamp, .metadata.resourceVersion, .metadata.uid, .metadata.selfLink, .metadata.managedFields, .metadata.ownerReferences)' \
 			> "$$TMP/tracking-secrets/$$NAME.yaml"; \
 	done; \
 	# Распаковываем mc.tar.gz в TMP, добавляем tracking-secrets, переупаковываем единым архивом.

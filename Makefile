@@ -124,7 +124,6 @@ doctor:
 	echo ""; echo "=== 4/5 Rollout статусы (per-service) ==="; \
 	for svc in postgres redis kafka minio clickhouse rabbitmq; do \
 		ns="$$svc"; \
-		[ "$$svc" = "postgres" ] && rel="postgres-postgresql" || rel="$$svc"; \
 		if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get statefulset,deployment 2>/dev/null | grep -q .; then \
 			echo "  ↷ $$ns: нет workload (сервис не задеплоен)"; continue; \
 		fi; \
@@ -659,6 +658,8 @@ postgres-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап ==="
 	@$(MAKE) postgres-backup ENV="$(ENV)"
+	@LATEST=$$(ls -t postgres/backups/postgres-backup-*.sql.gz 2>/dev/null | head -1); \
+		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Бэкап пустой или отсутствует ($$LATEST). Прерываю — данные могут быть в опасности."; exit 1; }
 	@echo ""
 	@echo "=== 2/3 Удаление release ==="
 	@$(MAKE) postgres-down ENV="$(ENV)"
@@ -682,6 +683,8 @@ redis-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап Redis (RDB + ACL) ==="
 	@$(MAKE) redis-backup ENV="$(ENV)"
+	@LATEST=$$(ls -t redis/backups/redis-backup-*.tar.gz 2>/dev/null | head -1); \
+		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "=== 2/3 Удаление release ==="
 	@$(MAKE) redis-down ENV="$(ENV)"
@@ -706,6 +709,8 @@ kafka-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап Kafka meta (topics + ACL + SCRAM list) ==="
 	@$(MAKE) kafka-backup-meta ENV="$(ENV)"
+	@LATEST=$$(ls -t kafka/backups/kafka-meta-*.tar.gz 2>/dev/null | head -1); \
+		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Meta-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "=== 2/3 Удаление release ==="
 	@$(MAKE) kafka-down ENV="$(ENV)"
@@ -729,6 +734,8 @@ minio-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап MinIO meta (users + policies + tracking secrets) ==="
 	@$(MAKE) minio-backup-meta ENV="$(ENV)"
+	@LATEST=$$(ls -t minio/backups/minio-meta-*.tar.gz 2>/dev/null | head -1); \
+		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Meta-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "⚠ Объекты бакетов НЕ бэкапятся make backup-meta. Если данные нужны — выполните 'mc mirror' до этого шага."
 	@echo "=== 2/3 Удаление release ==="
@@ -753,6 +760,8 @@ clickhouse-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап ClickHouse (schemas + users + grants) ==="
 	@$(MAKE) clickhouse-backup ENV="$(ENV)"
+	@LATEST=$$(ls -t clickhouse/backups/clickhouse-backup-*.tar.gz 2>/dev/null | head -1); \
+		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Schema-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "⚠ Данные таблиц НЕ бэкапятся make backup. Если данные нужны — используйте BACKUP TO Disk() или SELECT INTO OUTFILE до этого шага."
 	@echo "=== 2/3 Удаление release ==="
@@ -777,6 +786,8 @@ rabbitmq-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап RabbitMQ definitions (vhosts + users + queues + bindings) ==="
 	@$(MAKE) rabbitmq-backup-defs ENV="$(ENV)"
+	@LATEST=$$(ls -t rabbitmq/backups/rabbitmq-defs-*.json.gz 2>/dev/null | head -1); \
+		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Definitions-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "⚠ Сообщения в очередях НЕ бэкапятся (для durability используйте federation/shovel + persistent queues)."
 	@echo "=== 2/3 Удаление release ==="
