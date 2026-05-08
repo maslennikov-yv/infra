@@ -1,6 +1,7 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	backup-meta restore-meta list-backups \
 	check-registry check-updates
 
 REGISTRY ?= localhost:32000
@@ -62,6 +63,11 @@ help:
 	@echo "  make app-show-creds APP=myapp [APP_NS=...] — креды из Secret приложения (APP-minio)"
 	@echo "  make app-drop APP=myapp — пользователь, политика, Secret (⚠ y/N; SKIP_CONFIRM=1). MINIO_REMOVE_BUCKETS=1 — удалить bucket (второй запрос y/N)"
 	@echo "  make app-append APP=myapp BUCKET=... — добавить bucket к существующей учётке"
+	@echo ""
+	@echo "Backup / Restore (definitions; объекты бакетов НЕ бэкапятся — используйте mc mirror, см. minio/BACKUP.md):"
+	@echo "  make backup-meta              - tar.gz: users + policies + buckets + tracking secrets minio-app-*"
+	@echo "  make restore-meta BACKUP_FILE=... — восстановить policies + tracking secrets (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  make list-backups             - список meta-бэкапов"
 
 ## =========================
 ## App accounts (per-app isolation)
@@ -647,4 +653,143 @@ images-clean:
 
 images-clean-files:
 	@if [ -d "$(IMAGES_DIR)" ]; then rm -f $(IMAGES_DIR)/*.tar 2>/dev/null || true; fi
+
+## =========================
+## Backup / Restore (meta: IAM users + policies + buckets + tracking secrets)
+## =========================
+BACKUP_DIR ?= backups
+
+# Запускает helper-pod на minio-client image, собирает users/policies/buckets через mc admin,
+# на хосте дополнительно собирает tracking secrets minio-app-<APP> из namespace $(NAMESPACE).
+# Объекты бакетов (содержимое) НЕ бэкапятся: используйте mc mirror отдельно.
+# Secret-keys IAM-пользователей не экспортируются (хранятся только в Secret <APP>-minio в namespace приложения).
+backup-meta:
+	@mkdir -p $(BACKUP_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	OUT="$(BACKUP_DIR)/minio-meta-$$TS.tar.gz"; \
+	echo "Создание meta-бэкапа MinIO в $$OUT..."; \
+	ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
+	ROOT_PASSWORD=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ROOT_USER" ] || [ -z "$$ROOT_PASSWORD" ]; then echo "✗ Не удалось получить root creds из секрета $(RELEASE) в namespace $(NAMESPACE)"; exit 1; fi; \
+	MINIO_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
+	MINIO_ENDPOINT="http://$$MINIO_HOST:9000"; \
+	HELPER=minio-meta-$$TS; \
+	echo "  Старт helper-pod $$HELPER..."; \
+	kubectl run "$$HELPER" --restart=Never --image=$(MINIO_CLIENT_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(MINIO_CLIENT_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	echo "  Сбор IAM users + policies + buckets..."; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="ROOT_USER=$$ROOT_USER" --env="ROOT_PASSWORD=$$ROOT_PASSWORD" --env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" -- sh -ec ' \
+		mkdir -p /tmp/meta/policies /tmp/meta/buckets; cd /tmp/meta; \
+		mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+		mc admin info       --json minio > info.json         2>/dev/null || echo "{}" > info.json; \
+		mc admin user list  --json minio > users.json        2>/dev/null || echo "" > users.json; \
+		mc admin policy list --json minio > policies.list    2>/dev/null || echo "" > policies.list; \
+		# Содержимое каждой policy
+		for p in $$(mc admin policy list minio 2>/dev/null | awk "NR>1 {print \$$1}"); do \
+			[ -z "$$p" ] && continue; \
+			mc admin policy info --json minio "$$p" > "policies/$$p.json" 2>/dev/null || true; \
+		done; \
+		mc ls --json minio > buckets.json 2>/dev/null || echo "" > buckets.json; \
+		# Per-bucket: versioning + ilm + anonymous policy
+		for b in $$(mc ls minio 2>/dev/null | awk "{print \$$NF}" | sed "s|/$$||"); do \
+			[ -z "$$b" ] && continue; \
+			mc version info     --json "minio/$$b" > "buckets/$$b-versioning.json" 2>/dev/null || true; \
+			mc ilm rule export        "minio/$$b" > "buckets/$$b-ilm.json"        2>/dev/null || true; \
+			mc anonymous get-json     "minio/$$b" > "buckets/$$b-anonymous.json"  2>/dev/null || true; \
+		done; \
+		tar -czf /tmp/minio-meta-mc.tar.gz -C /tmp/meta .; \
+	'; \
+	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"; kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl cp "$(NAMESPACE)/$$HELPER:/tmp/minio-meta-mc.tar.gz" "$$TMP/mc.tar.gz" >/dev/null; \
+	echo "  Сбор tracking secrets minio-app-*..."; \
+	mkdir -p "$$TMP/tracking-secrets"; \
+	for s in $$(kubectl get secret -n $(NAMESPACE) -o name 2>/dev/null | grep '^secret/minio-app-' || true); do \
+		NAME=$$(basename "$$s"); \
+		kubectl get secret -n $(NAMESPACE) "$$NAME" -o yaml \
+			| awk '/^  resourceVersion:/{next} /^  uid:/{next} /^  creationTimestamp:/{next} {print}' \
+			> "$$TMP/tracking-secrets/$$NAME.yaml"; \
+	done; \
+	# Распаковываем mc.tar.gz в TMP, добавляем tracking-secrets, переупаковываем единым архивом.
+	mkdir -p "$$TMP/meta"; \
+	tar -xzf "$$TMP/mc.tar.gz" -C "$$TMP/meta"; \
+	if [ -d "$$TMP/tracking-secrets" ]; then mv "$$TMP/tracking-secrets" "$$TMP/meta/tracking-secrets"; fi; \
+	tar -czf "$$OUT" -C "$$TMP/meta" .; \
+	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	echo "✓ Meta-бэкап создан: $$OUT ($$SIZE)"
+
+list-backups:
+	@echo "Список meta-бэкапов MinIO в $(BACKUP_DIR):"
+	@if [ -d "$(BACKUP_DIR)" ]; then \
+		ls -lht "$(BACKUP_DIR)"/minio-meta-*.tar.gz 2>/dev/null | awk '{print $$9, "(" $$5, $$6, $$7, $$8 ")"}' || echo "  Бэкапы не найдены"; \
+	else \
+		echo "  Директория $(BACKUP_DIR) не существует"; \
+	fi
+
+# Восстанавливает policies (mc admin policy create) и tracking secrets minio-app-* (kubectl apply).
+# IAM-users НЕ восстанавливаются автоматически (secret_key не экспортируем — он только в Secret приложения).
+# Полная процедура воссоздания учёток приложений — через `make apps-apply ENV=... ENABLED_SERVICES=minio`.
+restore-meta:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите файл: make restore-meta BACKUP_FILE=$(BACKUP_DIR)/minio-meta-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будут восстановлены policies и tracking secrets minio-app-* из $(BACKUP_FILE)."; \
+		echo "  IAM users НЕ восстанавливаются: запустите make apps-apply для полного восстановления учёток приложений."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
+	tar -xzf "$(BACKUP_FILE)" -C "$$TMP"; \
+	# 1) Восстанавливаем policies
+	if [ -d "$$TMP/policies" ]; then \
+		ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
+		ROOT_PASSWORD=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
+		if [ -z "$$ROOT_USER" ] || [ -z "$$ROOT_PASSWORD" ]; then echo "✗ Нет root creds для применения policies"; exit 1; fi; \
+		MINIO_ENDPOINT="http://$(RELEASE).$(NAMESPACE).svc.cluster.local:9000"; \
+		HELPER=minio-restore-$$TS; \
+		kubectl run "$$HELPER" --restart=Never --image=$(MINIO_CLIENT_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+			--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(MINIO_CLIENT_IMAGE_LOCAL)","command":["sleep","300"]}]}}' \
+			>/dev/null; \
+		trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true; rm -rf "$$TMP"' EXIT INT TERM; \
+		kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+		kubectl exec "$$HELPER" -n $(NAMESPACE) --env="ROOT_USER=$$ROOT_USER" --env="ROOT_PASSWORD=$$ROOT_PASSWORD" --env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" -- sh -ec ' \
+			mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+		'; \
+		APPLIED=0; SKIPPED=0; \
+		for f in "$$TMP/policies"/*.json; do \
+			[ -f "$$f" ] || continue; \
+			NAME=$$(basename "$$f" .json); \
+			# консольные/системные policies (consoleAdmin, readonly, readwrite, writeonly, diagnostics) пропустим
+			case "$$NAME" in consoleAdmin|readonly|readwrite|writeonly|diagnostics) SKIPPED=$$((SKIPPED+1)); continue ;; esac; \
+			kubectl cp "$$f" "$(NAMESPACE)/$$HELPER:/tmp/$$NAME.json" >/dev/null; \
+			if kubectl exec "$$HELPER" -n $(NAMESPACE) -- mc admin policy create minio "$$NAME" "/tmp/$$NAME.json" >/dev/null 2>&1; then \
+				APPLIED=$$((APPLIED+1)); \
+			else \
+				echo "  ⚠ Не удалось применить policy $$NAME"; \
+			fi; \
+		done; \
+		echo "  Policies: применено $$APPLIED, пропущено системных $$SKIPPED"; \
+		kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true; \
+	fi; \
+	# 2) Восстанавливаем tracking secrets minio-app-*
+	APPLIED_TS=0; \
+	if [ -d "$$TMP/tracking-secrets" ]; then \
+		for f in "$$TMP/tracking-secrets"/*.yaml; do \
+			[ -f "$$f" ] || continue; \
+			if kubectl apply -n $(NAMESPACE) -f "$$f" >/dev/null; then \
+				APPLIED_TS=$$((APPLIED_TS+1)); \
+			else \
+				echo "  ⚠ Не удалось применить $$(basename "$$f")"; \
+			fi; \
+		done; \
+		echo "  Tracking secrets: применено $$APPLIED_TS"; \
+	fi; \
+	echo "✓ Restore-meta завершён. Для воссоздания IAM-users + S3-кредов приложений: make apps-apply ENV=$(ENV) ENABLED_SERVICES=minio"
+
 

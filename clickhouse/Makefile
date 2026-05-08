@@ -1,6 +1,7 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	backup restore list-backups \
 	check-registry check-updates
 
 # Локальный registry MicroK8s
@@ -59,6 +60,11 @@ help:
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp]"
 	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (APP-clickhouse)"
 	@echo "  make app-drop APP=myapp — DROP DATABASE, DROP USER и Secret (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo ""
+	@echo "Backup / Restore (schemas + users; данные таблиц — отдельно, см. clickhouse/BACKUP.md):"
+	@echo "  make backup                    - tar.gz: schemas + users + grants всех БД (кроме системных)"
+	@echo "  make restore BACKUP_FILE=...   - применить schemas + users + grants (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  make list-backups              - список бэкапов"
 
 check-registry:
 	@echo "Проверка MicroK8s registry..."
@@ -312,3 +318,117 @@ images-clean:
 
 images-clean-files:
 	@if [ -d "$(IMAGES_DIR)" ]; then rm -f $(IMAGES_DIR)/*.tar 2>/dev/null || true; fi
+
+## =========================
+## Backup / Restore (schemas + users + grants)
+## =========================
+BACKUP_DIR ?= backups
+
+# Schema-only backup: для каждой пользовательской БД сохраняет CREATE DATABASE + CREATE TABLE
+# для всех таблиц. Дополнительно — CREATE USER + GRANT для каждого non-default пользователя.
+# Данные таблиц НЕ бэкапятся (см. clickhouse/BACKUP.md, варианты BACKUP TO Disk / SELECT INTO OUTFILE).
+backup:
+	@mkdir -p $(BACKUP_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	OUT="$(BACKUP_DIR)/clickhouse-backup-$$TS.tar.gz"; \
+	echo "Создание schema-бэкапа ClickHouse в $$OUT..."; \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password из секрета $(RELEASE)"; exit 1; fi; \
+	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
+	HELPER=clickhouse-backup-$$TS; \
+	echo "  Старт helper-pod $$HELPER..."; \
+	kubectl run "$$HELPER" --restart=Never --image=$(CLICKHOUSE_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(CLICKHOUSE_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	echo "  Сбор schemas + users + grants..."; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="CH_HOST=$$CH_HOST" --env="ADMIN_PASSWORD=$$ADMIN_PASSWORD" -- bash -ec ' \
+		mkdir -p /tmp/meta/schemas; cd /tmp/meta; \
+		CH="clickhouse-client --host $$CH_HOST --port 9000 --user admin --password $$ADMIN_PASSWORD"; \
+		# Список пользовательских БД
+		$$CH --query "SELECT name FROM system.databases WHERE name NOT IN ('"'"'system'"'"','"'"'INFORMATION_SCHEMA'"'"','"'"'information_schema'"'"','"'"'default'"'"')" > databases.list; \
+		# Schemas: CREATE DATABASE + CREATE TABLE для каждой
+		while IFS= read -r db; do \
+			[ -z "$$db" ] && continue; \
+			OUT_FILE="schemas/$$db.sql"; \
+			$$CH --query "SHOW CREATE DATABASE \"$$db\""               | sed -e "s/$$/;/" >  "$$OUT_FILE"; \
+			$$CH --query "SELECT name FROM system.tables WHERE database='"'"'$$db'"'"' AND engine NOT LIKE '"'"'%View%'"'"'" \
+				| while IFS= read -r tbl; do \
+					[ -z "$$tbl" ] && continue; \
+					$$CH --query "SHOW CREATE TABLE \"$$db\".\"$$tbl\"" | sed -e "s/$$/;/" >> "$$OUT_FILE"; \
+				done; \
+		done < databases.list; \
+		# Users + grants (исключаем системных и admin)
+		: > users.sql; \
+		$$CH --query "SELECT name FROM system.users WHERE name NOT IN ('"'"'default'"'"','"'"'admin'"'"')" \
+			| while IFS= read -r u; do \
+				[ -z "$$u" ] && continue; \
+				$$CH --query "SHOW CREATE USER \"$$u\""    | sed -e "s/$$/;/" >> users.sql; \
+				$$CH --query "SHOW GRANTS FOR \"$$u\""     | sed -e "s/$$/;/" >> users.sql; \
+				echo "" >> users.sql; \
+			done; \
+		# Краткий summary
+		{ echo "ClickHouse $(shell echo) schema backup"; date; \
+			$$CH --query "SELECT version()"; } > info.txt 2>&1 || true; \
+		tar -czf /tmp/clickhouse-backup.tar.gz -C /tmp/meta .; \
+	'; \
+	kubectl cp "$(NAMESPACE)/$$HELPER:/tmp/clickhouse-backup.tar.gz" "$$OUT" >/dev/null; \
+	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	echo "✓ Schema-бэкап создан: $$OUT ($$SIZE)"
+
+list-backups:
+	@echo "Список бэкапов ClickHouse в $(BACKUP_DIR):"
+	@if [ -d "$(BACKUP_DIR)" ]; then \
+		ls -lht "$(BACKUP_DIR)"/clickhouse-backup-*.tar.gz 2>/dev/null | awk '{print $$9, "(" $$5, $$6, $$7, $$8 ")"}' || echo "  Бэкапы не найдены"; \
+	else \
+		echo "  Директория $(BACKUP_DIR) не существует"; \
+	fi
+
+# Применяет schemas + users.sql из бэкапа. Используются IF NOT EXISTS варианты,
+# поэтому существующие БД/таблицы не пересоздаются. Для пользователей
+# CREATE USER падает, если пользователь уже существует — поэтому restore
+# делает DROP USER IF EXISTS перед каждым (см. ниже сценарий).
+restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите файл: make restore BACKUP_FILE=$(BACKUP_DIR)/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будут применены schemas + users + grants из $(BACKUP_FILE)."; \
+		echo "  Существующие БД/таблицы (IF NOT EXISTS) не трогаются. Пользователи пересоздаются (DROP USER IF EXISTS + CREATE)."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password"; exit 1; fi; \
+	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
+	HELPER=clickhouse-restore-$$TS; \
+	kubectl run "$$HELPER" --restart=Never --image=$(CLICKHOUSE_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(CLICKHOUSE_IMAGE_LOCAL)","command":["sleep","300"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	kubectl cp "$(BACKUP_FILE)" "$(NAMESPACE)/$$HELPER:/tmp/backup.tar.gz" >/dev/null; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="CH_HOST=$$CH_HOST" --env="ADMIN_PASSWORD=$$ADMIN_PASSWORD" -- bash -ec ' \
+		mkdir -p /tmp/meta && tar -xzf /tmp/backup.tar.gz -C /tmp/meta; \
+		cd /tmp/meta; \
+		CH="clickhouse-client --host $$CH_HOST --port 9000 --user admin --password $$ADMIN_PASSWORD"; \
+		# 1) schemas: каждый файл — multiquery
+		if [ -d schemas ]; then \
+			for f in schemas/*.sql; do [ -f "$$f" ] || continue; \
+				echo "  schema: $$(basename $$f)"; \
+				$$CH --multiquery < "$$f"; \
+			done; \
+		fi; \
+		# 2) users: парсим по блокам "CREATE USER ... ; SHOW GRANTS ...; \n"
+		# Перед каждым CREATE USER делаем DROP USER IF EXISTS (имя из CREATE USER строки).
+		if [ -f users.sql ]; then \
+			awk '"'"'/^CREATE USER/{print "DROP USER IF EXISTS " $$3 ";"} {print}'"'"' users.sql > /tmp/users-final.sql; \
+			$$CH --multiquery < /tmp/users-final.sql; \
+		fi; \
+	'; \
+	echo "✓ Restore schemas + users завершён"
+

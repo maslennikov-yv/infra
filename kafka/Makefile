@@ -6,6 +6,7 @@
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-print-env \
 	topic-create topic-alter topic-describe topic-list \
 	test-producer test-consumer test-clean test-client-properties test-create-topic \
+	backup-meta restore-meta-topics list-backups \
 	check-updates
 
 # Локальный registry MicroK8s
@@ -108,6 +109,12 @@ help:
 	@echo "  make topic-alter   TOPIC=myapp.events [PARTITIONS=12] [CONFIGS=k=v,k2=v2]"
 	@echo "  make topic-describe TOPIC=myapp.events"
 	@echo "  make topic-list    [PREFIX=myapp.]"
+	@echo ""
+	@echo "Backup / Restore (definitions; данные топиков НЕ бэкапятся — см. kafka/BACKUP.md):"
+	@echo "  make backup-meta              - tar.gz: topics + configs + ACL + SCRAM-users (только список) + recreate-topics.sh"
+	@echo "  make restore-meta-topics BACKUP_FILE=... - пересоздать топики из recreate-topics.sh (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  make list-backups             - список meta-бэкапов"
+	@echo "  Полный disaster recovery (KRaft cluster-id + SCRAM creds) — см. kafka/BACKUP.md"
 
 ## =========================
 ## App accounts (per-app isolation)
@@ -886,4 +893,113 @@ test-clean:
 	@-kubectl get pods -n $(KAFKA_NAMESPACE) --no-headers 2>/dev/null | grep "^kafka-admin-" | awk '{print $$1}' | xargs -r kubectl delete pod -n $(KAFKA_NAMESPACE) 2>/dev/null || true
 	@-rm -f /tmp/client.properties 2>/dev/null || true
 	@echo "✓ Тестовые ресурсы удалены"
+
+## =========================
+## Backup / Restore (definitions: topics + configs + ACL + SCRAM users list)
+## =========================
+BACKUP_DIR ?= backups
+
+# Запускает helper-pod на образе kafka, через kafka-*.sh выгружает все topic / config / ACL / SCRAM definitions,
+# собирает recreate-topics.sh для последующего быстрого восстановления и упаковывает всё в tar.gz.
+# Данные топиков НЕ бэкапятся (для них нужен MirrorMaker / отдельная процедура).
+backup-meta:
+	@mkdir -p $(BACKUP_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	OUT="$(BACKUP_DIR)/kafka-meta-$$TS.tar.gz"; \
+	echo "Создание meta-бэкапа Kafka в $$OUT..."; \
+	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; exit 1; fi; \
+	HELPER=kafka-meta-$$TS; \
+	echo "  Старт helper-pod $$HELPER..."; \
+	kubectl run "$$HELPER" --restart=Never --image=$(KAFKA_IMAGE_LOCAL) --namespace=$(KAFKA_NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(KAFKA_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(KAFKA_NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(KAFKA_NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	BS='$(KAFKA_BOOTSTRAP_SERVER)'; \
+	echo "  Создаю /tmp/admin.properties в pod..."; \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+		| kubectl exec -i "$$HELPER" -n $(KAFKA_NAMESPACE) -- sh -c 'cat > /tmp/admin.properties && chmod 600 /tmp/admin.properties'; \
+	echo "  Сбор definitions..."; \
+	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- bash -ec ' \
+		mkdir -p /tmp/meta && cd /tmp/meta; \
+		BS="'"$$BS"'"; \
+		kafka-topics.sh   --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list                                  > topics.list      2>/dev/null || true; \
+		kafka-topics.sh   --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe                              > topics-describe.txt 2>/dev/null || true; \
+		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type topics         > topics-configs.txt  2>/dev/null || true; \
+		kafka-acls.sh     --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list                                  > acls.txt            2>/dev/null || true; \
+		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type users          > scram-users.txt     2>/dev/null || true; \
+		# Собрать recreate-topics.sh из topics-describe.txt (skip internal topics).
+		: > recreate-topics.sh; \
+		echo "#!/usr/bin/env bash" >> recreate-topics.sh; \
+		echo "# Авто-генерация при kafka backup-meta. Запускать внутри kafka-image pod с /tmp/admin.properties." >> recreate-topics.sh; \
+		echo "# Использование: BS=kafka.kafka.svc.cluster.local:9092 bash recreate-topics.sh" >> recreate-topics.sh; \
+		echo "set -e; BS=\"$${BS:-kafka.kafka.svc.cluster.local:9092}\"" >> recreate-topics.sh; \
+		grep -E "^Topic: " topics-describe.txt | while IFS= read -r line; do \
+			name=$$(echo "$$line"   | sed -nE "s/^Topic:[[:space:]]+([^[:space:]]+).*/\\1/p"); \
+			parts=$$(echo "$$line"  | sed -nE "s/.*PartitionCount:[[:space:]]+([0-9]+).*/\\1/p"); \
+			repl=$$(echo "$$line"   | sed -nE "s/.*ReplicationFactor:[[:space:]]+([0-9]+).*/\\1/p"); \
+			cfgs=$$(echo "$$line"   | sed -nE "s/.*Configs:[[:space:]]*(.*)$$/\\1/p"); \
+			case "$$name" in __*|_*) continue ;; esac; \
+			[ -z "$$name" ] || [ -z "$$parts" ] || [ -z "$$repl" ] && continue; \
+			cmd="kafka-topics.sh --bootstrap-server \"\$$BS\" --command-config /tmp/admin.properties --create --if-not-exists --topic $$name --partitions $$parts --replication-factor $$repl"; \
+			if [ -n "$$cfgs" ]; then \
+				IFS="," ; for kv in $$cfgs ; do \
+					kv_trim=$$(echo "$$kv" | xargs); \
+					[ -n "$$kv_trim" ] && cmd="$$cmd --config $$kv_trim"; \
+				done; \
+				IFS=$$" \t\n"; \
+			fi; \
+			echo "$$cmd" >> recreate-topics.sh; \
+		done; \
+		chmod +x recreate-topics.sh; \
+		tar -czf /tmp/kafka-meta.tar.gz -C /tmp/meta .; \
+		rm -f /tmp/admin.properties; \
+	'; \
+	echo "  Копирую архив на хост..."; \
+	kubectl cp "$(KAFKA_NAMESPACE)/$$HELPER:/tmp/kafka-meta.tar.gz" "$$OUT" >/dev/null; \
+	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	echo "✓ Meta-бэкап создан: $$OUT ($$SIZE)"
+
+list-backups:
+	@echo "Список meta-бэкапов Kafka в $(BACKUP_DIR):"
+	@if [ -d "$(BACKUP_DIR)" ]; then \
+		ls -lht "$(BACKUP_DIR)"/kafka-meta-*.tar.gz 2>/dev/null | awk '{print $$9, "(" $$5, $$6, $$7, $$8 ")"}' || echo "  Бэкапы не найдены"; \
+	else \
+		echo "  Директория $(BACKUP_DIR) не существует"; \
+	fi
+
+# Пересоздаёт топики из recreate-topics.sh внутри helper-pod.
+# ACL и SCRAM-пользователи не восстанавливаются автоматически — они приходят через apps-apply (по apps/registry.yaml).
+restore-meta-topics:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите файл: make restore-meta-topics BACKUP_FILE=$(BACKUP_DIR)/kafka-meta-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будут пересозданы топики из $(BACKUP_FILE) (--if-not-exists; существующие топики не трогаются)."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета"; exit 1; fi; \
+	HELPER=kafka-restore-$$TS; \
+	kubectl run "$$HELPER" --restart=Never --image=$(KAFKA_IMAGE_LOCAL) --namespace=$(KAFKA_NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(KAFKA_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(KAFKA_NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(KAFKA_NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+		| kubectl exec -i "$$HELPER" -n $(KAFKA_NAMESPACE) -- sh -c 'cat > /tmp/admin.properties && chmod 600 /tmp/admin.properties'; \
+	kubectl cp "$(BACKUP_FILE)" "$(KAFKA_NAMESPACE)/$$HELPER:/tmp/meta.tar.gz" >/dev/null; \
+	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- bash -ec ' \
+		mkdir -p /tmp/meta && cd /tmp/meta; \
+		tar -xzf /tmp/meta.tar.gz; \
+		[ -f recreate-topics.sh ] || { echo "✗ recreate-topics.sh отсутствует в архиве"; exit 1; }; \
+		BS="'"$(KAFKA_BOOTSTRAP_SERVER)"'" bash recreate-topics.sh; \
+	'; \
+	echo "✓ Restore-meta завершён (топики)"
+
 

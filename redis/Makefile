@@ -1,6 +1,7 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	backup restore-acl list-backups \
 	check-registry check-updates
 
 # Локальный registry MicroK8s
@@ -76,6 +77,12 @@ help:
 	@echo "  make app-show-creds APP=myapp [APP_NS=...] — показать креды из Secret app-redis"
 	@echo "  make app-create APP=myapp [REDIS_DB=0] — REDIS_DB из CLI; иначе следующий свободный 1..127 по $(APPS_REGISTRY) (yq); без yq — предупреждение и 0"
 	@echo "  make app-drop APP=myapp — удалить ACL-пользователя и Secret (⚠ y/N; SKIP_CONFIRM=1). Ключи по префиксу не удаляются"
+	@echo ""
+	@echo "Бэкапы и восстановление (RDB + ACL):"
+	@echo "  make backup              - RDB снимок + ACL LIST + INFO (tar.gz в $(BACKUP_DIR)/)"
+	@echo "  make list-backups        - список бэкапов"
+	@echo "  make restore-acl BACKUP_FILE=... — применить ACL-пользователей из бэкапа (default не трогается; ⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  Восстановление данных RDB — см. redis/BACKUP.md (scale 0 + замена в PVC)"
 
 check-registry:
 	@echo "Проверка MicroK8s registry..."
@@ -365,4 +372,79 @@ images-clean-files:
 	@echo "Удаление сохраненных файлов образов..."
 	@if [ -d "$(IMAGES_DIR)" ]; then rm -f $(IMAGES_DIR)/*.tar 2>/dev/null || true; fi
 	@echo "✓ Файлы образов удалены"
+
+## =========================
+## Backup / Restore (RDB + ACL)
+## =========================
+BACKUP_DIR ?= backups
+
+# Полный бэкап definitions: RDB снимок (через replication protocol — независимо от persistence config),
+# ACL LIST и INFO server. Упаковывается в один tar.gz.
+backup:
+	@mkdir -p $(BACKUP_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	OUT="$(BACKUP_DIR)/redis-backup-$$TS.tar.gz"; \
+	echo "Создание бэкапа Redis в $$OUT..."; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	if ! kubectl get secret $(REDIS_AUTH_SECRET_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then \
+		echo "✗ Secret $(REDIS_AUTH_SECRET_NAME) не найден"; exit 1; \
+	fi; \
+	PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
+	if [ -z "$$PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
+	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
+	echo "  Создаю RDB снимок..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning --rdb /tmp/redis-backup.rdb >/dev/null"; \
+	kubectl cp "$(NAMESPACE)/$$POD:/tmp/redis-backup.rdb" "$$TMP/dump.rdb" >/dev/null; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/redis-backup.rdb >/dev/null 2>&1 || true; \
+	echo "  Экспорт ACL..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning ACL LIST" > "$$TMP/users.acl"; \
+	echo "  Сбор INFO server..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning INFO server" > "$$TMP/info.txt"; \
+	tar -czf "$$OUT" -C "$$TMP" dump.rdb users.acl info.txt; \
+	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	echo "✓ Бэкап создан: $$OUT ($$SIZE)"
+
+list-backups:
+	@echo "Список бэкапов Redis в $(BACKUP_DIR):"
+	@if [ -d "$(BACKUP_DIR)" ]; then \
+		ls -lht "$(BACKUP_DIR)"/redis-backup-*.tar.gz 2>/dev/null | awk '{print $$9, "(" $$5, $$6, $$7, $$8 ")"}' || echo "  Бэкапы не найдены"; \
+	else \
+		echo "  Директория $(BACKUP_DIR) не существует"; \
+	fi
+
+# Возврат ACL-пользователей из бэкапа в живой Redis (default не трогается).
+# Восстановление RDB-данных — отдельная процедура, см. redis/BACKUP.md.
+restore-acl:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите файл: make restore-acl BACKUP_FILE=$(BACKUP_DIR)/redis-backup-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будут применены ACL-пользователи из $(BACKUP_FILE) (default user не трогается)."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден"; exit 1; fi; \
+	PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
+	if [ -z "$$PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
+	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
+	tar -xzf "$(BACKUP_FILE)" -C "$$TMP"; \
+	if [ ! -s "$$TMP/users.acl" ]; then echo "✗ В архиве нет users.acl"; exit 1; fi; \
+	APPLIED=0; FAILED=0; SKIPPED=0; \
+	while IFS= read -r line; do \
+		[ -z "$$line" ] && continue; \
+		USER_NAME=$$(echo "$$line" | awk '{print $$2}'); \
+		if [ "$$USER_NAME" = "default" ]; then SKIPPED=$$((SKIPPED+1)); continue; fi; \
+		ARGS=$$(echo "$$line" | sed 's/^user //'); \
+		if kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning ACL SETUSER $$ARGS" >/dev/null; then \
+			APPLIED=$$((APPLIED+1)); \
+		else \
+			echo "  ⚠ Не удалось применить пользователя $$USER_NAME"; \
+			FAILED=$$((FAILED+1)); \
+		fi; \
+	done < "$$TMP/users.acl"; \
+	echo "✓ Применено: $$APPLIED, ошибок: $$FAILED, пропущено (default): $$SKIPPED"
 

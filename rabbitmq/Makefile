@@ -1,6 +1,7 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	backup-defs restore-defs list-backups \
 	check-registry check-updates
 
 # Локальный registry MicroK8s
@@ -58,6 +59,11 @@ help:
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [APP_VHOST=myapp] [APP_USER=app_myapp]"
 	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (APP-rabbitmq)"
 	@echo "  make app-drop APP=myapp — удалить vhost, пользователя RabbitMQ и Secret (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo ""
+	@echo "Backup / Restore (definitions: vhosts + users + permissions + exchanges + queues + bindings + policies):"
+	@echo "  make backup-defs              - export_definitions в JSON.gz (сообщения НЕ бэкапятся)"
+	@echo "  make restore-defs BACKUP_FILE=... - import_definitions (idempotent merge; ⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  make list-backups             - список бэкапов definitions"
 
 check-registry:
 	@echo "Проверка MicroK8s registry..."
@@ -299,3 +305,55 @@ images-clean:
 
 images-clean-files:
 	@if [ -d "$(IMAGES_DIR)" ]; then rm -f $(IMAGES_DIR)/*.tar 2>/dev/null || true; fi
+
+## =========================
+## Backup / Restore (definitions: rabbitmqctl export/import_definitions)
+## =========================
+BACKUP_DIR ?= backups
+
+# Экспорт всех definitions (vhosts, users, permissions, exchanges, queues, bindings, parameters, policies)
+# в JSON. Сообщения и состояние очередей НЕ бэкапятся — для durability используется persistence + replication.
+backup-defs:
+	@mkdir -p $(BACKUP_DIR)
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+	OUT="$(BACKUP_DIR)/rabbitmq-defs-$$TS.json.gz"; \
+	echo "Экспорт definitions RabbitMQ в $$OUT..."; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl export_definitions /tmp/rabbitmq-defs.json >/dev/null; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- cat /tmp/rabbitmq-defs.json | gzip > "$$OUT"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/rabbitmq-defs.json >/dev/null 2>&1 || true; \
+	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	echo "✓ Definitions экспортированы: $$OUT ($$SIZE)"
+
+list-backups:
+	@echo "Список бэкапов definitions RabbitMQ в $(BACKUP_DIR):"
+	@if [ -d "$(BACKUP_DIR)" ]; then \
+		ls -lht "$(BACKUP_DIR)"/rabbitmq-defs-*.json.gz 2>/dev/null | awk '{print $$9, "(" $$5, $$6, $$7, $$8 ")"}' || echo "  Бэкапы не найдены"; \
+	else \
+		echo "  Директория $(BACKUP_DIR) не существует"; \
+	fi
+
+# Импорт definitions: rabbitmqctl import_definitions делает merge — существующие vhosts/users/queues
+# не пересоздаются деструктивно, добавляются недостающие. Хэши паролей пользователей восстанавливаются
+# как есть; для приложений после restore-defs запустите apps-apply.
+restore-defs:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите файл: make restore-defs BACKUP_FILE=$(BACKUP_DIR)/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будут импортированы definitions из $(BACKUP_FILE) (idempotent merge: новое — добавится, существующее — не пересоздаётся)."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден"; exit 1; fi; \
+	echo "  Копирую $(BACKUP_FILE) в pod..."; \
+	gunzip -c "$(BACKUP_FILE)" | kubectl exec -i "$$POD" -n $(NAMESPACE) -- sh -c 'cat > /tmp/rabbitmq-defs.json'; \
+	echo "  rabbitmqctl import_definitions..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl import_definitions /tmp/rabbitmq-defs.json; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/rabbitmq-defs.json >/dev/null 2>&1 || true; \
+	echo "✓ Definitions импортированы"
+

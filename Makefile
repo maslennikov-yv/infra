@@ -19,6 +19,8 @@
 	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply \
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
+	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
+	backup-all \
 	infra-control-parity-check infra-lab
 
 # Do not print "Entering/Leaving directory ..." on recursive make
@@ -187,6 +189,15 @@ help:
 	@echo "  make rabbitmq-status $(YELLOW)ENV=$(ENV)$(RESET)    - статус RabbitMQ"
 	@echo "  make rabbitmq-logs $(YELLOW)ENV=$(ENV)$(RESET)       - логи RabbitMQ"
 	@echo "  make rabbitmq-shell $(YELLOW)ENV=$(ENV)$(RESET)      - shell в контейнер RabbitMQ"
+	@echo ""
+	@echo "$(BOLD)$(GREEN)Backup / Restore (definitions; данные таблиц/топиков/бакетов — см. <service>/BACKUP.md):$(RESET)"
+	@echo "  make backup-all $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=...$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=...$(RESET)] [$(YELLOW)BACKUP_ALL_CONTINUE_ON_ERROR=0$(RESET)]"
+	@echo "  make redis-backup / redis-restore-acl $(YELLOW)BACKUP_FILE=...$(RESET)         (RDB снимок + ACL)"
+	@echo "  make kafka-backup-meta / kafka-restore-meta-topics $(YELLOW)BACKUP_FILE=...$(RESET)  (topics + ACL + SCRAM users list)"
+	@echo "  make minio-backup-meta / minio-restore-meta $(YELLOW)BACKUP_FILE=...$(RESET)    (users + policies + buckets + tracking secrets)"
+	@echo "  make clickhouse-backup / clickhouse-restore $(YELLOW)BACKUP_FILE=...$(RESET)    (schemas + users + grants)"
+	@echo "  make rabbitmq-backup-defs / rabbitmq-restore-defs $(YELLOW)BACKUP_FILE=...$(RESET) (vhosts + users + queues + bindings)"
+	@echo "  make postgres-backup / postgres-restore $(YELLOW)BACKUP_FILE=...$(RESET)        (pg_dumpall — данные)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Kubeconfig/SSH:$(RESET)"
 	@echo "  make kubeconfig-fetch $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)SSH_HOST=... SSH_KEY=...$(RESET)  - kubeconfig с удалённой ноды по SSH (microk8s config)"
@@ -1105,3 +1116,68 @@ k8s-port-expose-apply:
 	@$(MAKE) -C k8s-port-expose apply-config ENV=$(ENV) REPO_ROOT="$(REPO_ROOT)" \
 		PORT_EXPOSE_CONFIG="$(PORT_EXPOSE_CONFIG)" \
 		DRY_RUN="$(DRY_RUN)"
+
+## =========================
+## Backup / Restore wrappers (stateful services)
+## =========================
+# postgres-backup / postgres-restore — определены выше (вместе с recreate-prep).
+# Каждая *-backup* / *-restore* цель — тонкая обёртка над per-service Makefile.
+# Документация: postgres/BACKUP.md, redis/BACKUP.md, kafka/BACKUP.md, minio/BACKUP.md, clickhouse/BACKUP.md, rabbitmq/BACKUP.md.
+
+redis-backup:
+	@$(MAKE) -C redis backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+redis-restore-acl:
+	@$(MAKE) -C redis restore-acl ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+
+kafka-backup-meta:
+	@$(MAKE) -C kafka backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+kafka-restore-meta-topics:
+	@$(MAKE) -C kafka restore-meta-topics ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+
+minio-backup-meta:
+	@$(MAKE) -C minio backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+minio-restore-meta:
+	@$(MAKE) -C minio restore-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+
+clickhouse-backup:
+	@$(MAKE) -C clickhouse backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+clickhouse-restore:
+	@$(MAKE) -C clickhouse restore ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+
+rabbitmq-backup-defs:
+	@$(MAKE) -C rabbitmq backup-defs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+rabbitmq-restore-defs:
+	@$(MAKE) -C rabbitmq restore-defs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+
+# backup-all: запустить все сервисные backup-цели подряд.
+# Учитывает ENABLED_SERVICES / EXCLUDE_SERVICES (как helmfile / apps-apply).
+# Не падает на первой ошибке: BACKUP_ALL_CONTINUE_ON_ERROR=1 (по умолчанию 1; для останова на ошибке задайте 0).
+BACKUP_ALL_CONTINUE_ON_ERROR ?= 1
+backup-all:
+	@FAILED=0; \
+	is_active() { svc=$$1; \
+		if [ -n "$(ENABLED_SERVICES)" ]; then echo ",$(ENABLED_SERVICES)," | grep -qF ",$$svc," && return 0 || return 1; fi; \
+		echo ",$(EXCLUDE_SERVICES)," | grep -qF ",$$svc," && return 1 || return 0; \
+	}; \
+	run_step() { \
+		svc=$$1; tgt=$$2; \
+		if ! is_active "$$svc"; then echo "  ↷ skip $$svc (не в активных сервисах)"; return 0; fi; \
+		echo ""; echo "=== $$svc: $$tgt ==="; \
+		if $(MAKE) "$$tgt" ENV="$(ENV)"; then return 0; fi; \
+		FAILED=$$((FAILED+1)); \
+		if [ "$(BACKUP_ALL_CONTINUE_ON_ERROR)" != "1" ]; then echo "✗ Останов на ошибке (BACKUP_ALL_CONTINUE_ON_ERROR=0)"; exit 1; fi; \
+		echo "  ⚠ Шаг $$svc/$$tgt упал; продолжаем (BACKUP_ALL_CONTINUE_ON_ERROR=1)"; \
+	}; \
+	run_step postgres   postgres-backup; \
+	run_step redis      redis-backup; \
+	run_step kafka      kafka-backup-meta; \
+	run_step minio      minio-backup-meta; \
+	run_step clickhouse clickhouse-backup; \
+	run_step rabbitmq   rabbitmq-backup-defs; \
+	echo ""; \
+	if [ $$FAILED -gt 0 ]; then \
+		echo "⚠ backup-all завершён с ошибками: $$FAILED шаг(ов)"; \
+		exit 1; \
+	else \
+		echo "✓ backup-all: все шаги успешны"; \
+	fi
