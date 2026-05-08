@@ -59,15 +59,16 @@ while IFS= read -r name; do
 
 	confdir="$REPO/apps/conf/$name"
 	if [[ -d "$confdir" ]]; then
-		# Список конфиг-файлов: *.enc.yaml/*.enc.yml + *.yaml/*.yml.
-		# Сортировка лексикографически: *.enc.yaml идёт ДО *.yaml (e < y), поэтому plain переопределяет
-		# зашифрованный — удобно для локальной разработки (decrypt → edit → encrypt).
+		# Двухпроходный сбор файлов: сначала ВСЕ зашифрованные (*.enc.yaml/*.enc.yml в алфавите),
+		# потом ВСЕ plain (*.yaml/*.yml в алфавите, исключая .enc.*). Это гарантирует override-
+		# семантику «plain поверх encrypted» независимо от имён файлов (полагаться на лекс. сортировку
+		# через `LC_ALL=C sort` хрупко: работает для пары secrets.enc.yaml/secrets.yaml, но ломается
+		# для других имён, например db.yaml + secrets.enc.yaml).
 		shopt -s nullglob
-		mapfile -t conffiles < <(printf '%s\n' \
-			"$confdir"/*.enc.yaml "$confdir"/*.enc.yml \
-			"$confdir"/*.yaml "$confdir"/*.yml \
-			| awk '!seen[$0]++' | grep -v '^$' | LC_ALL=C sort -u || true)
+		mapfile -t enc_files  < <(printf '%s\n' "$confdir"/*.enc.yaml "$confdir"/*.enc.yml | grep . | LC_ALL=C sort)
+		mapfile -t plain_files < <(printf '%s\n' "$confdir"/*.yaml      "$confdir"/*.yml      | grep -v '\.enc\.' | grep . | LC_ALL=C sort)
 		shopt -u nullglob
+		conffiles=("${enc_files[@]:-}" "${plain_files[@]:-}")
 		for f in "${conffiles[@]:-}"; do
 			[[ -n "${f:-}" && -f "$f" ]] || continue
 			src="$f"

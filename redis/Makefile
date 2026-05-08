@@ -220,9 +220,11 @@ app-verify:
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	echo "Проверка $$APP_USER (db=$$REDIS_DB_VAL)..."; \
-	OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user '$$APP_USER' --pass '$$APP_PASSWORD' --no-auth-warning -n '$$REDIS_DB_VAL' PING" 2>&1) || { echo "✗ PING не удался: $$OUT"; exit 1; }; \
+	# double-quoted внутри sh -c "..." допускает пароли с '. Полная безопасность по всем спецсимволам
+	# требовала бы pipe через stdin (AUTH command); пока пароли генерятся openssl rand -hex — этого достаточно.
+	OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user \"$$APP_USER\" --pass \"$$APP_PASSWORD\" --no-auth-warning -n \"$$REDIS_DB_VAL\" PING" 2>&1) || { echo "✗ PING не удался: $$OUT"; exit 1; }; \
 	if ! echo "$$OUT" | grep -q PONG; then echo "✗ PING ответил: $$OUT"; exit 1; fi; \
-	SIZE=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user '$$APP_USER' --pass '$$APP_PASSWORD' --no-auth-warning -n '$$REDIS_DB_VAL' DBSIZE" 2>&1) || { echo "✗ DBSIZE не удался: $$SIZE"; exit 1; }; \
+	SIZE=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user \"$$APP_USER\" --pass \"$$APP_PASSWORD\" --no-auth-warning -n \"$$REDIS_DB_VAL\" DBSIZE" 2>&1) || { echo "✗ DBSIZE не удался: $$SIZE"; exit 1; }; \
 	echo "✓ PING=PONG; DBSIZE=$$SIZE (db=$$REDIS_DB_VAL)"
 
 images-verify:
@@ -416,13 +418,13 @@ backup:
 	if [ -z "$$PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
 	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
 	echo "  Создаю RDB снимок..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning --rdb /tmp/redis-backup.rdb >/dev/null"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning --rdb /tmp/redis-backup.rdb >/dev/null"; \
 	kubectl cp "$(NAMESPACE)/$$POD:/tmp/redis-backup.rdb" "$$TMP/dump.rdb" >/dev/null; \
 	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/redis-backup.rdb >/dev/null 2>&1 || true; \
 	echo "  Экспорт ACL..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning ACL LIST" > "$$TMP/users.acl"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning ACL LIST" > "$$TMP/users.acl"; \
 	echo "  Сбор INFO server..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning INFO server" > "$$TMP/info.txt"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning INFO server" > "$$TMP/info.txt"; \
 	tar -czf "$$OUT" -C "$$TMP" dump.rdb users.acl info.txt; \
 	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
 	echo "✓ Бэкап создан: $$OUT ($$SIZE)"
@@ -461,7 +463,7 @@ restore-acl:
 		USER_NAME=$$(echo "$$line" | awk '{print $$2}'); \
 		if [ "$$USER_NAME" = "default" ]; then SKIPPED=$$((SKIPPED+1)); continue; fi; \
 		ARGS=$$(echo "$$line" | sed 's/^user //'); \
-		if kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a '$$PASSWORD' --no-auth-warning ACL SETUSER $$ARGS" >/dev/null; then \
+		if kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning ACL SETUSER $$ARGS" >/dev/null; then \
 			APPLIED=$$((APPLIED+1)); \
 		else \
 			echo "  ⚠ Не удалось применить пользователя $$USER_NAME"; \

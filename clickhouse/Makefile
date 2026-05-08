@@ -169,12 +169,12 @@ app-verify:
 		--image=$(CLICKHOUSE_IMAGE_LOCAL) \
 		--namespace=$(NAMESPACE) \
 		--rm -i --quiet \
-		--env="CH_HOST=$$CH_HOST" --env="APP_USER=$$APP_USER" --env="APP_PASSWORD=$$APP_PASSWORD" --env="APP_DB=$$APP_DB" \
+		--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
+		--env="CLICKHOUSE_USER=$$APP_USER" --env="CLICKHOUSE_PASSWORD=$$APP_PASSWORD" \
+		--env="CLICKHOUSE_DATABASE=$${APP_DB:-default}" \
+		--env="APP_DB=$$APP_DB" \
 		--command -- sh -ec '\
-			OUT=$$(clickhouse-client --host "$$CH_HOST" --port 9000 \
-				--user "$$APP_USER" --password "$$APP_PASSWORD" \
-				--database "$${APP_DB:-default}" \
-				--query "SELECT 1" 2>&1) || { echo "✗ SELECT 1 не удался: $$OUT"; exit 1; }; \
+			OUT=$$(clickhouse-client --query "SELECT 1" 2>&1) || { echo "✗ SELECT 1 не удался: $$OUT"; exit 1; }; \
 			[ "$$OUT" = "1" ] && echo "✓ SELECT 1 = $$OUT (БД $$APP_DB доступна)" || { echo "✗ Unexpected output: $$OUT"; exit 1; }'
 
 # Usage: make app-drop APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp] [ADMIN_USER=admin] [SKIP_CONFIRM=1]
@@ -372,34 +372,33 @@ backup:
 	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
 	echo "  Сбор schemas + users + grants..."; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="CH_HOST=$$CH_HOST" --env="ADMIN_PASSWORD=$$ADMIN_PASSWORD" -- bash -ec ' \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) \
+			--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
+			--env="CLICKHOUSE_USER=admin" --env="CLICKHOUSE_PASSWORD=$$ADMIN_PASSWORD" \
+			-- bash -ec ' \
 		mkdir -p /tmp/meta/schemas; cd /tmp/meta; \
-		CH="clickhouse-client --host $$CH_HOST --port 9000 --user admin --password $$ADMIN_PASSWORD"; \
-		# Список пользовательских БД
-		$$CH --query "SELECT name FROM system.databases WHERE name NOT IN ('"'"'system'"'"','"'"'INFORMATION_SCHEMA'"'"','"'"'information_schema'"'"','"'"'default'"'"')" > databases.list; \
-		# Schemas: CREATE DATABASE + CREATE TABLE для каждой
+		# clickhouse-client подхватывает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env — нет shell-quoting issues с паролями.
+		clickhouse-client --query "SELECT name FROM system.databases WHERE name NOT IN ('"'"'system'"'"','"'"'INFORMATION_SCHEMA'"'"','"'"'information_schema'"'"','"'"'default'"'"')" > databases.list; \
 		while IFS= read -r db; do \
 			[ -z "$$db" ] && continue; \
 			OUT_FILE="schemas/$$db.sql"; \
-			$$CH --query "SHOW CREATE DATABASE \"$$db\""               | sed -e "s/$$/;/" >  "$$OUT_FILE"; \
-			$$CH --query "SELECT name FROM system.tables WHERE database='"'"'$$db'"'"' AND engine NOT LIKE '"'"'%View%'"'"'" \
+			clickhouse-client --query "SHOW CREATE DATABASE \"$$db\""               | sed -e "s/$$/;/" >  "$$OUT_FILE"; \
+			clickhouse-client --query "SELECT name FROM system.tables WHERE database='"'"'$$db'"'"' AND engine NOT LIKE '"'"'%View%'"'"'" \
 				| while IFS= read -r tbl; do \
 					[ -z "$$tbl" ] && continue; \
-					$$CH --query "SHOW CREATE TABLE \"$$db\".\"$$tbl\"" | sed -e "s/$$/;/" >> "$$OUT_FILE"; \
+					clickhouse-client --query "SHOW CREATE TABLE \"$$db\".\"$$tbl\"" | sed -e "s/$$/;/" >> "$$OUT_FILE"; \
 				done; \
 		done < databases.list; \
-		# Users + grants (исключаем системных и admin)
 		: > users.sql; \
-		$$CH --query "SELECT name FROM system.users WHERE name NOT IN ('"'"'default'"'"','"'"'admin'"'"')" \
+		clickhouse-client --query "SELECT name FROM system.users WHERE name NOT IN ('"'"'default'"'"','"'"'admin'"'"')" \
 			| while IFS= read -r u; do \
 				[ -z "$$u" ] && continue; \
-				$$CH --query "SHOW CREATE USER \"$$u\""    | sed -e "s/$$/;/" >> users.sql; \
-				$$CH --query "SHOW GRANTS FOR \"$$u\""     | sed -e "s/$$/;/" >> users.sql; \
+				clickhouse-client --query "SHOW CREATE USER \"$$u\""    | sed -e "s/$$/;/" >> users.sql; \
+				clickhouse-client --query "SHOW GRANTS FOR \"$$u\""     | sed -e "s/$$/;/" >> users.sql; \
 				echo "" >> users.sql; \
 			done; \
-		# Краткий summary
-		{ echo "ClickHouse $(shell echo) schema backup"; date; \
-			$$CH --query "SELECT version()"; } > info.txt 2>&1 || true; \
+		{ echo "ClickHouse schema backup"; date; \
+			clickhouse-client --query "SELECT version()"; } > info.txt 2>&1 || true; \
 		tar -czf /tmp/clickhouse-backup.tar.gz -C /tmp/meta .; \
 	'; \
 	kubectl cp "$(NAMESPACE)/$$HELPER:/tmp/clickhouse-backup.tar.gz" "$$OUT" >/dev/null; \
@@ -441,22 +440,25 @@ restore:
 	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
 	kubectl cp "$(BACKUP_FILE)" "$(NAMESPACE)/$$HELPER:/tmp/backup.tar.gz" >/dev/null; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="CH_HOST=$$CH_HOST" --env="ADMIN_PASSWORD=$$ADMIN_PASSWORD" -- bash -ec ' \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) \
+			--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
+			--env="CLICKHOUSE_USER=admin" --env="CLICKHOUSE_PASSWORD=$$ADMIN_PASSWORD" \
+			-- bash -ec ' \
 		mkdir -p /tmp/meta && tar -xzf /tmp/backup.tar.gz -C /tmp/meta; \
 		cd /tmp/meta; \
-		CH="clickhouse-client --host $$CH_HOST --port 9000 --user admin --password $$ADMIN_PASSWORD"; \
+		# clickhouse-client читает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env (нет shell-quoting issues).
 		# 1) schemas: каждый файл — multiquery
 		if [ -d schemas ]; then \
 			for f in schemas/*.sql; do [ -f "$$f" ] || continue; \
 				echo "  schema: $$(basename $$f)"; \
-				$$CH --multiquery < "$$f"; \
+				clickhouse-client --multiquery < "$$f"; \
 			done; \
 		fi; \
 		# 2) users: парсим по блокам "CREATE USER ... ; SHOW GRANTS ...; \n"
 		# Перед каждым CREATE USER делаем DROP USER IF EXISTS (имя из CREATE USER строки).
 		if [ -f users.sql ]; then \
 			awk '"'"'/^CREATE USER/{print "DROP USER IF EXISTS " $$3 ";"} {print}'"'"' users.sql > /tmp/users-final.sql; \
-			$$CH --multiquery < /tmp/users-final.sql; \
+			clickhouse-client --multiquery < /tmp/users-final.sql; \
 		fi; \
 	'; \
 	echo "✓ Restore schemas + users завершён"

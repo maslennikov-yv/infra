@@ -110,7 +110,7 @@ doctor:
 		LIVE=$$(helm --kubeconfig "$(KUBECONFIG)" list -A -q 2>/dev/null | sort -u); \
 		WANT=$$(ENV="$(ENV)" REDIS_PASSWORD=x RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
 				helmfile -f helmfile.yaml.gotmpl -e default list --output=json 2>/dev/null \
-				| python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(r["name"] for r in d))' 2>/dev/null \
+				| jq -r '.[].name' 2>/dev/null \
 				| sort -u || true); \
 		echo "  Live releases:    $$(echo "$$LIVE" | tr '\n' ' ')"; \
 		echo "  Helmfile expects: $$(echo "$$WANT" | tr '\n' ' ')"; \
@@ -144,7 +144,7 @@ doctor:
 			[ -z "$$app" ] && continue; \
 			ANY=1; \
 			echo "  app=$$app:"; \
-			ns=$$(NM="$$app" "$(YQ)" -r '.apps[] | select(.name == strenv(NM)) | (.app_ns // .name)' "$(APPS_REGISTRY)"); \
+			ns=$$(NM="$$app" "$(YQ)" -r '.apps[] | select(.name == strenv(NM)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)"); \
 			for svc in postgres redis kafka minio clickhouse rabbitmq; do \
 				secret="$$app-$$svc"; \
 				if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get secret "$$secret" >/dev/null 2>&1; then continue; fi; \
@@ -652,6 +652,11 @@ postgres-restore:
 postgres-delete-pvcs:
 	@$(MAKE) -C postgres delete-pvcs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 postgres-recreate-prep:
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ postgres-recreate-prep удалит PVC и пересоздаст release. Данные останутся в бэкапе (шаг 1)."; \
+		read -p "Продолжить? [y/N] " ans; \
+		[ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
 	@echo "=== 1/3 Бэкап ==="
 	@$(MAKE) postgres-backup ENV="$(ENV)"
 	@echo ""
@@ -670,6 +675,11 @@ postgres-recreate-prep:
 # ⚠ Объёмные данные (RDB Redis, объекты MinIO, таблицы ClickHouse, сообщения RabbitMQ) теряются.
 # Восстанавливаются по сервис-специфичной процедуре (см. <svc>/BACKUP.md).
 redis-recreate-prep:
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ redis-recreate-prep удалит PVC. RDB-данные потеряются если не было бэкапа."; \
+		read -p "Продолжить? [y/N] " ans; \
+		[ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
 	@echo "=== 1/3 Бэкап Redis (RDB + ACL) ==="
 	@$(MAKE) redis-backup ENV="$(ENV)"
 	@echo ""
@@ -689,6 +699,11 @@ redis-recreate-prep:
 # ⚠ Kafka: pересоздание удаляет KRaft cluster-id (Secret kafka-kraft + meta.properties в PVC).
 # Пользователи и ACL восстанавливаются через apps-apply.
 kafka-recreate-prep:
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ kafka-recreate-prep удалит PVC и Secret kafka-kraft. Новый кластер получит новый cluster-id; данные сообщений потеряны."; \
+		read -p "Продолжить? [y/N] " ans; \
+		[ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
 	@echo "=== 1/3 Бэкап Kafka meta (topics + ACL + SCRAM list) ==="
 	@$(MAKE) kafka-backup-meta ENV="$(ENV)"
 	@echo ""
@@ -707,6 +722,11 @@ kafka-recreate-prep:
 	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=kafka   (SCRAM-пользователи + ACL)"
 
 minio-recreate-prep:
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ minio-recreate-prep удалит PVC. Объекты бакетов потеряны если не было mc mirror."; \
+		read -p "Продолжить? [y/N] " ans; \
+		[ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
 	@echo "=== 1/3 Бэкап MinIO meta (users + policies + tracking secrets) ==="
 	@$(MAKE) minio-backup-meta ENV="$(ENV)"
 	@echo ""
@@ -726,6 +746,11 @@ minio-recreate-prep:
 	@echo "  5. (Опц.) восстановление объектов через mc mirror — см. minio/BACKUP.md"
 
 clickhouse-recreate-prep:
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ clickhouse-recreate-prep удалит PVC. Данные таблиц потеряны (бэкапятся только schemas)."; \
+		read -p "Продолжить? [y/N] " ans; \
+		[ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
 	@echo "=== 1/3 Бэкап ClickHouse (schemas + users + grants) ==="
 	@$(MAKE) clickhouse-backup ENV="$(ENV)"
 	@echo ""
@@ -745,6 +770,11 @@ clickhouse-recreate-prep:
 	@echo "  5. (Опц.) восстановление данных — см. clickhouse/BACKUP.md"
 
 rabbitmq-recreate-prep:
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ rabbitmq-recreate-prep удалит PVC. mnesia/durable-сообщения потеряны (бэкапятся только definitions)."; \
+		read -p "Продолжить? [y/N] " ans; \
+		[ "$$ans" = "y" ] || [ "$$ans" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
 	@echo "=== 1/3 Бэкап RabbitMQ definitions (vhosts + users + queues + bindings) ==="
 	@$(MAKE) rabbitmq-backup-defs ENV="$(ENV)"
 	@echo ""
@@ -1328,7 +1358,7 @@ env-backup:
 	PLATFORM_NS=$$(awk '/^[A-Za-z0-9_-]+:/{svc=$$1} /namespace:/{print $$2}' "environments/$(ENV).yaml" | sort -u); \
 	APP_NS=""; \
 	if [ -f "$(APPS_REGISTRY)" ] && command -v "$(YQ)" >/dev/null 2>&1; then \
-		APP_NS=$$("$(YQ)" -r '.apps[] | select(.enabled == true) | (.app_ns // .name)' "$(APPS_REGISTRY)" 2>/dev/null | sort -u); \
+		APP_NS=$$("$(YQ)" -r '.apps[] | select(.enabled == true) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null | sort -u); \
 	fi; \
 	NAMESPACES=$$(printf "%s\n%s\n" "$$PLATFORM_NS" "$$APP_NS" | awk 'NF' | sort -u); \
 	if [ -z "$$NAMESPACES" ]; then \

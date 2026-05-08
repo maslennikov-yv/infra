@@ -57,14 +57,16 @@ node_modules/
 .classpath
 .settings/
 
-# apps: в git — apps/registry.yaml и пример apps/conf/_example/**; остальное apps/conf — локально.
-# Исключение: *.enc.yaml / *.enc.yml (sops+age зашифрованные секреты) коммитятся в git.
-# См. docs/runbooks/secrets-management.md.
-apps/conf/**
+# apps/conf — opt-in inclusion: только _example/ и зашифрованные *.enc.yaml в git;
+# plain *.yaml/*.yml локально (gitignored). См. docs/runbooks/secrets-management.md.
+# Стандартный gitignore-паттерн: ignore parent → re-include directory → ignore content → re-include subset.
+apps/conf/*
 !apps/conf/_example/
 !apps/conf/_example/**
-!apps/conf/**/*.enc.yaml
-!apps/conf/**/*.enc.yml
+!apps/conf/*/
+apps/conf/*/*
+!apps/conf/*/*.enc.yaml
+!apps/conf/*/*.enc.yml
 
 # Клоны исходников приложений (git clone в apps/src/<name>) — не коммитим
 apps/src/**

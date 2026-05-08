@@ -340,7 +340,8 @@ app-print-env:
 	@echo "  group:  $(APP).worker"
 
 # Usage: make app-verify APP=myapp — smoke: SASL/SCRAM auth + список топиков под APP-кредами.
-# Запускает временный pod на kafka-image и пытается выполнить kafka-topics --list через bootstrap-server.
+# client.properties генерируется на хосте через printf и передаётся в pod через stdin pipe
+# (избегаем heredoc внутри `bash -ec`, где \n остаются литералами и heredoc не закрывается).
 # Если SASL auth неверен — exit !=0 (auth error). Если auth ok — список (возможно пустой) и exit 0.
 app-verify:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=myapp)"; exit 1; fi
@@ -355,17 +356,18 @@ app-verify:
 	BS=$${BS:-$(KAFKA_BOOTSTRAP_SERVER)}; \
 	if [ -z "$$APP_USER" ] || [ -z "$$APP_PASSWORD" ]; then echo "✗ В Secret отсутствуют KAFKA_USERNAME/KAFKA_PASSWORD"; exit 1; fi; \
 	echo "Проверка SASL/SCRAM auth для $$APP_USER ($$BS)..."; \
-	kubectl run kafka-verify-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="%s" password="%s";\n' "$$APP_USER" "$$APP_PASSWORD" \
+	| kubectl run kafka-verify-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
 		--rm -i --quiet \
-		--env="APP_USER=$$APP_USER" --env="APP_PASSWORD=$$APP_PASSWORD" --env="BS=$$BS" \
-		--command -- bash -ec '\
-			cat > /tmp/cp.properties <<EOF\nsecurity.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="${APP_USER}" password="${APP_PASSWORD}";\nEOF\n\
-			kafka-topics.sh --bootstrap-server "${BS}" --command-config /tmp/cp.properties --list >/tmp/topics.list 2>/tmp/err.log; \
-			rc=$$?; \
-			if [ $$rc -ne 0 ]; then echo "✗ kafka-topics --list упал (rc=$$rc):" >&2; cat /tmp/err.log >&2; exit $$rc; fi; \
+		--env="BS=$$BS" \
+		--command -- bash -ec ' \
+			cat > /tmp/cp.properties; \
+			if ! kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/cp.properties --list >/tmp/topics.list 2>/tmp/err.log; then \
+				echo "✗ kafka-topics --list упал:" >&2; cat /tmp/err.log >&2; exit 1; \
+			fi; \
 			N=$$(wc -l </tmp/topics.list | tr -d " "); \
 			echo "✓ SASL/SCRAM auth ok; видимых топиков: $$N (с учётом ACL и default visibility)"; \
 		'

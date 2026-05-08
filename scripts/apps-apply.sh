@@ -85,9 +85,11 @@ secret_name_for() {
 }
 
 # app_ns по имени приложения (из реестра, fallback = name).
+# Фильтр `select(. != null and . != "")` — yq оператор `//` пропускает только null/missing,
+# но пустая строка ("") truthy → без фильтра привело бы к kubectl get -n "" (false-positive).
 app_ns_for() {
 	local app="$1"
-	NM="$app" "$YQBIN" -r '.apps[] | select(.name == strenv(NM)) | (.app_ns // .name)' "$REG" 2>/dev/null || true
+	NM="$app" "$YQBIN" -r '.apps[] | select(.name == strenv(NM)) | ((.app_ns | select(. != null and . != "")) // .name)' "$REG" 2>/dev/null || true
 }
 
 # kubectl get secret <secret> -n <ns> — true если есть.
