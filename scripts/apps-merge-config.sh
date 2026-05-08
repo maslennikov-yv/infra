@@ -40,7 +40,13 @@ if [[ "${enet:-0}" != "${enuniq:-0}" ]]; then
 fi
 
 result=$(mktemp)
-trap 'rm -f "$result"' EXIT INT TERM
+# decrypted_tmps: временные файлы расшифровки sops, удаляются в trap.
+decrypted_tmps=()
+cleanup_merge() {
+	rm -f "$result"
+	for t in "${decrypted_tmps[@]:-}"; do [[ -n "${t:-}" ]] && rm -f "$t"; done
+}
+trap cleanup_merge EXIT INT TERM
 
 echo 'apps: []' >"$result"
 
@@ -53,13 +59,37 @@ while IFS= read -r name; do
 
 	confdir="$REPO/apps/conf/$name"
 	if [[ -d "$confdir" ]]; then
+		# Список конфиг-файлов: *.enc.yaml/*.enc.yml + *.yaml/*.yml.
+		# Сортировка лексикографически: *.enc.yaml идёт ДО *.yaml (e < y), поэтому plain переопределяет
+		# зашифрованный — удобно для локальной разработки (decrypt → edit → encrypt).
 		shopt -s nullglob
-		mapfile -t conffiles < <(printf '%s\n' "$confdir"/*.yaml "$confdir"/*.yml | LC_ALL=C sort -u || true)
+		mapfile -t conffiles < <(printf '%s\n' \
+			"$confdir"/*.enc.yaml "$confdir"/*.enc.yml \
+			"$confdir"/*.yaml "$confdir"/*.yml \
+			| awk '!seen[$0]++' | grep -v '^$' | LC_ALL=C sort -u || true)
 		shopt -u nullglob
 		for f in "${conffiles[@]:-}"; do
 			[[ -n "${f:-}" && -f "$f" ]] || continue
+			src="$f"
+			# Расшифровка sops для *.enc.yaml / *.enc.yml.
+			case "$f" in
+				*.enc.yaml|*.enc.yml)
+					if ! command -v sops >/dev/null 2>&1; then
+						echo "✗ Файл $f зашифрован sops, но sops не установлен. Установите sops + age (см. docs/runbooks/secrets-management.md)." >&2
+						exit 1
+					fi
+					tmp_dec=$(mktemp --suffix=.yaml 2>/dev/null || mktemp)
+					if ! sops --decrypt "$f" >"$tmp_dec" 2>/dev/null; then
+						echo "✗ Не удалось расшифровать $f. Проверьте SOPS_AGE_KEY_FILE (по умолчанию ~/.config/sops/age/keys.txt) и .sops.yaml в корне репо." >&2
+						rm -f "$tmp_dec"
+						exit 1
+					fi
+					decrypted_tmps+=("$tmp_dec")
+					src="$tmp_dec"
+					;;
+			esac
 			next=$(mktemp)
-			"$YQBIN" eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' "$current" "$f" >"$next"
+			"$YQBIN" eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' "$current" "$src" >"$next"
 			mv "$next" "$current"
 		done
 	fi

@@ -8,6 +8,7 @@
 	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop redis-app-create redis-app-show-creds redis-app-verify redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop minio-app-create minio-app-show-creds minio-app-verify minio-app-drop clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
 	apps-merge-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
+	apps-conf-encrypt apps-conf-decrypt apps-conf-edit \
 	postgres-status postgres-logs postgres-shell postgres-db postgres-up postgres-diff postgres-down \
 	redis-status redis-logs redis-shell redis-up redis-diff redis-down \
 	clickhouse-status clickhouse-logs clickhouse-shell clickhouse-up clickhouse-diff clickhouse-down \
@@ -193,6 +194,7 @@ help:
 	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] $(YELLOW)[APPS_APPLY_DROP_DISABLED=1$(RESET)] - учётки из apps/conf; APPS_APPLY_DROP_DISABLED=1 — дропать учётки disabled приложений"
 	@echo "  make apps-apply-diff $(YELLOW)ENV=$(ENV)$(RESET) - печатает дельту (would create/update/drop/drift), ничего не меняет"
 	@echo "  make apps-conf-template $(YELLOW)APP=myapp$(RESET) $(YELLOW)[SKIP_REGISTRY=1$(RESET)] - шаблон apps/conf из apps/conf/_example + по умолчанию запись в registry (enabled: false)"
+	@echo "  make apps-conf-encrypt / apps-conf-decrypt / apps-conf-edit $(YELLOW)APP=myapp$(RESET) - sops+age workflow (apps/conf/<APP>/secrets.enc.yaml в git; см. docs/runbooks/secrets-management.md)"
 	@echo "  make apps-src-clone $(YELLOW)APP=<name>$(RESET) [$(YELLOW)APPS_REGISTRY=...$(RESET)] - git clone по repo_url (+ repo_branch) из registry → apps/src/<APP>"
 	@echo "  make app-local-src-hostpath-mount $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) $(YELLOW)APP_LOCAL_K8S_WORKLOAD=<kind>/<имя>$(RESET) [$(YELLOW)pod/…|deployment/…|sts/…|ds/…$(RESET)] — hostPath $(YELLOW)apps/src/<APP>$(RESET); initContainers+containers; [$(YELLOW)APP_LOCAL_SRC_READ_ONLY=1$(RESET)] [$(YELLOW)APP_LOCAL_SRC_CONTAINER=…$(RESET)]"
 	@echo ""
@@ -509,6 +511,53 @@ apps-apply-diff:
 apps-conf-template:
 	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
 	@SKIP_REGISTRY="$(SKIP_REGISTRY)" "$(REPO_ROOT)/scripts/apps-conf-template.sh" "$(REPO_ROOT)" "$(APP)"
+
+# === apps/conf sops+age workflow (опциональный) ===
+# Зашифровать apps/conf/<APP>/secrets.yaml → secrets.enc.yaml. Требует sops + .sops.yaml в корне.
+# Реализация: cp + sops -i --encrypt по DST (sops матчит creation_rules по имени файла, поэтому
+# нужен файл с расширением .enc.yaml ещё до шифрования).
+apps-conf-encrypt:
+	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@command -v sops >/dev/null 2>&1 || { echo "✗ sops не установлен (см. docs/runbooks/secrets-management.md)"; exit 1; }
+	@if [ ! -f "$(REPO_ROOT)/.sops.yaml" ]; then \
+		echo "✗ .sops.yaml в корне репо не найден. Скопируйте apps/conf/_example/.sops.yaml.example → .sops.yaml и подставьте ваши age public-keys."; \
+		exit 1; \
+	fi
+	@SRC="apps/conf/$(APP)/secrets.yaml"; DST="apps/conf/$(APP)/secrets.enc.yaml"; \
+	if [ ! -f "$$SRC" ]; then echo "✗ Файл $$SRC не найден"; exit 1; fi; \
+	cp "$$SRC" "$$DST"; \
+	if ! sops --encrypt --in-place "$$DST"; then \
+		rm -f "$$DST"; echo "✗ Шифрование не удалось"; exit 1; \
+	fi; \
+	echo "✓ Зашифровано: $$DST"; \
+	echo "  - закоммитьте $$DST в git;"; \
+	echo "  - локальный $$SRC можно удалить (он gitignored, но если останется — переопределяет .enc.yaml при apps-merge-print);"; \
+	echo "  - редактирование без расшифровки: make apps-conf-edit APP=$(APP)"
+
+# Расшифровать apps/conf/<APP>/secrets.enc.yaml → secrets.yaml (для редактирования и merge-override).
+apps-conf-decrypt:
+	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@command -v sops >/dev/null 2>&1 || { echo "✗ sops не установлен (см. docs/runbooks/secrets-management.md)"; exit 1; }
+	@SRC="apps/conf/$(APP)/secrets.enc.yaml"; DST="apps/conf/$(APP)/secrets.yaml"; \
+	if [ ! -f "$$SRC" ]; then echo "✗ Файл $$SRC не найден"; exit 1; fi; \
+	if [ -f "$$DST" ] && [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Файл $$DST уже существует. Перезаписать? [y/N]"; \
+		read -r ans; case "$$ans" in y|Y|yes|YES) : ;; *) echo "Отменено"; exit 1 ;; esac; \
+	fi; \
+	sops --decrypt "$$SRC" > "$$DST" || { echo "✗ Расшифровка не удалась — проверьте SOPS_AGE_KEY_FILE и .sops.yaml"; rm -f "$$DST"; exit 1; }; \
+	chmod 600 "$$DST"; \
+	echo "✓ Расшифровано: $$DST (chmod 600; gitignored)"
+
+# Редактировать apps/conf/<APP>/secrets.enc.yaml через sops (открывает $EDITOR, шифрует при сохранении).
+apps-conf-edit:
+	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@command -v sops >/dev/null 2>&1 || { echo "✗ sops не установлен (см. docs/runbooks/secrets-management.md)"; exit 1; }
+	@if [ ! -f "$(REPO_ROOT)/.sops.yaml" ]; then \
+		echo "✗ .sops.yaml в корне репо не найден"; exit 1; \
+	fi
+	@FILE="apps/conf/$(APP)/secrets.enc.yaml"; \
+	mkdir -p "apps/conf/$(APP)"; \
+	sops "$$FILE"
 
 # Клон исходников в apps/src/<APP> по полям repo_url / repo_branch в registry (см. apps/registry.yaml).
 apps-src-clone:

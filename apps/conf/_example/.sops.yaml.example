@@ -1,0 +1,21 @@
+# .sops.yaml — образец конфигурации для sops+age (опциональный workflow).
+#
+# Чтобы включить шифрование apps/conf/<APP>/secrets.enc.yaml в git:
+#   1. Скопируйте этот файл в КОРЕНЬ репозитория как `.sops.yaml`.
+#   2. Замените age public keys на ключи всех админов, которые должны иметь доступ.
+#      Public-ключ имеет вид `age1...` (генерируется через `age-keygen`, см. docs/runbooks/secrets-management.md).
+#   3. Зашифруйте секреты: `make apps-conf-encrypt APP=myapp` → `apps/conf/myapp/secrets.enc.yaml`.
+#   4. Закоммитьте `.sops.yaml` и все `apps/conf/<APP>/secrets.enc.yaml` в git.
+#
+# Без .sops.yaml в корне репо команды apps-conf-encrypt/decrypt/edit не работают
+# (sops не знает, какими ключами шифровать) — но обычный workflow с plain secrets.yaml
+# (gitignored) продолжает работать без изменений.
+#
+# Документация sops: https://github.com/getsops/sops
+
+creation_rules:
+  - path_regex: apps/conf/.*\.enc\.ya?ml$
+    encrypted_regex: '^(.*)$'  # шифровать все ключи и значения
+    age: >-
+      age1publickey1exampleexampleexampleexampleexampleexample0000000,
+      age1publickey2exampleexampleexampleexampleexampleexample0000000

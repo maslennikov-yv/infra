@@ -1,6 +1,17 @@
 # Шаблон `apps/conf` для приложения
 
-Этот каталог коммитится в git как **образец**. Рабочие секреты — в `../<имя_приложения>/` (не в git).
+Этот каталог коммитится в git как **образец**. Рабочие секреты — в `../<имя_приложения>/` (не в git, кроме зашифрованных `*.enc.yaml`).
+
+## Два workflow для секретов
+
+| Файл | В git? | Когда использовать |
+|---|---|---|
+| `apps/conf/<APP>/secrets.yaml` | **нет** (gitignored) | Простейший случай, секреты передаются вне git (rsync, env-backup-архив) |
+| `apps/conf/<APP>/secrets.enc.yaml` | **да** (зашифрован sops+age) | Когда секреты должны жить в git (распределённая команда, history) |
+
+Если в каталоге приложения есть **оба** файла — `secrets.yaml` имеет приоритет (override). Это удобно для локальной разработки: расшифровать в `secrets.yaml` через `make apps-conf-decrypt APP=...`, отредактировать, потом `make apps-conf-encrypt APP=...` обратно.
+
+Включение sops+age — см. [docs/runbooks/secrets-management.md](../../../docs/runbooks/secrets-management.md). Образец конфигурации — [.sops.yaml.example](./.sops.yaml.example).
 
 ## Быстрый старт
 

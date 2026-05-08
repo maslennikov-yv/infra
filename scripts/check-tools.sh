@@ -41,6 +41,8 @@ TOOLS=(
 	"tar|0|0|tar --version"
 	"gzip|0|0|gzip --version"
 	"node|18.0|0|node --version"
+	"sops|3.7|0|sops --version"
+	"age|0|0|age --version"
 )
 
 # Извлекает первое X.Y.Z из строки. Возвращает "0" если не нашёл.

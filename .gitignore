@@ -57,10 +57,14 @@ node_modules/
 .classpath
 .settings/
 
-# apps: в git — apps/registry.yaml и пример apps/conf/_example/**; остальное apps/conf — локально
+# apps: в git — apps/registry.yaml и пример apps/conf/_example/**; остальное apps/conf — локально.
+# Исключение: *.enc.yaml / *.enc.yml (sops+age зашифрованные секреты) коммитятся в git.
+# См. docs/runbooks/secrets-management.md.
 apps/conf/**
 !apps/conf/_example/
 !apps/conf/_example/**
+!apps/conf/**/*.enc.yaml
+!apps/conf/**/*.enc.yml
 
 # Клоны исходников приложений (git clone в apps/src/<name>) — не коммитим
 apps/src/**

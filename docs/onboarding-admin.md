@@ -54,7 +54,7 @@
      existing-admin@host:/opt/infra/{environments,k8s,apps/conf} /tmp/restore/
    ```
 
-3. **Менеджер секретов** (sops/age, sealed-secrets, vault) — если в проекте развёрнут (на момент написания: не развёрнут, см. Этап 8 в [config-driven-audit.md](./runbooks/config-driven-audit.md)).
+3. **Менеджер секретов sops+age** — **рекомендуемый канал**, если в репо есть `.sops.yaml`. Существующий админ добавляет ваш age public-key в `.sops.yaml`, делает `sops updatekeys` и `git push` — после `git pull` вы расшифровываете секреты своим private-ключом. Не требует ручной передачи sensitive-файлов между админами. См. [docs/runbooks/secrets-management.md](./runbooks/secrets-management.md).
 
 4. **Зашифрованный tar (`gpg --symmetric`) поверх любого канала**:
    ```bash
