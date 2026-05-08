@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
 	backup restore-acl list-backups \
 	check-registry check-updates
 
@@ -77,6 +77,7 @@ help:
 	@echo "  make app-show-creds APP=myapp [APP_NS=...] — показать креды из Secret app-redis"
 	@echo "  make app-create APP=myapp [REDIS_DB=0] — REDIS_DB из CLI; иначе следующий свободный 1..127 по $(APPS_REGISTRY) (yq); без yq — предупреждение и 0"
 	@echo "  make app-drop APP=myapp — удалить ACL-пользователя и Secret (⚠ y/N; SKIP_CONFIRM=1). Ключи по префиксу не удаляются"
+	@echo "  make app-verify APP=myapp [APP_NS=...] — smoke: PING + DBSIZE под APP-кредами из Secret"
 	@echo ""
 	@echo "Бэкапы и восстановление (RDB + ACL):"
 	@echo "  make backup              - RDB снимок + ACL LIST + INFO (tar.gz в $(BACKUP_DIR)/)"
@@ -202,6 +203,27 @@ app-show-creds:
 	echo "REDIS_KEY_PREFIX=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_KEY_PREFIX}' 2>/dev/null | base64 -d)"; \
 	echo "REDIS_DB=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_DB}' 2>/dev/null | base64 -d)"; \
 	echo "Изоляция: ACL по префиксу REDIS_KEY_PREFIX; REDIS_DB — логический номер БД (не отдельный сервер и не аналог отдельной БД Postgres)."
+
+# Usage: make app-verify APP=myapp — smoke-тест: PING + DBSIZE под APP-кредами.
+app-verify:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-redis}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	APP_USER=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_USERNAME}' | base64 -d); \
+	APP_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_PASSWORD}' | base64 -d); \
+	REDIS_DB_VAL=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.REDIS_DB}' | base64 -d); \
+	REDIS_DB_VAL=$${REDIS_DB_VAL:-0}; \
+	if [ -z "$$APP_USER" ] || [ -z "$$APP_PASSWORD" ]; then echo "✗ В Secret отсутствуют REDIS_USERNAME/REDIS_PASSWORD"; exit 1; fi; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	echo "Проверка $$APP_USER (db=$$REDIS_DB_VAL)..."; \
+	OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user '$$APP_USER' --pass '$$APP_PASSWORD' --no-auth-warning -n '$$REDIS_DB_VAL' PING" 2>&1) || { echo "✗ PING не удался: $$OUT"; exit 1; }; \
+	if ! echo "$$OUT" | grep -q PONG; then echo "✗ PING ответил: $$OUT"; exit 1; fi; \
+	SIZE=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user '$$APP_USER' --pass '$$APP_PASSWORD' --no-auth-warning -n '$$REDIS_DB_VAL' DBSIZE" 2>&1) || { echo "✗ DBSIZE не удался: $$SIZE"; exit 1; }; \
+	echo "✓ PING=PONG; DBSIZE=$$SIZE (db=$$REDIS_DB_VAL)"
 
 images-verify:
 	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."

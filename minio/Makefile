@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
 	backup-meta restore-meta list-backups \
 	check-registry check-updates
 
@@ -63,6 +63,7 @@ help:
 	@echo "  make app-show-creds APP=myapp [APP_NS=...] — креды из Secret приложения (APP-minio)"
 	@echo "  make app-drop APP=myapp — пользователь, политика, Secret (⚠ y/N; SKIP_CONFIRM=1). MINIO_REMOVE_BUCKETS=1 — удалить bucket (второй запрос y/N)"
 	@echo "  make app-append APP=myapp BUCKET=... — добавить bucket к существующей учётке"
+	@echo "  make app-verify APP=myapp [APP_NS=...] — smoke: mc alias + mc ls $${BUCKET} под APP-кредами"
 	@echo ""
 	@echo "Backup / Restore (definitions; объекты бакетов НЕ бэкапятся — используйте mc mirror, см. minio/BACKUP.md):"
 	@echo "  make backup-meta              - tar.gz: users + policies + buckets + tracking secrets minio-app-*"
@@ -297,6 +298,35 @@ app-show-creds:
 		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
 		echo "$$k=$$v"; \
 	done
+
+# Usage: make app-verify APP=myapp — smoke: mc alias + mc ls bucket под APP-кредами.
+app-verify:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-minio}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	AK=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d); \
+	SK=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d); \
+	BUCKET=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.S3_BUCKET}' | base64 -d); \
+	ENDPOINT=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.MINIO_ENDPOINT}' | base64 -d); \
+	if [ -z "$$AK" ] || [ -z "$$SK" ]; then echo "✗ В Secret отсутствуют AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY"; exit 1; fi; \
+	if [ -z "$$ENDPOINT" ]; then ENDPOINT="http://$(RELEASE).$(NAMESPACE).svc.cluster.local:9000"; fi; \
+	echo "Проверка $$AK (bucket=$$BUCKET, endpoint=$$ENDPOINT)..."; \
+	kubectl run minio-verify-$$(date +%s) \
+		--restart='Never' \
+		--image=$(MINIO_CLIENT_IMAGE_LOCAL) \
+		--namespace=$(NAMESPACE) \
+		--rm -i --quiet \
+		--env="AK=$$AK" --env="SK=$$SK" --env="EP=$$ENDPOINT" --env="BUCKET=$$BUCKET" \
+		--command -- sh -ec '\
+			mc alias set test "$$EP" "$$AK" "$$SK" >/dev/null; \
+			if [ -n "$$BUCKET" ]; then \
+				mc ls "test/$$BUCKET" >/dev/null && echo "✓ S3 ls test/$$BUCKET ok"; \
+			else \
+				mc ls test >/dev/null && echo "✓ S3 ls test (auth ok; bucket в Secret не задан)"; \
+			fi'
 
 # Append one bucket/prefix to existing app account (rebuild policy from tracking secret)
 # Usage: make app-append APP=myapp BUCKET=b2 [PREFIX=data/] [ACCESS_MODE=private_rw|private_ro|private_wo] [PUBLIC_READ=true|false] [PUBLIC_LIST=true|false] [APP_PUBLIC_ENDPOINT=https://files.appA.com]

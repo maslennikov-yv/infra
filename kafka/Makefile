@@ -3,7 +3,7 @@
 	pull-images tag-images push-images load-images save-images load-images-from-file clean clean-images-files \
 	check-registry setup-local-registry setup \
 	secrets-init bootstrap reset \
-	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-print-env \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-print-env app-verify \
 	topic-create topic-alter topic-describe topic-list \
 	test-producer test-consumer test-clean test-client-properties test-create-topic \
 	backup-meta restore-meta-topics list-backups \
@@ -103,6 +103,7 @@ help:
 	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (имя: APP-kafka)"
 	@echo "  make app-drop APP=myapp — SCRAM, ACL и Secret приложения (⚠ y/N; SKIP_CONFIRM=1). Топики не удаляются"
 	@echo "  make app-print-env APP=myapp   - Показать рекомендуемые env/топики/группы для приложения"
+	@echo "  make app-verify APP=myapp [APP_NS=...] — smoke: SASL/SCRAM auth + kafka-topics --list под APP-кредами"
 	@echo ""
 	@echo "Topics:"
 	@echo "  make topic-create  APP=myapp TOPIC_SUFFIX=events [PARTITIONS=3] [REPLICATION_FACTOR=1] [CONFIGS=k=v,k2=v2]"
@@ -338,9 +339,36 @@ app-print-env:
 	@echo "  topic:  $(APP).events"
 	@echo "  group:  $(APP).worker"
 
-## =========================
-## Topic management (admin)
-## =========================
+# Usage: make app-verify APP=myapp — smoke: SASL/SCRAM auth + список топиков под APP-кредами.
+# Запускает временный pod на kafka-image и пытается выполнить kafka-topics --list через bootstrap-server.
+# Если SASL auth неверен — exit !=0 (auth error). Если auth ok — список (возможно пустой) и exit 0.
+app-verify:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-kafka}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	APP_USER=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.KAFKA_USERNAME}' | base64 -d); \
+	APP_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.KAFKA_PASSWORD}' | base64 -d); \
+	BS=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.KAFKA_BOOTSTRAP_SERVER}' | base64 -d); \
+	BS=$${BS:-$(KAFKA_BOOTSTRAP_SERVER)}; \
+	if [ -z "$$APP_USER" ] || [ -z "$$APP_PASSWORD" ]; then echo "✗ В Secret отсутствуют KAFKA_USERNAME/KAFKA_PASSWORD"; exit 1; fi; \
+	echo "Проверка SASL/SCRAM auth для $$APP_USER ($$BS)..."; \
+	kubectl run kafka-verify-$$(date +%s) \
+		--restart='Never' \
+		--image=$(KAFKA_IMAGE_LOCAL) \
+		--namespace=$(KAFKA_NAMESPACE) \
+		--rm -i --quiet \
+		--env="APP_USER=$$APP_USER" --env="APP_PASSWORD=$$APP_PASSWORD" --env="BS=$$BS" \
+		--command -- bash -ec '\
+			cat > /tmp/cp.properties <<EOF\nsecurity.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="${APP_USER}" password="${APP_PASSWORD}";\nEOF\n\
+			kafka-topics.sh --bootstrap-server "${BS}" --command-config /tmp/cp.properties --list >/tmp/topics.list 2>/tmp/err.log; \
+			rc=$$?; \
+			if [ $$rc -ne 0 ]; then echo "✗ kafka-topics --list упал (rc=$$rc):" >&2; cat /tmp/err.log >&2; exit $$rc; fi; \
+			N=$$(wc -l </tmp/topics.list | tr -d " "); \
+			echo "✓ SASL/SCRAM auth ok; видимых топиков: $$N (с учётом ACL и default visibility)"; \
+		'
 
 # Create a topic (optionally for an app prefix)
 # Usage:

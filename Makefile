@@ -5,7 +5,7 @@
 	postgres-verify redis-verify minio-verify clickhouse-verify \
 	check-updates postgres-check-updates redis-check-updates kafka-check-updates \
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
-	pg-app-create pg-app-show-creds pg-app-psql pg-app-drop redis-app-create redis-app-show-creds redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-drop minio-app-create minio-app-show-creds minio-app-drop clickhouse-app-create clickhouse-app-show-creds clickhouse-app-drop rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-drop \
+	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop redis-app-create redis-app-show-creds redis-app-verify redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop minio-app-create minio-app-show-creds minio-app-verify minio-app-drop clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
 	apps-merge-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
 	postgres-status postgres-logs postgres-shell postgres-db postgres-up postgres-diff postgres-down \
@@ -21,7 +21,8 @@
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all \
-	infra-control-parity-check infra-lab
+	infra-control-parity-check infra-lab \
+	tools-check doctor
 
 # Do not print "Entering/Leaving directory ..." on recursive make
 MAKEFLAGS += --no-print-directory
@@ -84,6 +85,83 @@ infra-lab:
 infra-control-parity-check:
 	@node "$(REPO_ROOT)/docs/infra-control/parity-check.mjs"
 
+# tools-check: проверить минимальные версии тулинга (kubectl, helm, helmfile, yq, jq, ...).
+tools-check:
+	@YQ="$(YQ)" "$(REPO_ROOT)/scripts/check-tools.sh"
+
+# doctor: единая точка диагностики окружения. Tools, кластер, релизы, поды, учётки.
+# Завершается с exit 0 если все шаги OK; иначе exit 1 (но проходит все проверки до конца).
+doctor:
+	@FAIL=0; \
+	echo "=== 1/5 Тулинг ==="; \
+	if ! YQ="$(YQ)" "$(REPO_ROOT)/scripts/check-tools.sh"; then FAIL=$$((FAIL+1)); fi; \
+	echo ""; echo "=== 2/5 Кластер (kubectl cluster-info) ==="; \
+	if ! kubectl --kubeconfig "$(KUBECONFIG)" cluster-info 2>&1 | head -3; then \
+		echo "  ✗ kubectl cluster-info не вышел; проверьте $(KUBECONFIG)"; FAIL=$$((FAIL+1)); \
+	fi; \
+	echo ""; echo "=== 3/5 Helm-релизы (vs helmfile.yaml.gotmpl) ==="; \
+	if command -v helm >/dev/null 2>&1; then \
+		LIVE=$$(helm --kubeconfig "$(KUBECONFIG)" list -A -q 2>/dev/null | sort -u); \
+		WANT=$$(ENV="$(ENV)" REDIS_PASSWORD=x RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
+				helmfile -f helmfile.yaml.gotmpl -e default list --output=json 2>/dev/null \
+				| python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(r["name"] for r in d))' 2>/dev/null \
+				| sort -u || true); \
+		echo "  Live releases:    $$(echo "$$LIVE" | tr '\n' ' ')"; \
+		echo "  Helmfile expects: $$(echo "$$WANT" | tr '\n' ' ')"; \
+		MISSING=$$(comm -23 <(echo "$$WANT") <(echo "$$LIVE") 2>/dev/null); \
+		EXTRA=$$(comm -13 <(echo "$$WANT") <(echo "$$LIVE") 2>/dev/null); \
+		if [ -n "$$MISSING" ]; then echo "  ⚠ Не задеплоены: $$(echo "$$MISSING" | tr '\n' ' ')"; FAIL=$$((FAIL+1)); fi; \
+		if [ -n "$$EXTRA" ]; then echo "  ⚠ Лишние в кластере (нет в helmfile): $$(echo "$$EXTRA" | tr '\n' ' ')"; fi; \
+	else \
+		echo "  ⚠ helm не найден"; FAIL=$$((FAIL+1)); \
+	fi; \
+	echo ""; echo "=== 4/5 Rollout статусы (per-service) ==="; \
+	for svc in postgres redis kafka minio clickhouse rabbitmq; do \
+		ns="$$svc"; \
+		[ "$$svc" = "postgres" ] && rel="postgres-postgresql" || rel="$$svc"; \
+		if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get statefulset,deployment 2>/dev/null | grep -q .; then \
+			echo "  ↷ $$ns: нет workload (сервис не задеплоен)"; continue; \
+		fi; \
+		ROLLOUT=$$(kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get statefulset,deployment -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.readyReplicas}{"/"}{.status.replicas}{"\n"}{end}' 2>/dev/null); \
+		echo "  $$ns:"; \
+		echo "$$ROLLOUT" | sed 's/^/    /'; \
+		if echo "$$ROLLOUT" | awk -F'\t' '{ split($$2, p, "/"); if (p[1] != p[2] && p[2] != "") exit 1 }'; then \
+			:; \
+		else \
+			FAIL=$$((FAIL+1)); \
+		fi; \
+	done; \
+	echo ""; echo "=== 5/5 Per-app smoke (apps/registry.yaml × <svc>-app-verify) ==="; \
+	if [ -f "$(APPS_REGISTRY)" ] && command -v "$(YQ)" >/dev/null 2>&1; then \
+		ANY=0; \
+		while IFS= read -r app; do \
+			[ -z "$$app" ] && continue; \
+			ANY=1; \
+			echo "  app=$$app:"; \
+			ns=$$(NM="$$app" "$(YQ)" -r '.apps[] | select(.name == strenv(NM)) | (.app_ns // .name)' "$(APPS_REGISTRY)"); \
+			for svc in postgres redis kafka minio clickhouse rabbitmq; do \
+				secret="$$app-$$svc"; \
+				if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get secret "$$secret" >/dev/null 2>&1; then continue; fi; \
+				case "$$svc" in postgres) tgt=pg-app-verify ;; *) tgt=$${svc}-app-verify ;; esac; \
+				if $(MAKE) "$$tgt" APP="$$app" APP_NS="$$ns" ENV="$(ENV)" >/tmp/doctor-verify.log 2>&1; then \
+					echo "    ✓ $$svc"; \
+				else \
+					echo "    ✗ $$svc (см. /tmp/doctor-verify.log)"; \
+					FAIL=$$((FAIL+1)); \
+				fi; \
+			done; \
+		done < <("$(YQ)" -r '.apps[] | select(.enabled == true) | .name' "$(APPS_REGISTRY)" 2>/dev/null); \
+		[ "$$ANY" = "0" ] && echo "  (нет enabled: true приложений в реестре)"; \
+	else \
+		echo "  ⚠ apps/registry.yaml или yq недоступны — пропускаем"; \
+	fi; \
+	echo ""; \
+	if [ "$$FAIL" -gt 0 ]; then \
+		echo "✗ doctor: проблем найдено $$FAIL"; exit 1; \
+	else \
+		echo "✓ doctor: всё ок"; \
+	fi
+
 help:
 	@echo "$(BOLD)$(GREEN)infra$(RESET)"
 	@echo ""
@@ -94,6 +172,8 @@ help:
 	@echo "  make <target> $(YELLOW)ENV=local|prod|staging$(RESET) ..."
 	@echo "  make status $(YELLOW)ENV=$(ENV)$(RESET)              - ноды, поды (все namespace), helm list -A"
 	@echo "  make top-totals $(YELLOW)ENV=$(ENV)$(RESET)          - CPU/память: занято и доступно (allocatable; Metrics API; jq)"
+	@echo "  make tools-check         - проверка минимальных версий тулинга (kubectl, helm, helmfile, yq, jq, ...)"
+	@echo "  make doctor $(YELLOW)ENV=$(ENV)$(RESET)              - полная диагностика: tools + кластер + helm vs helmfile + rollouts + per-app verify"
 	@echo "  make infra-lab          - интерактивное меню (npm install → node scripts/infra-lab.mjs)"
 	@echo "  make infra-control-parity-check — сверить цели Makefile с docs/infra-control/targets.json"
 	@echo ""
@@ -159,6 +239,7 @@ help:
 	@echo "  make rabbitmq-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
 	@echo "  make rabbitmq-app-drop  $(YELLOW)APP=myapp$(RESET) - vhost, пользователь, Secret"
 	@echo "  make minio-app-append $(YELLOW)APP=myapp BUCKET=b2$(RESET) [$(YELLOW)PREFIX=data/$(RESET)] [$(YELLOW)ACCESS_MODE=...$(RESET)] [$(YELLOW)PUBLIC_READ=true$(RESET)] [$(YELLOW)PUBLIC_LIST=true$(RESET)]"
+	@echo "  make {pg|redis|kafka|minio|clickhouse|rabbitmq}-app-verify $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=...$(RESET)] - smoke под APP-кредами из Secret"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Kafka topics:$(RESET)"
 	@echo "  make kafka-topic-create $(YELLOW)APP=myapp TOPIC_SUFFIX=events$(RESET) [$(YELLOW)PARTITIONS=3$(RESET)] [$(YELLOW)REPLICATION_FACTOR=1$(RESET)] [$(YELLOW)CONFIGS=k=v,k2=v2$(RESET)]"
@@ -465,6 +546,9 @@ redis-app-create:
 redis-app-show-creds:
 	@$(MAKE) -C redis app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
+redis-app-verify:
+	@$(MAKE) -C redis app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+
 redis-app-drop:
 	@$(MAKE) -C redis app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)" \
 		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
@@ -477,6 +561,9 @@ kafka-app-create:
 kafka-app-show-creds:
 	@$(MAKE) -C kafka app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" KUBECONFIG="$(KUBECONFIG)"
 
+kafka-app-verify:
+	@$(MAKE) -C kafka app-verify APP="$(APP)" APP_NS="$(APP_NS)" KUBECONFIG="$(KUBECONFIG)"
+
 kafka-app-drop:
 	@$(MAKE) -C kafka app-drop APP="$(APP)" APP_NS="$(APP_NS)" APP_USER="$(APP_USER)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
@@ -485,6 +572,9 @@ rabbitmq-app-create:
 
 rabbitmq-app-show-creds:
 	@$(MAKE) -C rabbitmq app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+
+rabbitmq-app-verify:
+	@$(MAKE) -C rabbitmq app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
 rabbitmq-app-drop:
 	@$(MAKE) -C rabbitmq app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
@@ -589,6 +679,9 @@ minio-app-create:
 minio-app-show-creds:
 	@$(MAKE) -C minio app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" APP_SECRET_NAME="$(APP_SECRET_NAME)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
+minio-app-verify:
+	@$(MAKE) -C minio app-verify APP="$(APP)" APP_NS="$(APP_NS)" APP_SECRET_NAME="$(APP_SECRET_NAME)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+
 minio-app-drop:
 	@$(MAKE) -C minio app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
 		ACCESS_KEY="$(ACCESS_KEY)" APP_SECRET_NAME="$(APP_SECRET_NAME)" SKIP_CONFIRM="$(SKIP_CONFIRM)" MINIO_REMOVE_BUCKETS="$(MINIO_REMOVE_BUCKETS)"
@@ -601,6 +694,10 @@ clickhouse-app-create:
 
 clickhouse-app-show-creds:
 	@$(MAKE) -C clickhouse app-show-creds \
+		APP="$(APP)" APP_NS="$(APP_NS)" APP_SECRET_NAME="$(APP_SECRET_NAME)" KUBECONFIG="$(KUBECONFIG)"
+
+clickhouse-app-verify:
+	@$(MAKE) -C clickhouse app-verify \
 		APP="$(APP)" APP_NS="$(APP_NS)" APP_SECRET_NAME="$(APP_SECRET_NAME)" KUBECONFIG="$(KUBECONFIG)"
 
 clickhouse-app-drop:

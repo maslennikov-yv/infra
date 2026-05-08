@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
 	backup-defs restore-defs list-backups \
 	check-registry check-updates
 
@@ -59,6 +59,7 @@ help:
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [APP_VHOST=myapp] [APP_USER=app_myapp]"
 	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (APP-rabbitmq)"
 	@echo "  make app-drop APP=myapp — удалить vhost, пользователя RabbitMQ и Secret (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  make app-verify APP=myapp [APP_NS=...] — smoke: authenticate_user + проверка permissions на vhost"
 	@echo ""
 	@echo "Backup / Restore (definitions: vhosts + users + permissions + exchanges + queues + bindings + policies):"
 	@echo "  make backup-defs              - export_definitions в JSON.gz (сообщения НЕ бэкапятся)"
@@ -147,6 +148,32 @@ app-show-creds:
 		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
 		echo "$$k=$$v"; \
 	done
+
+# Usage: make app-verify APP=myapp — smoke: rabbitmqctl authenticate_user + проверка vhost+permissions.
+app-verify:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-rabbitmq}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	APP_USER=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.RABBITMQ_USERNAME}' | base64 -d); \
+	APP_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.RABBITMQ_PASSWORD}' | base64 -d); \
+	APP_VHOST=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.RABBITMQ_VHOST}' | base64 -d); \
+	if [ -z "$$APP_USER" ] || [ -z "$$APP_PASSWORD" ]; then echo "✗ В Secret отсутствуют RABBITMQ_USERNAME/RABBITMQ_PASSWORD"; exit 1; fi; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	echo "Проверка $$APP_USER (vhost=$$APP_VHOST)..."; \
+	if ! kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl authenticate_user "$$APP_USER" "$$APP_PASSWORD" >/dev/null 2>&1; then \
+		echo "✗ rabbitmqctl authenticate_user не прошёл (пароль?)"; exit 1; \
+	fi; \
+	if [ -n "$$APP_VHOST" ]; then \
+		PERM_OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl list_user_permissions "$$APP_USER" 2>/dev/null | awk -v vh="$$APP_VHOST" 'NR>1 && $$1==vh {print $$0}'); \
+		if [ -z "$$PERM_OUT" ]; then \
+			echo "✗ У пользователя $$APP_USER нет permissions на vhost $$APP_VHOST"; exit 1; \
+		fi; \
+	fi; \
+	echo "✓ Auth ok; permissions на vhost $$APP_VHOST подтверждены"
 
 # Usage: make app-drop APP=myapp [APP_NS=myapp] [APP_VHOST=myapp] [APP_USER=app_myapp] [SKIP_CONFIRM=1]
 app-drop:

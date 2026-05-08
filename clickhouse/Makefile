@@ -1,6 +1,6 @@
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create app-show-creds app-drop \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
 	backup restore list-backups \
 	check-registry check-updates
 
@@ -60,6 +60,7 @@ help:
 	@echo "  make app-create APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp]"
 	@echo "  make app-show-creds APP=myapp [APP_NS=myapp] — креды из Secret приложения (APP-clickhouse)"
 	@echo "  make app-drop APP=myapp — DROP DATABASE, DROP USER и Secret (⚠ y/N; SKIP_CONFIRM=1)"
+	@echo "  make app-verify APP=myapp [APP_NS=...] — smoke: SELECT 1 в БД приложения под APP-кредами"
 	@echo ""
 	@echo "Backup / Restore (schemas + users; данные таблиц — отдельно, см. clickhouse/BACKUP.md):"
 	@echo "  make backup                    - tar.gz: schemas + users + grants всех БД (кроме системных)"
@@ -147,6 +148,34 @@ app-show-creds:
 		v=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath="{.data.$$k}" 2>/dev/null | base64 -d); \
 		echo "$$k=$$v"; \
 	done
+
+# Usage: make app-verify APP=myapp — smoke: SELECT 1 в БД приложения под APP-кредами.
+app-verify:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-verify APP=myapp)"; exit 1; fi
+	@APP_NS=$${APP_NS:-$(APP)}; \
+	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-clickhouse}; \
+	if ! kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" >/dev/null 2>&1; then \
+		echo "✗ Secret $$APP_SECRET_NAME не найден в namespace $$APP_NS"; exit 1; \
+	fi; \
+	APP_USER=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.CLICKHOUSE_USER}' | base64 -d); \
+	APP_PASSWORD=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.CLICKHOUSE_PASSWORD}' | base64 -d); \
+	APP_DB=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.CLICKHOUSE_DB}' | base64 -d); \
+	CH_HOST=$$(kubectl get secret "$$APP_SECRET_NAME" -n "$$APP_NS" -o jsonpath='{.data.CLICKHOUSE_HOST}' | base64 -d); \
+	CH_HOST=$${CH_HOST:-$(RELEASE).$(NAMESPACE).svc.cluster.local}; \
+	if [ -z "$$APP_USER" ] || [ -z "$$APP_PASSWORD" ]; then echo "✗ В Secret отсутствуют CLICKHOUSE_USER/CLICKHOUSE_PASSWORD"; exit 1; fi; \
+	echo "Проверка $$APP_USER@$$APP_DB ($$CH_HOST)..."; \
+	kubectl run clickhouse-verify-$$(date +%s) \
+		--restart='Never' \
+		--image=$(CLICKHOUSE_IMAGE_LOCAL) \
+		--namespace=$(NAMESPACE) \
+		--rm -i --quiet \
+		--env="CH_HOST=$$CH_HOST" --env="APP_USER=$$APP_USER" --env="APP_PASSWORD=$$APP_PASSWORD" --env="APP_DB=$$APP_DB" \
+		--command -- sh -ec '\
+			OUT=$$(clickhouse-client --host "$$CH_HOST" --port 9000 \
+				--user "$$APP_USER" --password "$$APP_PASSWORD" \
+				--database "$${APP_DB:-default}" \
+				--query "SELECT 1" 2>&1) || { echo "✗ SELECT 1 не удался: $$OUT"; exit 1; }; \
+			[ "$$OUT" = "1" ] && echo "✓ SELECT 1 = $$OUT (БД $$APP_DB доступна)" || { echo "✗ Unexpected output: $$OUT"; exit 1; }'
 
 # Usage: make app-drop APP=myapp [APP_NS=myapp] [DB=myapp] [APP_USER=app_myapp] [ADMIN_USER=admin] [SKIP_CONFIRM=1]
 app-drop:
