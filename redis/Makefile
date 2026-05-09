@@ -1,3 +1,6 @@
+# Используется bash (не dash) — recipe полагаются на `set -o pipefail`.
+SHELL := /bin/bash
+
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
@@ -132,11 +135,14 @@ app-create:
 	REDIS_HOST="$$REDIS_SVC.$(NAMESPACE).svc.cluster.local"; \
 	REDIS_PORT=6379; \
 	echo "Creating Redis ACL user $$APP_USER (keys: $(APP):*)"; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c \
-		'redis-cli -a "$$1" ACL SETUSER "$$2" on ">"$$3 ~"$$4" +@all \
+	# RESET перед правилами делает повторный app-create идемпотентным: \
+	# старые passwords/keys/categories/commands очищаются, далее применяются только \
+	# актуальные правила ниже (см. Redis ACL SETUSER docs). \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$ADMIN_PASSWORD" sh -c \
+		'redis-cli --no-auth-warning ACL SETUSER "$$1" RESET on ">"$$2 ~"$$3" +@all \
 			-ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL -FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF \
 			-REPLCONF -REPLICAOF -SLAVEOF -SYNC -PSYNC' \
-		sh "$$ADMIN_PASSWORD" "$$APP_USER" "$$APP_PASSWORD" "$(APP):*"; \
+		sh "$$APP_USER" "$$APP_PASSWORD" "$(APP):*"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -179,9 +185,9 @@ app-drop:
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
 	echo "Removing ACL user $$APP_USER..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c \
-		'redis-cli -a "$$1" ACL DELUSER "$$2" 2>/dev/null || true' \
-		sh "$$ADMIN_PASSWORD" "$$APP_USER"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$ADMIN_PASSWORD" sh -c \
+		'redis-cli --no-auth-warning ACL DELUSER "$$1" 2>/dev/null || true' \
+		sh "$$APP_USER"; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" redis || true; \
@@ -220,18 +226,26 @@ app-verify:
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	echo "Проверка $$APP_USER (db=$$REDIS_DB_VAL)..."; \
-	# double-quoted внутри sh -c "..." допускает пароли с '. Полная безопасность по всем спецсимволам
-	# требовала бы pipe через stdin (AUTH command); пока пароли генерятся openssl rand -hex — этого достаточно.
-	OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user \"$$APP_USER\" --pass \"$$APP_PASSWORD\" --no-auth-warning -n \"$$REDIS_DB_VAL\" PING" 2>&1) || { echo "✗ PING не удался: $$OUT"; exit 1; }; \
+	# Пароль уходит через REDISCLI_AUTH (env переменная), не argv → не виден в `ps`
+	# внутри пода и устойчив к спецсимволам в пароле.
+	OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$APP_PASSWORD" sh -c \
+		'redis-cli --user "$$1" --no-auth-warning -n "$$2" PING' \
+		sh "$$APP_USER" "$$REDIS_DB_VAL" 2>&1) || { echo "✗ PING не удался: $$OUT"; exit 1; }; \
 	if ! echo "$$OUT" | grep -q PONG; then echo "✗ PING ответил: $$OUT"; exit 1; fi; \
-	SIZE=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli --user \"$$APP_USER\" --pass \"$$APP_PASSWORD\" --no-auth-warning -n \"$$REDIS_DB_VAL\" DBSIZE" 2>&1) || { echo "✗ DBSIZE не удался: $$SIZE"; exit 1; }; \
+	SIZE=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$APP_PASSWORD" sh -c \
+		'redis-cli --user "$$1" --no-auth-warning -n "$$2" DBSIZE' \
+		sh "$$APP_USER" "$$REDIS_DB_VAL" 2>&1) || { echo "✗ DBSIZE не удался: $$SIZE"; exit 1; }; \
 	echo "✓ PING=PONG; DBSIZE=$$SIZE (db=$$REDIS_DB_VAL)"
 
 images-verify:
-	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
+	@# Проверяем именно SRC-теги (то, что реально подаётся в `docker pull`),
+	@# а не локальные перетегированные значения REDIS_TAG/REDIS_SENTINEL_TAG/...:
+	@# в `bitnamilegacy` mutable-теги уже выпиливают, остаются immutable sha256-* —
+	@# поэтому проверяем то же, что и images-pull.
+	@echo "Проверка доступности SRC-тегов в docker.io/bitnamilegacy..."
 	@command -v docker >/dev/null 2>&1 || { echo "✗ docker не установлен"; exit 1; }
 	@FAIL=0; \
-	for img in docker.io/bitnamilegacy/redis:$(REDIS_TAG) docker.io/bitnamilegacy/redis-sentinel:$(REDIS_SENTINEL_TAG) docker.io/bitnamilegacy/redis-exporter:$(REDIS_EXPORTER_TAG) docker.io/bitnamilegacy/os-shell:$(OS_SHELL_TAG) docker.io/bitnamilegacy/kubectl:$(KUBECTL_TAG); do \
+	for img in $(IMAGES_SRC); do \
 		echo "  - $$img"; \
 		if docker manifest inspect "$$img" >/dev/null 2>&1; then \
 			echo "    ✓ OK"; \
@@ -242,10 +256,11 @@ images-verify:
 	done; \
 	if [ $$FAIL -ne 0 ]; then \
 		echo ""; \
-		echo "✗ Некоторые теги в bitnamilegacy недоступны."; \
+		echo "✗ Некоторые SRC-теги в bitnamilegacy недоступны."; \
+		echo "  Подсказка: проверьте/обновите *_SRC_TAG в Makefile (см. https://hub.docker.com/u/bitnamilegacy)."; \
 		exit 1; \
 	fi; \
-	echo "✓ Все теги доступны в bitnamilegacy"
+	echo "✓ Все SRC-теги доступны в bitnamilegacy"
 
 check-updates: ## Проверить наличие новых версий чарта и образов
 	@echo "Проверка обновлений для Redis..."
@@ -283,11 +298,30 @@ check-updates: ## Проверить наличие новых версий ча
 install:
 	@echo "Установка Redis в namespace $(NAMESPACE)..."
 	@kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE)
+	@# values-*.yaml ссылаются на existingSecret: $(REDIS_AUTH_SECRET_NAME).
+	@# При первом разворачивании Secret отсутствует — генерируем случайный пароль.
+	@# В корневой цели `make up` логика та же (см. корневой Makefile, блок `up:` для redis).
+	@if ! kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) >/dev/null 2>&1; then \
+		echo "Secret $(NAMESPACE)/$(REDIS_AUTH_SECRET_NAME) отсутствует — создаю с новым паролем..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+		REDIS_PASSWORD=$$(openssl rand -hex 16); \
+		kubectl create secret generic $(REDIS_AUTH_SECRET_NAME) -n $(NAMESPACE) \
+			--from-literal=$(REDIS_AUTH_SECRET_PASSWORD_KEY)="$$REDIS_PASSWORD" >/dev/null; \
+		echo "✓ Secret $(NAMESPACE)/$(REDIS_AUTH_SECRET_NAME) создан"; \
+	fi
+	@# Bitnami chart с auth.acl.enabled рендерит users.acl и требует пароль admin'а
+	@# через --set global.redis.password (так же делает helmfile.yaml.gotmpl).
+	@PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
+	if [ -z "$$PASSWORD" ]; then echo "✗ Не удалось прочитать пароль из Secret $(NAMESPACE)/$(REDIS_AUTH_SECRET_NAME)"; exit 1; fi; \
+	helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE) --set global.redis.password="$$PASSWORD"
 
 upgrade:
 	@echo "Обновление Redis (release $(RELEASE) в namespace $(NAMESPACE))..."
-	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE)
+	@# Так же, как в install: Bitnami chart с auth.acl.enabled рендерит users.acl
+	@# и требует пароль admin'а через --set global.redis.password (helmfile делает то же).
+	@PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
+	if [ -z "$$PASSWORD" ]; then echo "✗ Secret $(NAMESPACE)/$(REDIS_AUTH_SECRET_NAME) не найден или пуст. Сначала: make install"; exit 1; fi; \
+	helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE) --set global.redis.password="$$PASSWORD"
 
 uninstall:
 	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)!"
@@ -406,7 +440,8 @@ BACKUP_DIR ?= backups
 # ACL LIST и INFO server. Упаковывается в один tar.gz.
 backup:
 	@mkdir -p $(BACKUP_DIR)
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@set -eo pipefail; \
+	TS=$$(date +%Y%m%d-%H%M%S); \
 	OUT="$(BACKUP_DIR)/redis-backup-$$TS.tar.gz"; \
 	echo "Создание бэкапа Redis в $$OUT..."; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
@@ -418,15 +453,22 @@ backup:
 	if [ -z "$$PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
 	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
 	echo "  Создаю RDB снимок..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning --rdb /tmp/redis-backup.rdb >/dev/null"; \
-	kubectl cp "$(NAMESPACE)/$$POD:/tmp/redis-backup.rdb" "$$TMP/dump.rdb" >/dev/null; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$PASSWORD" \
+		redis-cli --no-auth-warning --rdb /tmp/redis-backup.rdb >/dev/null; \
+	# `kubectl exec ... cat > local` устойчивее к большим файлам, чем `kubectl cp` \
+	# (последний под капотом гоняет tar и известен подвисаниями/обрезанием на >1GB). \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- cat /tmp/redis-backup.rdb > "$$TMP/dump.rdb"; \
 	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/redis-backup.rdb >/dev/null 2>&1 || true; \
+	[ -s "$$TMP/dump.rdb" ] || { echo "✗ dump.rdb пуст или не скопирован"; exit 1; }; \
 	echo "  Экспорт ACL..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning ACL LIST" > "$$TMP/users.acl"; \
-	echo "  Сбор INFO server..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning INFO server" > "$$TMP/info.txt"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$PASSWORD" \
+		redis-cli --no-auth-warning ACL LIST > "$$TMP/users.acl"; \
+	[ -s "$$TMP/users.acl" ] || { echo "✗ users.acl пуст (ACL LIST не вернул ни одной строки)"; exit 1; }; \
+	echo "  Сбор INFO server (debug-only, при restore не используется)..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$PASSWORD" \
+		redis-cli --no-auth-warning INFO server > "$$TMP/info.txt"; \
 	tar -czf "$$OUT" -C "$$TMP" dump.rdb users.acl info.txt; \
-	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
 	echo "✓ Бэкап создан: $$OUT ($$SIZE)"
 
 list-backups:
@@ -450,7 +492,8 @@ restore-acl:
 		read -p "Продолжить? (y/N): " confirm; \
 		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
 	fi
-	@POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	@set -eo pipefail; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден"; exit 1; fi; \
 	PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
 	if [ -z "$$PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
@@ -460,10 +503,14 @@ restore-acl:
 	APPLIED=0; FAILED=0; SKIPPED=0; \
 	while IFS= read -r line; do \
 		[ -z "$$line" ] && continue; \
-		USER_NAME=$$(echo "$$line" | awk '{print $$2}'); \
+		# bash read -ra разбивает строку по whitespace (IFS) без интерпретации \
+		# $VAR/backquotes/escape sequences. Argv для redis-cli передаём как массив, \
+		# минуя `sh -c` внутри пода — это устраняет shell-инъекции из users.acl. \
+		read -ra ARGV <<< "$$line"; \
+		USER_NAME=$${ARGV[1]}; \
 		if [ "$$USER_NAME" = "default" ]; then SKIPPED=$$((SKIPPED+1)); continue; fi; \
-		ARGS=$$(echo "$$line" | sed 's/^user //'); \
-		if kubectl exec "$$POD" -n $(NAMESPACE) -- sh -c "redis-cli -a \"$$PASSWORD\" --no-auth-warning ACL SETUSER $$ARGS" >/dev/null; then \
+		if kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$PASSWORD" \
+			redis-cli --no-auth-warning ACL SETUSER -- "$${ARGV[@]:1}" >/dev/null; then \
 			APPLIED=$$((APPLIED+1)); \
 		else \
 			echo "  ⚠ Не удалось применить пользователя $$USER_NAME"; \

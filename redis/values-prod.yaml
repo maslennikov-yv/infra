@@ -44,11 +44,27 @@ kubectl:
     repository: bitnami/kubectl
     tag: "1.35.0"
 
+# Light prod-профиль: рассчитан на ~рабочий набор < 256Mi.
+# Если нагрузка вырастет — пересмотреть resources.limits.memory и persistence.size
+# (изменение PVC StatefulSet — через make redis-recreate-prep, см. redis/BACKUP.md).
+master:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 4Gi
+    storageClass: ""
+
 # Синхронизировать с redis/redis/values.yaml commonConfiguration при смене модулей/AOF.
 # Логические БД для REDIS_DB в app-redis Secret (см. docs/pg-app.md): в реестре закрепляйте с 1, 0 — фолбэк; дефолт Redis — 16.
 commonConfiguration: |-
   databases 128
-  # Enable ReJSON y Redisearch
+  # Enable ReJSON и Redisearch
   loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
   loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
   # Enable AOF https://redis.io/topics/persistence#append-only-file

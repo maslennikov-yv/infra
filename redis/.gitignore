@@ -5,3 +5,12 @@
 #   - из директории сервиса: `make images-save ENV=<env>`
 images/*.tar
 
+# Директория с бэкапами Redis (RDB-снимок + ACL hash'и паролей)
+backups/
+*.tar.gz
+
+# Временные файлы
+*.swp
+*.swo
+*~
+
