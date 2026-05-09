@@ -1,3 +1,6 @@
+# Используется bash (не dash) — recipe полагаются на read -p и set -o pipefail.
+SHELL := /bin/bash
+
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
@@ -93,12 +96,18 @@ app-create:
 	PW_RAW=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" clickhouse.password || true); \
 	if [ -z "$$PW_RAW" ] || [ "$$PW_RAW" = "null" ]; then echo "✗ Для приложения \"$(APP)\" нет clickhouse.password в merged"; exit 1; fi; \
 	APP_PASSWORD="$$PW_RAW"; \
+	# Экранируем пароль для SQL single-quoted литерала: \\ → \\\\ (сначала!), '\'' → '\'''\''. \
+	# Иначе пароль с одиночной кавычкой / backslash сломает CREATE USER ... BY '...'. \
+	APP_PASSWORD_SQL=$$(printf '%s' "$$APP_PASSWORD" | sed -e 's/\\/\\\\/g' -e "s/'/''/g"); \
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password из секрета"; exit 1; fi; \
 	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
 	CH_PORT=9000; \
 	CH_HTTP_PORT=8123; \
-	echo "Creating ClickHouse user $$APP_USER and DB $$DB"; \
+	echo "Creating/updating ClickHouse user $$APP_USER and DB $$DB"; \
+	: "ALTER USER ... IDENTIFIED ... после CREATE IF NOT EXISTS делает recipe идемпотентным:"; \
+	: "при повторном app-create с новым паролем (например, после ротации в apps/conf/)"; \
+	: "пользователь действительно получает новый пароль, а не остаётся со старым."; \
 	kubectl run clickhouse-admin-$$(date +%s) \
 		--restart='Never' \
 		--image=$(CLICKHOUSE_IMAGE_LOCAL) \
@@ -108,7 +117,8 @@ app-create:
 			clickhouse-client --host $$CH_HOST --port $$CH_PORT \
 			  --user \"$$ADMIN_USER\" --password \"$$ADMIN_PASSWORD\" \
 			  --multiquery --query \"CREATE DATABASE IF NOT EXISTS \\\"$$DB\\\"; \
-CREATE USER IF NOT EXISTS \\\"$$APP_USER\\\" IDENTIFIED WITH sha256_password BY '$$APP_PASSWORD'; \
+CREATE USER IF NOT EXISTS \\\"$$APP_USER\\\" IDENTIFIED WITH sha256_password BY '$$APP_PASSWORD_SQL'; \
+ALTER USER \\\"$$APP_USER\\\" IDENTIFIED WITH sha256_password BY '$$APP_PASSWORD_SQL'; \
 GRANT ALL ON \\\"$$DB\\\".* TO \\\"$$APP_USER\\\";\" \
 		"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
@@ -211,10 +221,14 @@ app-drop:
 	echo "✓ БД $$DB, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 images-verify:
-	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
+	@# Проверяем именно SRC-теги ($$(CLICKHOUSE_SRC_TAG) и т.п.) — то, что реально \
+	@# pull-ится. Сейчас они равны *_TAG (Bitnami ещё не выпилил mutable-теги для \
+	@# clickhouse), но на postgres/redis/kafka уже sha256-* — устойчивее проверять \
+	@# именно то, что подаётся в `docker pull` через $(IMAGES_SRC).
+	@echo "Проверка доступности SRC-тегов в docker.io/bitnamilegacy..."
 	@command -v docker >/dev/null 2>&1 || { echo "✗ docker не установлен"; exit 1; }
 	@FAIL=0; \
-	for img in docker.io/bitnamilegacy/clickhouse:$(CLICKHOUSE_TAG) docker.io/bitnamilegacy/clickhouse-keeper:$(CLICKHOUSE_KEEPER_TAG) docker.io/bitnamilegacy/os-shell:$(OS_SHELL_TAG); do \
+	for img in $(IMAGES_SRC); do \
 		echo "  - $$img"; \
 		if docker manifest inspect "$$img" >/dev/null 2>&1; then \
 			echo "    ✓ OK"; \
@@ -225,10 +239,11 @@ images-verify:
 	done; \
 	if [ $$FAIL -ne 0 ]; then \
 		echo ""; \
-		echo "✗ Некоторые теги в bitnamilegacy недоступны."; \
+		echo "✗ Некоторые SRC-теги в bitnamilegacy недоступны."; \
+		echo "  Подсказка: проверьте/обновите *_SRC_TAG в Makefile (см. https://hub.docker.com/u/bitnamilegacy)."; \
 		exit 1; \
 	fi; \
-	echo "✓ Все теги доступны в bitnamilegacy"
+	echo "✓ Все SRC-теги доступны в bitnamilegacy"
 
 check-updates: ## Проверить наличие новых версий чарта и образов
 	@echo "Проверка обновлений для ClickHouse..."
@@ -265,6 +280,17 @@ check-updates: ## Проверить наличие новых версий ча
 
 install:
 	@kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	@# values-*.yaml ссылаются на auth.existingSecret: $(RELEASE) (ключ admin-password).
+	@# При первом разворачивании Secret отсутствует — генерируем admin-password.
+	@# В корневой цели `make up` логика та же.
+	@if ! kubectl get secret -n $(NAMESPACE) $(RELEASE) >/dev/null 2>&1; then \
+		echo "Secret $(NAMESPACE)/$(RELEASE) отсутствует — создаю с новым admin-password..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+		ADMIN_PASSWORD=$$(openssl rand -hex 16); \
+		kubectl create secret generic $(RELEASE) -n $(NAMESPACE) \
+			--from-literal=admin-password="$$ADMIN_PASSWORD" >/dev/null; \
+		echo "✓ Secret $(NAMESPACE)/$(RELEASE) создан (admin-password)"; \
+	fi
 	@if [ -f $(VALUES_FILE) ]; then \
 		echo "Использование файла $(VALUES_FILE)"; \
 		helm install $(RELEASE) $(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE); \
@@ -281,7 +307,23 @@ upgrade:
 	fi
 
 uninstall:
-	@helm uninstall $(RELEASE) --namespace $(NAMESPACE) || true
+	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)."
+	@echo "  Останутся в namespace $(NAMESPACE):"
+	@echo "    - PVC с данными ClickHouse (schemas, объекты таблиц);"
+	@echo "    - Secret $(RELEASE) (admin-password — нужен для будущего install,"
+	@echo "      иначе создастся новый, и пользователи приложений из старого PV"
+	@echo "      могут оказаться рассинхронизированы по паролям);"
+	@echo "    - Secrets <APP>-clickhouse в namespace приложений (с APP-кредами)."
+	@echo "  Полная зачистка (включая данные) — отдельными командами:"
+	@echo "    kubectl delete pvc -n $(NAMESPACE) -l app.kubernetes.io/name=clickhouse"
+	@echo "    kubectl delete secret $(RELEASE) -n $(NAMESPACE)"
+	@read -p "Вы уверены? (y/N): " confirm && \
+		if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+			helm uninstall $(RELEASE) --namespace $(NAMESPACE) || echo "Helm release не найден"; \
+		else \
+			echo "Отменено."; \
+			exit 0; \
+		fi
 
 status:
 	@helm status $(RELEASE) --namespace $(NAMESPACE) 2>/dev/null || echo "Helm release не найден"
@@ -358,7 +400,8 @@ BACKUP_DIR ?= backups
 # Данные таблиц НЕ бэкапятся (см. clickhouse/BACKUP.md, варианты BACKUP TO Disk / SELECT INTO OUTFILE).
 backup:
 	@mkdir -p $(BACKUP_DIR)
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@set -eo pipefail; \
+	TS=$$(date +%Y%m%d-%H%M%S); \
 	OUT="$(BACKUP_DIR)/clickhouse-backup-$$TS.tar.gz"; \
 	echo "Создание schema-бэкапа ClickHouse в $$OUT..."; \
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
@@ -376,14 +419,15 @@ backup:
 			--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
 			--env="CLICKHOUSE_USER=admin" --env="CLICKHOUSE_PASSWORD=$$ADMIN_PASSWORD" \
 			-- bash -ec ' \
+		set -eo pipefail; \
 		mkdir -p /tmp/meta/schemas; cd /tmp/meta; \
-		# clickhouse-client подхватывает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env — нет shell-quoting issues с паролями.
+		: "clickhouse-client подхватывает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env — нет shell-quoting issues с паролями"; \
 		clickhouse-client --query "SELECT name FROM system.databases WHERE name NOT IN ('"'"'system'"'"','"'"'INFORMATION_SCHEMA'"'"','"'"'information_schema'"'"','"'"'default'"'"')" > databases.list; \
 		while IFS= read -r db; do \
 			[ -z "$$db" ] && continue; \
 			OUT_FILE="schemas/$$db.sql"; \
 			clickhouse-client --query "SHOW CREATE DATABASE \"$$db\""               | sed -e "s/$$/;/" >  "$$OUT_FILE"; \
-			clickhouse-client --query "SELECT name FROM system.tables WHERE database='"'"'$$db'"'"' AND engine NOT LIKE '"'"'%View%'"'"'" \
+			clickhouse-client --query "SELECT name FROM system.tables WHERE database='"'"'$$db'"'"' AND engine NOT IN ('"'"'View'"'"','"'"'MaterializedView'"'"','"'"'LiveView'"'"','"'"'WindowView'"'"')" \
 				| while IFS= read -r tbl; do \
 					[ -z "$$tbl" ] && continue; \
 					clickhouse-client --query "SHOW CREATE TABLE \"$$db\".\"$$tbl\"" | sed -e "s/$$/;/" >> "$$OUT_FILE"; \
@@ -398,12 +442,15 @@ backup:
 				clickhouse-client --query "SHOW GRANTS FOR \"$$u\""     | sed -e "s/$$/;/" >> users.sql; \
 				echo "" >> users.sql; \
 			done; \
+		: "info.txt — debug-only артефакт (версия + timestamp), при restore не используется"; \
 		{ echo "ClickHouse schema backup"; date; \
 			clickhouse-client --query "SELECT version()"; } > info.txt 2>&1 || true; \
 		tar -czf /tmp/clickhouse-backup.tar.gz -C /tmp/meta .; \
 	'; \
-	kubectl cp "$(NAMESPACE)/$$HELPER:/tmp/clickhouse-backup.tar.gz" "$$OUT" >/dev/null; \
-	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	: "kubectl exec ... cat устойчивее, чем kubectl cp (последний под капотом гоняет tar)"; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- cat /tmp/clickhouse-backup.tar.gz > "$$OUT"; \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не скопирован"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
 	echo "✓ Schema-бэкап создан: $$OUT ($$SIZE)"
 
 list-backups:
@@ -445,29 +492,37 @@ restore:
 			--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
 			--env="CLICKHOUSE_USER=admin" --env="CLICKHOUSE_PASSWORD=$$ADMIN_PASSWORD" \
 			-- bash -ec ' \
+		set -eo pipefail; \
 		mkdir -p /tmp/meta && tar -xzf /tmp/backup.tar.gz -C /tmp/meta; \
 		cd /tmp/meta; \
-		# clickhouse-client читает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env (нет shell-quoting issues).
-		# 1) schemas: каждый файл — multiquery
+		: "Хотя бы один из schemas/ или users.sql должен присутствовать — иначе архив битый/чужой"; \
+		if [ ! -d schemas ] && [ ! -f users.sql ]; then \
+			echo "✗ В архиве нет ни schemas/, ни users.sql — это не valid clickhouse-backup"; exit 1; \
+		fi; \
+		: "clickhouse-client читает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env (нет shell-quoting issues)"; \
+		: "1) schemas: каждый файл — multiquery"; \
+		APPLIED_SCHEMAS=0; \
 		if [ -d schemas ]; then \
 			for f in schemas/*.sql; do [ -f "$$f" ] || continue; \
 				echo "  schema: $$(basename $$f)"; \
 				clickhouse-client --multiquery < "$$f"; \
+				APPLIED_SCHEMAS=$$((APPLIED_SCHEMAS+1)); \
 			done; \
 		fi; \
-		# 2) users: сначала DROP USER IF EXISTS для имён из users.list (точные имена из system.users
-		# во время backup — не зависят от awk-парсинга SQL DDL, корректно работают с пробелами/backticks).
-		# Затем применить users.sql (CREATE USER + GRANTS).
-		if [ -f users.sql ]; then \
+		: "2) users: сначала DROP USER IF EXISTS для имён из users.list (точные имена из system.users во время backup — не зависят от awk-парсинга SQL DDL, корректно работают с пробелами/backticks). Затем применить users.sql (CREATE USER + GRANTS)"; \
+		APPLIED_USERS=0; \
+		if [ -f users.sql ] && [ -s users.sql ]; then \
 			: > /tmp/users-drop.sql; \
 			if [ -f users.list ]; then \
 				while IFS= read -r u; do \
 					[ -z "$$u" ] && continue; \
 					printf "DROP USER IF EXISTS \"%s\";\n" "$$u" >> /tmp/users-drop.sql; \
+					APPLIED_USERS=$$((APPLIED_USERS+1)); \
 				done < users.list; \
 			fi; \
 			cat /tmp/users-drop.sql users.sql | clickhouse-client --multiquery; \
 		fi; \
+		echo "  Restore: схем применено $$APPLIED_SCHEMAS, пользователей $$APPLIED_USERS"; \
 	'; \
 	echo "✓ Restore schemas + users завершён"
 

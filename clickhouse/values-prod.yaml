@@ -31,7 +31,20 @@ service:
 
 persistence:
   enabled: true
-  size: 8Gi
+  size: 16Gi
+  storageClass: ""
+
+# Light prod-профиль: рассчитан на ~2GB heap для analytical queries.
+# При росте объёма таблиц/нагрузки — пересмотреть resources.limits и persistence.size.
+# Изменение persistence.size у StatefulSet — через make clickhouse-recreate-prep
+# (см. clickhouse/BACKUP.md: backup → recreate-prep → restore schemas + apps-apply).
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
 
 # Пароль admin хранится в Secret clickhouse/clickhouse
 # (создаётся корневой целью `make up` через openssl rand при первом запуске).

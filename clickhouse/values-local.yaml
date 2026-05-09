@@ -31,7 +31,18 @@ service:
 
 persistence:
   enabled: true
-  size: 8Gi
+  size: 4Gi
+  storageClass: ""
+
+# Lightweight local-профиль: минимальные limits для dev-машины.
+# ClickHouse JVM не использует, но всё равно требует ~256Mi для query parser/cache.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi
 
 # Пароль admin хранится в Secret clickhouse/clickhouse
 # (создаётся корневой целью `make up` через openssl rand при первом запуске).

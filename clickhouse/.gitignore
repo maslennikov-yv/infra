@@ -5,3 +5,12 @@
 #   - из директории сервиса: `make images-save ENV=<env>`
 images/*.tar
 
+# Директория с schema-бэкапами ClickHouse (включая SHA256 hash'и пользователей через SHOW CREATE USER)
+backups/
+*.tar.gz
+
+# Временные файлы
+*.swp
+*.swo
+*~
+
