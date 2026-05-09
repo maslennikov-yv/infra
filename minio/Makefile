@@ -1,3 +1,6 @@
+# Используется bash (не dash) — recipe полагаются на read -p и set -o pipefail.
+SHELL := /bin/bash
+
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
@@ -138,19 +141,30 @@ app-create:
 	if [ -z "$$MINIO_PUBLIC_ENDPOINT" ]; then MINIO_PUBLIC_ENDPOINT="$$MINIO_ENDPOINT"; fi; \
 	POLICY_NAME="app-$(APP)"; \
 	echo "Creating bucket/user/policy for app=$(APP) bucket=$$BUCKET prefix=$$PREFIX access_mode=$$ACCESS_MODE public_read=$$PUBLIC_READ public_list=$$PUBLIC_LIST"; \
-	kubectl run minio-mc-$$(date +%s) \
+	# Validate ACCESS_MODE на хосте — внутри pod-shell case была лишним усложнением. \
+	case "$$ACCESS_MODE" in private_rw|private_ro|private_wo) ;; \
+		*) echo "✗ Unknown ACCESS_MODE=$$ACCESS_MODE (private_rw|private_ro|private_wo)"; exit 1;; \
+	esac; \
+	# JSON-policies собираем на хосте через scripts/minio-build-app-policy.py — \
+	# внутри pod нет ни jq, ни heredoc (heredoc внутри `sh -ec "..."` после make-склейки \
+	# строк не работает: \n остаются литералами, EOF не находит закрытия). \
+	APP_POLICY_JSON=$$(BUCKET="$$BUCKET" PREFIX="$$PREFIX" ACCESS_MODE="$$ACCESS_MODE" \
+		"$(INFRA_ROOT)/scripts/minio-build-app-policy.py" app-single); \
+	PUBLIC_POLICY_JSON=""; \
+	if [ "$$PUBLIC_READ" = "true" ] || [ "$$PUBLIC_LIST" = "true" ]; then \
+		PUBLIC_POLICY_JSON=$$(BUCKET="$$BUCKET" PREFIX="$$PREFIX" PUBLIC_LIST="$$PUBLIC_LIST" \
+			"$(INFRA_ROOT)/scripts/minio-build-app-policy.py" public); \
+	fi; \
+	printf '%s' "$$APP_POLICY_JSON" \
+	| kubectl run minio-mc-$$(date +%s) \
 		--restart='Never' \
 		--image=$(MINIO_CLIENT_IMAGE_LOCAL) \
 		--namespace=$(NAMESPACE) \
-		--rm -i \
+		--rm -i --quiet \
 		--env="ROOT_USER=$$ROOT_USER" \
 		--env="ROOT_PASSWORD=$$ROOT_PASSWORD" \
 		--env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" \
 		--env="BUCKET=$$BUCKET" \
-		--env="PREFIX=$$PREFIX" \
-		--env="ACCESS_MODE=$$ACCESS_MODE" \
-		--env="PUBLIC_READ=$$PUBLIC_READ" \
-		--env="PUBLIC_LIST=$$PUBLIC_LIST" \
 		--env="VERSIONING=$$VERSIONING" \
 		--env="QUOTA=$$QUOTA" \
 		--env="TAGS=$$TAGS" \
@@ -160,109 +174,36 @@ app-create:
 		--env="ACCESS_KEY=$$ACCESS_KEY" \
 		--env="SECRET_KEY=$$SECRET_KEY" \
 		--env="POLICY_NAME=$$POLICY_NAME" \
-		--command -- sh -ec "\
-			mc alias set minio \"$$MINIO_ENDPOINT\" \"$$ROOT_USER\" \"$$ROOT_PASSWORD\";\n\
-			# bucket create (object-lock must be enabled at creation time)\n\
-			if [ \"$$OBJECT_LOCK\" != \"skip\" ]; then \n\
-			  mc mb --with-lock -p \"minio/$$BUCKET\" || true; \n\
-			else \n\
-			  mc mb -p \"minio/$$BUCKET\" || true; \n\
-			fi;\n\
-			# Build app policy\n\
-			PREFIX_RESOURCE=\"arn:aws:s3:::$$BUCKET/*\";\n\
-			LIST_CONDITION=\"\";\n\
-			if [ -n \"$$PREFIX\" ]; then \n\
-			  # objects only under prefix\n\
-			  PREFIX_RESOURCE=\"arn:aws:s3:::$$BUCKET/$$PREFIX*\";\n\
-			  LIST_CONDITION=\",\\n      \\\"Condition\\\": {\\n        \\\"StringLike\\\": {\\n          \\\"s3:prefix\\\": [\\\"$$PREFIX*\\\"]\\n        }\\n      }\";\n\
-			fi;\n\
-			OBJ_ACTIONS=\"\\\"s3:GetObject\\\",\\\"s3:PutObject\\\",\\\"s3:DeleteObject\\\"\";\n\
-			case \"$$ACCESS_MODE\" in \n\
-			  private_rw) OBJ_ACTIONS=\"\\\"s3:GetObject\\\",\\\"s3:PutObject\\\",\\\"s3:DeleteObject\\\"\";;\n\
-			  private_ro) OBJ_ACTIONS=\"\\\"s3:GetObject\\\"\";;\n\
-			  private_wo) OBJ_ACTIONS=\"\\\"s3:PutObject\\\",\\\"s3:AbortMultipartUpload\\\",\\\"s3:ListMultipartUploadParts\\\"\";;\n\
-			  *) echo \"✗ Unknown ACCESS_MODE=$$ACCESS_MODE\"; exit 1;;\n\
-			esac;\n\
-			cat > /tmp/policy.json <<EOF\n\
-{\n\
-  \"Version\": \"2012-10-17\",\n\
-  \"Statement\": [\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Action\": [\"s3:GetBucketLocation\",\"s3:ListBucket\"],\n\
-      \"Resource\": [\"arn:aws:s3:::$$BUCKET\"]$${LIST_CONDITION}\n\
-    },\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Action\": [ $${OBJ_ACTIONS} ],\n\
-      \"Resource\": [\"$${PREFIX_RESOURCE}\"]\n\
-    }\n\
-  ]\n\
-}\n\
-EOF\n\
-			mc admin policy create minio \"$$POLICY_NAME\" /tmp/policy.json || mc admin policy info minio \"$$POLICY_NAME\" >/dev/null;\n\
-			mc admin user add minio \"$$ACCESS_KEY\" \"$$SECRET_KEY\" || true;\n\
-			mc admin policy attach minio \"$$POLICY_NAME\" --user \"$$ACCESS_KEY\";\n\
-			# public access (best-effort)\n\
-			if [ \"$$PUBLIC_READ\" = \"true\" ] || [ \"$$PUBLIC_LIST\" = \"true\" ]; then \n\
-			  PUB_PREFIX_RESOURCE=\"arn:aws:s3:::$$BUCKET/*\";\n\
-			  PUB_LIST_CONDITION=\"\";\n\
-			  if [ -n \"$$PREFIX\" ]; then \n\
-			    PUB_PREFIX_RESOURCE=\"arn:aws:s3:::$$BUCKET/$$PREFIX*\";\n\
-			    PUB_LIST_CONDITION=\",\\n      \\\"Condition\\\": {\\n        \\\"StringLike\\\": {\\n          \\\"s3:prefix\\\": [\\\"$$PREFIX*\\\"]\\n        }\\n      }\";\n\
-			  fi;\n\
-			  cat > /tmp/public.json <<EOF\n\
-{\n\
-  \"Version\": \"2012-10-17\",\n\
-  \"Statement\": [\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Principal\": \"*\",\n\
-      \"Action\": [\"s3:GetObject\"],\n\
-      \"Resource\": [\"$${PUB_PREFIX_RESOURCE}\"]\n\
-    }\n\
-  ]\n\
-}\n\
-EOF\n\
-			  if [ \"$$PUBLIC_LIST\" = \"true\" ]; then \n\
-			    cat > /tmp/public.json <<EOF\n\
-{\n\
-  \"Version\": \"2012-10-17\",\n\
-  \"Statement\": [\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Principal\": \"*\",\n\
-      \"Action\": [\"s3:GetObject\"],\n\
-      \"Resource\": [\"$${PUB_PREFIX_RESOURCE}\"]\n\
-    },\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Principal\": \"*\",\n\
-      \"Action\": [\"s3:GetBucketLocation\",\"s3:ListBucket\"],\n\
-      \"Resource\": [\"arn:aws:s3:::$$BUCKET\"]$${PUB_LIST_CONDITION}\n\
-    }\n\
-  ]\n\
-}\n\
-EOF\n\
-			  fi;\n\
-			  # Prefer setting a custom anonymous policy. If unsupported, ignore.\n\
-			  mc anonymous set-json /tmp/public.json \"minio/$$BUCKET\" 2>/dev/null || true;\n\
-			fi;\n\
-			# versioning\n\
-			if [ \"$$VERSIONING\" = \"enable\" ]; then mc version enable \"minio/$$BUCKET\" || true; fi;\n\
-			if [ \"$$VERSIONING\" = \"suspend\" ]; then mc version suspend \"minio/$$BUCKET\" || true; fi;\n\
-			# quota\n\
-			if [ \"$$QUOTA\" != \"skip\" ]; then mc quota set \"minio/$$BUCKET\" --size \"$$QUOTA\" || true; fi;\n\
-			# tags\n\
-			if [ \"$$TAGS\" != \"skip\" ]; then mc tag set \"minio/$$BUCKET\" \"$$TAGS\" || true; fi;\n\
-			# lifecycle\n\
-			if [ -n \"$$LIFECYCLE_B64\" ]; then echo \"$$LIFECYCLE_B64\" | base64 -d > /tmp/lifecycle.json 2>/dev/null || echo \"$$LIFECYCLE_B64\" | base64 -D > /tmp/lifecycle.json; mc ilm import \"minio/$$BUCKET\" < /tmp/lifecycle.json || true; fi;\n\
-			# object lock retention (best-effort)\n\
-			if [ \"$$OBJECT_LOCK\" != \"skip\" ] && [ -n \"$$RETENTION_DAYS\" ]; then \n\
-			  MODE_UP=$$(echo \"$$OBJECT_LOCK\" | tr '[:lower:]' '[:upper:]');\n\
-			  mc retention set --default \"$${MODE_UP}\" \"$${RETENTION_DAYS}d\" \"minio/$$BUCKET\" 2>/dev/null || true;\n\
-			fi;\n\
-		"; \
+		--env="PUBLIC_POLICY_JSON=$$PUBLIC_POLICY_JSON" \
+		--command -- sh -ec ' \
+			cat > /tmp/policy.json; \
+			mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+			if [ "$$OBJECT_LOCK" != "skip" ]; then \
+				mc mb --with-lock -p "minio/$$BUCKET" || true; \
+			else \
+				mc mb -p "minio/$$BUCKET" || true; \
+			fi; \
+			mc admin policy create minio "$$POLICY_NAME" /tmp/policy.json || mc admin policy info minio "$$POLICY_NAME" >/dev/null; \
+			mc admin user add minio "$$ACCESS_KEY" "$$SECRET_KEY" || true; \
+			mc admin policy attach minio "$$POLICY_NAME" --user "$$ACCESS_KEY"; \
+			if [ -n "$$PUBLIC_POLICY_JSON" ]; then \
+				printf "%s" "$$PUBLIC_POLICY_JSON" > /tmp/public.json; \
+				mc anonymous set-json /tmp/public.json "minio/$$BUCKET" 2>/dev/null || true; \
+			fi; \
+			if [ "$$VERSIONING" = "enable" ]; then mc version enable "minio/$$BUCKET" || true; fi; \
+			if [ "$$VERSIONING" = "suspend" ]; then mc version suspend "minio/$$BUCKET" || true; fi; \
+			if [ "$$QUOTA" != "skip" ]; then mc quota set "minio/$$BUCKET" --size "$$QUOTA" || true; fi; \
+			if [ "$$TAGS" != "skip" ]; then mc tag set "minio/$$BUCKET" "$$TAGS" || true; fi; \
+			if [ -n "$$LIFECYCLE_B64" ]; then \
+				printf "%s" "$$LIFECYCLE_B64" | base64 -d > /tmp/lifecycle.json 2>/dev/null \
+					|| printf "%s" "$$LIFECYCLE_B64" | base64 -D > /tmp/lifecycle.json; \
+				mc ilm import "minio/$$BUCKET" < /tmp/lifecycle.json || true; \
+			fi; \
+			if [ "$$OBJECT_LOCK" != "skip" ] && [ -n "$$RETENTION_DAYS" ]; then \
+				MODE_UP=$$(echo "$$OBJECT_LOCK" | tr "[:lower:]" "[:upper:]"); \
+				mc retention set --default "$$MODE_UP" "$${RETENTION_DAYS}d" "minio/$$BUCKET" 2>/dev/null || true; \
+			fi; \
+		'; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -356,123 +297,51 @@ app-append:
 	MINIO_ENDPOINT="$$MINIO_SCHEME://$$MINIO_HOST:9000"; \
 	POLICY_NAME="app-$(APP)"; \
 	echo "Append bucket=$(BUCKET) prefix=$$PREFIX to app=$(APP)"; \
-	kubectl run minio-mc-$$(date +%s) \
+	# Validate ACCESS_MODE \
+	case "$$ACCESS_MODE" in private_rw|private_ro|private_wo) ;; \
+		*) echo "✗ Unknown ACCESS_MODE=$$ACCESS_MODE (private_rw|private_ro|private_wo)"; exit 1;; \
+	esac; \
+	# Все JSON-вычисления (новый buckets.json, combined policy, public-policy) \
+	# делаем на хосте через scripts/minio-build-app-policy.py + короткий inline python3 \
+	# для расширения tracking-list. В pod уходит уже готовый текст; heredoc внутри \
+	# `sh -ec "..."` не работает (\n остаются литералами после make-склейки). \
+	NEW_BUCKETS_JSON=$$(TRACK="$$TRACK" NEW_BUCKET="$(BUCKET)" NEW_PREFIX="$$PREFIX" \
+		NEW_ACCESS_MODE="$$ACCESS_MODE" NEW_PUBLIC_READ="$$PUBLIC_READ" NEW_PUBLIC_LIST="$$PUBLIC_LIST" \
+		python3 -c 'import json, os; t = json.loads(os.environ.get("TRACK") or "[]"); t.append({"bucket": os.environ["NEW_BUCKET"], "prefix": os.environ.get("NEW_PREFIX") or "", "access_mode": os.environ.get("NEW_ACCESS_MODE") or "private_rw", "public_read": (os.environ.get("NEW_PUBLIC_READ","false").lower() == "true"), "public_list": (os.environ.get("NEW_PUBLIC_LIST","false").lower() == "true")}); print(json.dumps(t, separators=(",", ":")))'); \
+	COMBINED_POLICY_JSON=$$(BUCKETS="$$NEW_BUCKETS_JSON" "$(INFRA_ROOT)/scripts/minio-build-app-policy.py" app); \
+	PUBLIC_POLICY_JSON=""; \
+	if [ "$$PUBLIC_READ" = "true" ] || [ "$$PUBLIC_LIST" = "true" ]; then \
+		PUBLIC_POLICY_JSON=$$(BUCKET="$(BUCKET)" PREFIX="$$PREFIX" PUBLIC_LIST="$$PUBLIC_LIST" \
+			"$(INFRA_ROOT)/scripts/minio-build-app-policy.py" public); \
+	fi; \
+	printf '%s' "$$COMBINED_POLICY_JSON" \
+	| kubectl run minio-mc-$$(date +%s) \
 		--restart='Never' \
 		--image=$(MINIO_CLIENT_IMAGE_LOCAL) \
 		--namespace=$(NAMESPACE) \
-		--rm -i \
+		--rm -i --quiet \
 		--env="ROOT_USER=$$ROOT_USER" \
 		--env="ROOT_PASSWORD=$$ROOT_PASSWORD" \
 		--env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" \
 		--env="NEW_BUCKET=$(BUCKET)" \
-		--env="NEW_PREFIX=$$PREFIX" \
-		--env="NEW_ACCESS_MODE=$$ACCESS_MODE" \
-		--env="NEW_PUBLIC_READ=$$PUBLIC_READ" \
-		--env="NEW_PUBLIC_LIST=$$PUBLIC_LIST" \
 		--env="ACCESS_KEY=$$ACCESS_KEY" \
 		--env="POLICY_NAME=$$POLICY_NAME" \
-		--env="TRACK_JSON=$$TRACK" \
-		--command -- sh -ec "\
-			mc alias set minio \"$$MINIO_ENDPOINT\" \"$$ROOT_USER\" \"$$ROOT_PASSWORD\";\n\
-			mc mb -p \"minio/$$NEW_BUCKET\" || true;\n\
-			# update tracking json\n\
-			python3 - <<'PY'\n\
-import json, os\n\
-track=json.loads(os.environ.get('TRACK_JSON','[]') or '[]')\n\
-entry={\n\
-  'bucket': os.environ['NEW_BUCKET'],\n\
-  'prefix': os.environ.get('NEW_PREFIX','') or '',\n\
-  'access_mode': os.environ.get('NEW_ACCESS_MODE','private_rw') or 'private_rw',\n\
-  'public_read': (os.environ.get('NEW_PUBLIC_READ','false').lower()=='true'),\n\
-  'public_list': (os.environ.get('NEW_PUBLIC_LIST','false').lower()=='true'),\n\
-}\n\
-track.append(entry)\n\
-print(json.dumps(track, separators=(',',':')))\n\
-PY\n\
-			> /tmp/buckets.json;\n\
-			# build combined policy\n\
-			python3 - <<'PY'\n\
-import json\n\
-track=json.load(open('/tmp/buckets.json'))\n\
-stm=[]\n\
-for e in track:\n\
-  b=e['bucket']; p=e.get('prefix','') or ''\n\
-  list_stmt={\n\
-    'Effect':'Allow',\n\
-    'Action':['s3:GetBucketLocation','s3:ListBucket'],\n\
-    'Resource':[f'arn:aws:s3:::{b}'],\n\
-  }\n\
-  if p:\n\
-    list_stmt['Condition']={'StringLike':{'s3:prefix':[f'{p}*']}}\n\
-  mode=e.get('access_mode','private_rw')\n\
-  if mode=='private_ro':\n\
-    actions=['s3:GetObject']\n\
-  elif mode=='private_wo':\n\
-    actions=['s3:PutObject','s3:AbortMultipartUpload','s3:ListMultipartUploadParts']\n\
-  else:\n\
-    actions=['s3:GetObject','s3:PutObject','s3:DeleteObject']\n\
-  obj_stmt={\n\
-    'Effect':'Allow',\n\
-    'Action':actions,\n\
-    'Resource':[f'arn:aws:s3:::{b}/{p}*' if p else f'arn:aws:s3:::{b}/*'],\n\
-  }\n\
-  stm.append(list_stmt)\n\
-  stm.append(obj_stmt)\n\
-policy={'Version':'2012-10-17','Statement':stm}\n\
-print(json.dumps(policy, indent=2))\n\
-PY\n\
-			> /tmp/policy.json;\n\
-			mc admin policy create minio \"$$POLICY_NAME\" /tmp/policy.json || mc admin policy info minio \"$$POLICY_NAME\" >/dev/null;\n\
-			mc admin policy attach minio \"$$POLICY_NAME\" --user \"$$ACCESS_KEY\";\n\
-			# public for NEW bucket (best-effort)\n\
-			if [ \"$$NEW_PUBLIC_READ\" = \"true\" ] || [ \"$$NEW_PUBLIC_LIST\" = \"true\" ]; then \n\
-			  PUB_PREFIX_RESOURCE=\"arn:aws:s3:::$$NEW_BUCKET/*\";\n\
-			  PUB_LIST_CONDITION=\"\";\n\
-			  if [ -n \"$$NEW_PREFIX\" ]; then \n\
-			    PUB_PREFIX_RESOURCE=\"arn:aws:s3:::$$NEW_BUCKET/$$NEW_PREFIX*\";\n\
-			    PUB_LIST_CONDITION=\",\\n      \\\"Condition\\\": {\\n        \\\"StringLike\\\": {\\n          \\\"s3:prefix\\\": [\\\"$$NEW_PREFIX*\\\"]\\n        }\\n      }\";\n\
-			  fi;\n\
-			  cat > /tmp/public.json <<EOF\n\
-{\n\
-  \"Version\": \"2012-10-17\",\n\
-  \"Statement\": [\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Principal\": \"*\",\n\
-      \"Action\": [\"s3:GetObject\"],\n\
-      \"Resource\": [\"$${PUB_PREFIX_RESOURCE}\"]\n\
-    }\n\
-  ]\n\
-}\n\
-EOF\n\
-			  if [ \"$$NEW_PUBLIC_LIST\" = \"true\" ]; then \n\
-			    cat > /tmp/public.json <<EOF\n\
-{\n\
-  \"Version\": \"2012-10-17\",\n\
-  \"Statement\": [\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Principal\": \"*\",\n\
-      \"Action\": [\"s3:GetObject\"],\n\
-      \"Resource\": [\"$${PUB_PREFIX_RESOURCE}\"]\n\
-    },\n\
-    {\n\
-      \"Effect\": \"Allow\",\n\
-      \"Principal\": \"*\",\n\
-      \"Action\": [\"s3:GetBucketLocation\",\"s3:ListBucket\"],\n\
-      \"Resource\": [\"arn:aws:s3:::$$NEW_BUCKET\"]$${PUB_LIST_CONDITION}\n\
-    }\n\
-  ]\n\
-}\n\
-EOF\n\
-			  fi;\n\
-			  mc anonymous set-json /tmp/public.json \"minio/$$NEW_BUCKET\" 2>/dev/null || true;\n\
-			fi;\n\
-			# print updated buckets.json to stdout for the outer make\n\
-			cat /tmp/buckets.json;\n\
-		" > /tmp/minio-buckets.json; \
+		--env="PUBLIC_POLICY_JSON=$$PUBLIC_POLICY_JSON" \
+		--command -- sh -ec ' \
+			cat > /tmp/policy.json; \
+			mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+			mc mb -p "minio/$$NEW_BUCKET" || true; \
+			mc admin policy create minio "$$POLICY_NAME" /tmp/policy.json || mc admin policy info minio "$$POLICY_NAME" >/dev/null; \
+			mc admin policy attach minio "$$POLICY_NAME" --user "$$ACCESS_KEY"; \
+			if [ -n "$$PUBLIC_POLICY_JSON" ]; then \
+				printf "%s" "$$PUBLIC_POLICY_JSON" > /tmp/public.json; \
+				mc anonymous set-json /tmp/public.json "minio/$$NEW_BUCKET" 2>/dev/null || true; \
+			fi; \
+		'; \
+	# Обновляем tracking secret свежим NEW_BUCKETS_JSON, посчитанным на хосте. \
 	kubectl delete secret "minio-app-$(APP)" -n "$(NAMESPACE)" --ignore-not-found >/dev/null; \
-	kubectl create secret generic "minio-app-$(APP)" -n "$(NAMESPACE)" --from-file=buckets.json=/tmp/minio-buckets.json >/dev/null; \
+	printf '%s' "$$NEW_BUCKETS_JSON" \
+		| kubectl create secret generic "minio-app-$(APP)" -n "$(NAMESPACE)" --from-file=buckets.json=/dev/stdin >/dev/null; \
 	echo "✓ Done (updated tracking secret: $(NAMESPACE)/minio-app-$(APP))"
 
 # Usage: make app-drop APP=myapp [APP_NS=myapp] [ACCESS_KEY=...] [SKIP_CONFIRM=1] [MINIO_REMOVE_BUCKETS=1]
@@ -520,7 +389,7 @@ app-drop:
 		--restart='Never' \
 		--image=$(MINIO_CLIENT_IMAGE_LOCAL) \
 		--namespace=$(NAMESPACE) \
-		--rm -i \
+		--rm -i --quiet \
 		--env="ROOT_USER=$$ROOT_USER" \
 		--env="ROOT_PASSWORD=$$ROOT_PASSWORD" \
 		--env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" \
@@ -528,18 +397,18 @@ app-drop:
 		--env="POLICY_NAME=$$POLICY_NAME" \
 		--env="BUCKETS_CSV=$$BUCKETS_CSV" \
 		--env="DO_RB=$$DO_RB" \
-		--command -- sh -ec "\
-			mc alias set minio \"\$$MINIO_ENDPOINT\" \"\$$ROOT_USER\" \"\$$ROOT_PASSWORD\";\n\
-			mc admin policy detach minio \"\$$POLICY_NAME\" --user \"\$$ACCESS_KEY\" 2>/dev/null || true;\n\
-			mc admin user remove minio \"\$$ACCESS_KEY\" 2>/dev/null || true;\n\
-			mc admin policy remove minio \"\$$POLICY_NAME\" 2>/dev/null || true;\n\
-			if [ \"\$$DO_RB\" = \"1\" ] && [ -n \"\$$BUCKETS_CSV\" ]; then\n\
-			  echo \"\$$BUCKETS_CSV\" | tr ',' '\\n' | while read -r b; do\n\
-			    [ -z \"\$$b\" ] && continue;\n\
-			    mc rb --force \"minio/\$$b\" 2>/dev/null || true;\n\
-			  done;\n\
-			fi;\n\
-		"; \
+		--command -- sh -ec ' \
+			mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+			mc admin policy detach minio "$$POLICY_NAME" --user "$$ACCESS_KEY" 2>/dev/null || true; \
+			mc admin user remove minio "$$ACCESS_KEY" 2>/dev/null || true; \
+			mc admin policy remove minio "$$POLICY_NAME" 2>/dev/null || true; \
+			if [ "$$DO_RB" = "1" ] && [ -n "$$BUCKETS_CSV" ]; then \
+				echo "$$BUCKETS_CSV" | tr "," "\n" | while read -r b; do \
+					[ -z "$$b" ] && continue; \
+					mc rb --force "minio/$$b" 2>/dev/null || true; \
+				done; \
+			fi; \
+		'; \
 	echo "Deleting Secrets..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	kubectl delete secret "minio-app-$(APP)" -n "$(NAMESPACE)" --ignore-not-found; \
@@ -607,13 +476,34 @@ check-registry:
 
 install:
 	@kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	@# values-*.yaml ссылаются на auth.existingSecret: $(RELEASE) (ключи root-user / root-password).
+	@# При первом разворачивании Secret отсутствует — генерируем root-password (root-user=admin).
+	@# В корневой цели `make up` логика та же (см. корневой Makefile, блок `up:` для minio).
+	@if ! kubectl get secret -n $(NAMESPACE) $(RELEASE) >/dev/null 2>&1; then \
+		echo "Secret $(NAMESPACE)/$(RELEASE) отсутствует — создаю с новым root-password..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+		ROOT_PASSWORD=$$(openssl rand -hex 16); \
+		kubectl create secret generic $(RELEASE) -n $(NAMESPACE) \
+			--from-literal=root-user="admin" \
+			--from-literal=root-password="$$ROOT_PASSWORD" >/dev/null; \
+		echo "✓ Secret $(NAMESPACE)/$(RELEASE) создан (root-user=admin)"; \
+	fi
 	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE)
 
 upgrade:
 	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) --create-namespace -f $(VALUES_FILE)
 
 uninstall:
-	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)!"
+	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)."
+	@echo "  Останутся в namespace $(NAMESPACE):"
+	@echo "    - PVC с данными bucket'ов (объекты, IAM internal state);"
+	@echo "    - Secret $(RELEASE) (root creds — нужен для будущего install,"
+	@echo "      иначе создастся новый, и MinIO не подхватит старые IAM users);"
+	@echo "    - tracking secrets minio-app-* (используются для app-append)."
+	@echo "  Полная зачистка (включая данные) — отдельными командами:"
+	@echo "    kubectl delete pvc -n $(NAMESPACE) -l app.kubernetes.io/name=minio"
+	@echo "    kubectl delete secret $(RELEASE) -n $(NAMESPACE)"
+	@echo "    kubectl get secret -n $(NAMESPACE) -o name | grep '^secret/minio-app-' | xargs -r kubectl delete -n $(NAMESPACE)"
 	@read -p "Вы уверены? (y/N): " confirm && \
 		if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
 			helm uninstall $(RELEASE) --namespace $(NAMESPACE) || echo "Helm release не найден"; \
@@ -702,7 +592,8 @@ BACKUP_DIR ?= backups
 # Secret-keys IAM-пользователей не экспортируются (хранятся только в Secret <APP>-minio в namespace приложения).
 backup-meta:
 	@mkdir -p $(BACKUP_DIR)
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@set -eo pipefail; \
+	TS=$$(date +%Y%m%d-%H%M%S); \
 	OUT="$(BACKUP_DIR)/minio-meta-$$TS.tar.gz"; \
 	echo "Создание meta-бэкапа MinIO в $$OUT..."; \
 	ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
@@ -715,7 +606,8 @@ backup-meta:
 	kubectl run "$$HELPER" --restart=Never --image=$(MINIO_CLIENT_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
 		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(MINIO_CLIENT_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
 		>/dev/null; \
-	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	TMP=$$(mktemp -d); \
+	trap 'rm -rf "$$TMP"; kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
 	echo "  Сбор IAM users + policies + buckets..."; \
 	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="ROOT_USER=$$ROOT_USER" --env="ROOT_PASSWORD=$$ROOT_PASSWORD" --env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" -- sh -ec ' \
@@ -724,38 +616,46 @@ backup-meta:
 		mc admin info       --json minio > info.json         2>/dev/null || echo "{}" > info.json; \
 		mc admin user list  --json minio > users.json        2>/dev/null || echo "" > users.json; \
 		mc admin policy list --json minio > policies.list    2>/dev/null || echo "" > policies.list; \
-		# Содержимое каждой policy
+		: "содержимое каждой policy"; \
 		for p in $$(mc admin policy list minio 2>/dev/null | awk "NR>1 {print \$$1}"); do \
 			[ -z "$$p" ] && continue; \
 			mc admin policy info --json minio "$$p" > "policies/$$p.json" 2>/dev/null || true; \
 		done; \
 		mc ls --json minio > buckets.json 2>/dev/null || echo "" > buckets.json; \
-		# Per-bucket: versioning + ilm + anonymous policy
+		: "per-bucket: versioning + ilm + anonymous policy. Пустые файлы (нет настроек у bucket) удаляем — чище архив и restore-meta не споткнётся на пустых JSON"; \
 		for b in $$(mc ls minio 2>/dev/null | awk "{print \$$NF}" | sed "s|/$$||"); do \
 			[ -z "$$b" ] && continue; \
 			mc version info     --json "minio/$$b" > "buckets/$$b-versioning.json" 2>/dev/null || true; \
 			mc ilm rule export        "minio/$$b" > "buckets/$$b-ilm.json"        2>/dev/null || true; \
 			mc anonymous get-json     "minio/$$b" > "buckets/$$b-anonymous.json"  2>/dev/null || true; \
+			for f in "buckets/$$b-versioning.json" "buckets/$$b-ilm.json" "buckets/$$b-anonymous.json"; do \
+				[ -s "$$f" ] || rm -f "$$f"; \
+			done; \
 		done; \
 		tar -czf /tmp/minio-meta-mc.tar.gz -C /tmp/meta .; \
 	'; \
-	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"; kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
-	kubectl cp "$(NAMESPACE)/$$HELPER:/tmp/minio-meta-mc.tar.gz" "$$TMP/mc.tar.gz" >/dev/null; \
+	: "kubectl exec ... cat устойчивее, чем kubectl cp (последний под капотом гоняет tar и известен подвисаниями/обрезанием на больших архивах)"; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- cat /tmp/minio-meta-mc.tar.gz > "$$TMP/mc.tar.gz"; \
+	[ -s "$$TMP/mc.tar.gz" ] || { echo "✗ Архив mc.tar.gz пуст или не скопирован"; exit 1; }; \
 	echo "  Сбор tracking secrets minio-app-*..."; \
 	mkdir -p "$$TMP/tracking-secrets"; \
 	for s in $$(kubectl get secret -n $(NAMESPACE) -o name 2>/dev/null | grep '^secret/minio-app-' || true); do \
 		NAME=$$(basename "$$s"); \
-		# Чистим metadata через yq (как в env-restore.sh) — устойчивее к форматированию kubectl.
+		: "чистим metadata через yq (как в env-restore.sh) — устойчивее к форматированию kubectl"; \
 		kubectl get secret -n $(NAMESPACE) "$$NAME" -o yaml \
 			| "$(YQ)" 'del(.metadata.creationTimestamp, .metadata.resourceVersion, .metadata.uid, .metadata.selfLink, .metadata.managedFields, .metadata.ownerReferences)' \
 			> "$$TMP/tracking-secrets/$$NAME.yaml"; \
 	done; \
-	# Распаковываем mc.tar.gz в TMP, добавляем tracking-secrets, переупаковываем единым архивом.
+	: "распаковываем mc.tar.gz в TMP, добавляем tracking-secrets, переупаковываем единым архивом"; \
 	mkdir -p "$$TMP/meta"; \
 	tar -xzf "$$TMP/mc.tar.gz" -C "$$TMP/meta"; \
+	: "базовые артефакты — info.json и policies.list — должны существовать (инициализируются как {}/'' в pod-скрипте; пустые → значит inner sh -ec упал до tar и mc.tar.gz получился без них)"; \
+	[ -f "$$TMP/meta/info.json" ]     || { echo "✗ info.json отсутствует в архиве (inner sh -ec упал?)"; exit 1; }; \
+	[ -f "$$TMP/meta/policies.list" ] || { echo "✗ policies.list отсутствует в архиве"; exit 1; }; \
 	if [ -d "$$TMP/tracking-secrets" ]; then mv "$$TMP/tracking-secrets" "$$TMP/meta/tracking-secrets"; fi; \
 	tar -czf "$$OUT" -C "$$TMP/meta" .; \
-	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	[ -s "$$OUT" ] || { echo "✗ Финальный архив $$OUT пуст"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
 	echo "✓ Meta-бэкап создан: $$OUT ($$SIZE)"
 
 list-backups:
@@ -784,7 +684,7 @@ restore-meta:
 	@TS=$$(date +%Y%m%d-%H%M%S); \
 	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
 	tar -xzf "$(BACKUP_FILE)" -C "$$TMP"; \
-	# 1) Восстанавливаем policies
+	: "1) Восстанавливаем policies"; \
 	if [ -d "$$TMP/policies" ]; then \
 		ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
 		ROOT_PASSWORD=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
@@ -803,7 +703,7 @@ restore-meta:
 		for f in "$$TMP/policies"/*.json; do \
 			[ -f "$$f" ] || continue; \
 			NAME=$$(basename "$$f" .json); \
-			# консольные/системные policies (consoleAdmin, readonly, readwrite, writeonly, diagnostics) пропустим
+			: "консольные/системные policies (consoleAdmin, readonly, readwrite, writeonly, diagnostics) пропускаем"; \
 			case "$$NAME" in consoleAdmin|readonly|readwrite|writeonly|diagnostics) SKIPPED=$$((SKIPPED+1)); continue ;; esac; \
 			kubectl cp "$$f" "$(NAMESPACE)/$$HELPER:/tmp/$$NAME.json" >/dev/null; \
 			if kubectl exec "$$HELPER" -n $(NAMESPACE) -- mc admin policy create minio "$$NAME" "/tmp/$$NAME.json" >/dev/null 2>&1; then \
@@ -815,7 +715,7 @@ restore-meta:
 		echo "  Policies: применено $$APPLIED, пропущено системных $$SKIPPED"; \
 		kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true; \
 	fi; \
-	# 2) Восстанавливаем tracking secrets minio-app-*
+	: "2) Восстанавливаем tracking secrets minio-app-*"; \
 	APPLIED_TS=0; \
 	if [ -d "$$TMP/tracking-secrets" ]; then \
 		for f in "$$TMP/tracking-secrets"/*.yaml; do \

@@ -56,3 +56,17 @@ ingress:
         - files.appB.com
       secretName: minio-s3-tls
 
+# Lightweight local-профиль: standalone, минимальные limits для dev-машины.
+mode: standalone
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+persistence:
+  enabled: true
+  size: 4Gi
+  storageClass: ""
+

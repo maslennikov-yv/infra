@@ -5,3 +5,12 @@
 #   - из директории сервиса: `make images-save ENV=<env>`
 images/*.tar
 
+# Директория с meta-бэкапами MinIO (IAM policies + tracking secrets minio-app-*)
+backups/
+*.tar.gz
+
+# Временные файлы
+*.swp
+*.swo
+*~
+

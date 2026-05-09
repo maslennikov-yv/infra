@@ -50,3 +50,21 @@ ingress:
   tls: true
   extraHosts: []
   extraTls: []
+
+# Standard prod-профиль: standalone (single pod), 50Gi PVC, 512Mi-1Gi памяти.
+# При росте нагрузки/объёма — пересмотреть resources.limits и persistence.size.
+# Изменение persistence.size у StatefulSet — через make minio-recreate-prep
+# (см. minio/BACKUP.md: backup-meta + apps-apply воссоздаст IAM/policies; объекты
+# в bucket'ах требуют отдельного mc mirror или snapshot PV).
+mode: standalone
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+persistence:
+  enabled: true
+  size: 50Gi
+  storageClass: ""
