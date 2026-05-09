@@ -579,7 +579,7 @@ app-local-src-hostpath-mount:
 		"$(REPO_ROOT)/scripts/app-local-src-hostpath-mount.sh"
 
 pg-app-create:
-	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)" APPS_REGISTRY="$(APPS_REGISTRY)" YQ="$(YQ)"
 postgres-db:
 	@$(MAKE) pg-app-psql APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 pg-app-psql:

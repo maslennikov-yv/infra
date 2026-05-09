@@ -1,6 +1,8 @@
 # PostgreSQL Chart для Kubernetes (Bitnami)
 
-PostgreSQL Helm chart на основе Bitnami с настройкой StatefulSet на 2 ноды.
+PostgreSQL Helm chart на основе Bitnami: `architecture: standalone`, один primary,
+фиксированные теги образов из локального registry microk8s (`localhost:32000/bitnami/*`).
+Для HA нужно переходить на `architecture: replication` и явно настраивать `readReplicas`.
 
 ## Требования
 
@@ -22,28 +24,33 @@ microk8s enable registry
 
 2. Загрузите все образы:
 ```bash
-make load-all
+make images-sync
 ```
 
 Эта команда выполнит:
-- `pull-images` - скачает образы с hub.docker.com/u/bitnamilegacy
-- `tag-images` - тегирует образы для local registry
-- `push-images` - загрузит образы в microk8s registry
+- `images-pull` - скачает образы с hub.docker.com/u/bitnamilegacy
+- `images-tag` - тегирует образы для local registry
+- `images-push` - загрузит образы в microk8s registry
 
-### Способ 2: Напрямую в containerd (без registry) - РЕКОМЕНДУЕТСЯ
+### Способ 2: Напрямую в containerd (fallback, без registry)
 
-Если registry не используется, можно импортировать образы напрямую в containerd. 
-Этот способ автоматически тегирует образы с теми же именами, что используются в chart 
-(`registry-1.docker.io/bitnami/*`), поэтому не нужно менять `values.yaml`:
+Если по какой-то причине нельзя использовать microk8s registry, образы можно
+импортировать напрямую в containerd:
 
 ```bash
 make load-containerd
 ```
 
-**Преимущества этого способа:**
-- Не требует включения registry
-- Образы тегируются под теми же именами, что в chart
-- Не нужно изменять `values.yaml`
+**⚠ Внимание:** этот способ тегирует образы как `registry-1.docker.io/bitnami/*`,
+тогда как `values-<ENV>.yaml` в этом репозитории по умолчанию задают
+`image.registry: localhost:32000` (`bitnami/postgresql:18.0.0` и т.п.). Чтобы
+такой импорт сработал, надо либо:
+
+- временно убрать (или переопределить) `image.registry` / `volumePermissions.image.registry`
+  / `metrics.image.registry` в values на пустую строку, чтобы chart использовал
+  свой дефолт `registry-1.docker.io`; либо
+- использовать **Способ 1** (`make images-sync`) — тогда правки values не нужны,
+  это и есть штатный путь репозитория.
 
 ### Проверка загруженных образов
 
@@ -53,23 +60,32 @@ make list-images
 
 ## Использование
 
-### Деплой PostgreSQL с 2 нодами
+### Деплой PostgreSQL (standalone, один primary)
 
 ```bash
 helm install postgres ./postgresql -f values-local.yaml -n postgres
 ```
 
+> `values-*.yaml` ссылаются на `existingSecret: postgres-postgresql` (с ключом
+> `postgres-password`). Если запускать **прямой `helm install`**, как в команде
+> выше, Secret должен уже существовать — иначе init-container зависнет в ожидании.
+> `make install` (и корневой `make up` / `make postgres-up ENV=...`) сами создают
+> этот Secret со случайным паролем при первом запуске, если его ещё нет, поэтому
+> для штатной установки с нуля проще использовать их.
+
 Для другого окружения подставьте свой файл: `values-<ENV>.yaml` из этого каталога (как в корневом `helmfile`).
 
 ### Использование с local registry
 
-После загрузки образов через `make load-all`, образы будут доступны по адресу `localhost:32000/bitnami/*`.
+После загрузки образов через `make images-sync`, образы будут доступны по адресу `localhost:32000/bitnami/*`.
 
-Если используете microk8s registry, убедитесь что в `values-<ENV>.yaml` указано:
+Если используете microk8s registry, убедитесь что в `values-<ENV>.yaml` указано
+(теги — те же, что зафиксированы в `postgres/Makefile`):
 ```yaml
 image:
   registry: localhost:32000
   repository: bitnami/postgresql
+  tag: "18.0.0"
 ```
 
 ### Просмотр созданных ресурсов
@@ -85,31 +101,38 @@ kubectl get pvc
 ### Основные команды загрузки образов:
 - `make help` - Показать справку по всем командам
 - `make check-registry` - Проверить доступность microk8s registry
-- `make pull-images` - Скачать все образы с Docker Hub
-- `make tag-images` - Тегировать образы для local registry
-- `make push-images` - Загрузить образы в microk8s registry
-- `make load-all` - Выполнить все шаги (pull, tag, push)
+- `make images-pull` - Скачать все образы с Docker Hub
+- `make images-tag` - Тегировать образы для local registry
+- `make images-push` - Загрузить образы в microk8s registry
+- `make images-sync` - Выполнить все шаги (pull, tag, push)
 - `make load-containerd` - Загрузить образы через containerd
 
 ### Сохранение и загрузка из файлов:
-- `make save-images` - Сохранить все образы в tar файлы
-- `make save-all` - Скачать и сохранить все образы в файлы (рекомендуется для оффлайн использования)
-- `make load-from-files` - Загрузить все образы из tar файлов
+- `make images-save` - Сохранить все образы в tar файлы
+- `make images-load` - Загрузить все образы из tar файлов
+- `make images-sync-from-files` - load → tag → push (без pull, для оффлайна)
 - `make list-saved-images` - Показать список сохраненных tar файлов
 
 ### Утилиты:
 - `make list-images` - Показать список загруженных образов в microk8s
-- `make clean` - Удалить локальные Docker образы
-- `make clean-images` - Удалить сохраненные tar файлы
-- `make clean-all` - Удалить локальные образы и сохраненные файлы
+- `make images-clean` - Удалить локальные Docker образы
+- `make images-clean-files` - Удалить сохраненные tar файлы
 
 ## Используемые образы
 
-Следующие Docker образы загружаются в local repository:
+Следующие Docker образы загружаются в local repository (теги фиксируются в
+`postgres/Makefile`, при необходимости переопределяются переменными
+`POSTGRESQL_TAG` / `OS_SHELL_TAG` / `POSTGRES_EXPORTER_TAG`):
 
-1. **bitnami/postgresql:latest** - Основной образ PostgreSQL
-2. **bitnami/os-shell:latest** - Образ для volume permissions (init container)
-3. **bitnami/postgres-exporter:latest** - Образ для метрик Prometheus (опционально)
+1. **bitnami/postgresql** — основной образ PostgreSQL (по умолчанию `18.0.0`)
+2. **bitnami/os-shell** — образ для volume permissions, init container
+   (по умолчанию `12-debian-12-r51`)
+3. **bitnami/postgres-exporter** — образ для метрик Prometheus, опциональный
+   (по умолчанию `0.18.1`)
+
+Source-образы тянутся из `docker.io/bitnamilegacy/*` по immutable `sha256-*`
+тегам (`POSTGRESQL_SRC_TAG` / `POSTGRES_EXPORTER_SRC_TAG`), затем
+перетегируются в `localhost:32000/bitnami/*` под перечисленные выше теги.
 
 ## Сохранение образов в файлы
 
@@ -117,25 +140,33 @@ kubectl get pvc
 
 ```bash
 # Скачать и сохранить все образы в tar файлы
-make save-all
+make images-pull && make images-save
 ```
 
-Образы будут сохранены в директории `images/`:
-- `images/postgresql-latest.tar`
-- `images/os-shell-latest.tar`
-- `images/postgres-exporter-latest.tar`
+Образы будут сохранены в директории `images/` под именами вида
+`<image>-<POSTGRESQL_TAG>.tar` (теги — из `postgres/Makefile`):
+- `images/postgresql-18.0.0.tar`
+- `images/os-shell-12-debian-12-r51.tar`
+- `images/postgres-exporter-0.18.1.tar`
 
 ### Использование сохраненных образов
 
-На другом сервере или после очистки:
+На другом сервере или после очистки штатный путь — через локальный registry
+(совпадает с тем, что задано в `values-<ENV>.yaml`):
 
 ```bash
-# Загрузить образы из файлов
-make load-from-files
+# Загрузить образы из tar-файлов в docker
+make images-load
 
-# Затем загрузить в containerd
-make load-containerd
+# Перетегировать и запушить в localhost:32000
+make images-tag
+make images-push
+# Или одной целью:
+make images-sync-from-files
 ```
+
+`make load-containerd` как fallback тоже работает, но требует правок
+`image.registry` в values (см. **Способ 2** выше).
 
 ### Просмотр сохраненных образов
 
@@ -148,14 +179,14 @@ make list-saved-images
 Вы можете указать конкретные версии образов через переменные:
 
 ```bash
-POSTGRESQL_TAG=16.1.0 make save-all
+POSTGRESQL_TAG=16.1.0 make images-pull images-save
 ```
 
 Или изменить адрес registry и директорию для образов:
 
 ```bash
-REGISTRY=my-registry.local:5000 make load-all
-IMAGES_DIR=/path/to/images make save-all
+REGISTRY=my-registry.local:5000 make images-sync
+IMAGES_DIR=/path/to/images make images-pull images-save
 ```
 
 ## App accounts (изоляция по приложениям)

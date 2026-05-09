@@ -170,7 +170,7 @@ kubectl describe pod postgres-postgresql-0 -n postgres | grep -A 10 "Events:"
    make load-containerd
    
    # Или из файлов
-   make load-from-files
+   make images-load
    make load-containerd
    ```
 
@@ -183,12 +183,15 @@ kubectl describe pod postgres-postgresql-0 -n postgres | grep -A 10 "Events:"
    microk8s ctr images list | grep postgresql
    ```
 
-3. **Импортировать образ вручную**
+3. **Импортировать образ вручную** (если штатные `make images-load` /
+   `make images-push` недоступны)
    ```bash
-   # Если образ уже в Docker
-   docker save bitnami/postgresql:latest | microk8s ctr image import -
-   microk8s ctr image tag bitnami/postgresql:latest registry-1.docker.io/bitnami/postgresql:latest
+   # Если образ уже в Docker под локальным тегом из values-*.yaml
+   docker save localhost:32000/bitnami/postgresql:18.0.0 \
+     | microk8s ctr image import -
    ```
+   Теги в команде должны совпадать с тем, что задано в `postgres/values-<ENV>.yaml`
+   (`image.registry` + `image.repository:tag`); по умолчанию — `localhost:32000/bitnami/postgresql:18.0.0`.
 
 ---
 
@@ -305,11 +308,11 @@ kubectl get svc -n postgres
 # Проверить эндпоинты
 kubectl get endpoints postgres-postgresql -n postgres
 
-# Тест подключения из другого пода
+# Тест подключения из другого пода (под superuser postgres)
 kubectl run postgres-client --rm -it --restart=Never -n postgres \
-  --image=registry-1.docker.io/bitnami/postgresql:latest \
-  --env="PGPASSWORD=$(kubectl get secret postgres-postgresql -n postgres -o jsonpath='{.data.password}' | base64 -d)" \
-  -- psql --host postgres-postgresql.postgres.svc.cluster.local -U app_user -d app_db
+  --image=localhost:32000/bitnami/postgresql:18.0.0 \
+  --env="PGPASSWORD=$(kubectl get secret postgres-postgresql -n postgres -o jsonpath='{.data.postgres-password}' | base64 -d)" \
+  -- psql --host postgres-postgresql.postgres.svc.cluster.local -U postgres -d postgres
 ```
 
 **Решение:**

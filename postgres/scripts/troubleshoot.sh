@@ -4,10 +4,31 @@
 NAMESPACE="${1:-postgres}"
 RELEASE_NAME="${2:-postgres}"
 
+# Предусловия: без них дальнейшие kubectl-команды напечатают пустые/безмолвные
+# секции, и оператор может ошибочно решить, что «всё ок».
+if ! command -v kubectl >/dev/null 2>&1; then
+    echo "✗ kubectl не найден в PATH" >&2
+    exit 1
+fi
+if [ -n "${KUBECONFIG:-}" ] && [ ! -r "$KUBECONFIG" ]; then
+    echo "✗ KUBECONFIG=$KUBECONFIG задан, но файл не читается" >&2
+    exit 1
+fi
+if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then
+    echo "✗ Кластер недоступен через kubectl (KUBECONFIG=${KUBECONFIG:-<unset>})" >&2
+    echo "  Проверьте: kubectl config current-context, k8s/config/<env>, network/SSH-туннель." >&2
+    exit 1
+fi
+HAS_HELM=1
+command -v helm >/dev/null 2>&1 || HAS_HELM=0
+HAS_JQ=1
+command -v jq >/dev/null 2>&1 || HAS_JQ=0
+
 echo "========================================="
 echo "PostgreSQL Troubleshooting Diagnostic"
 echo "Namespace: $NAMESPACE"
 echo "Release: $RELEASE_NAME"
+echo "Context: $(kubectl config current-context 2>/dev/null || echo '<unknown>')"
 echo "========================================="
 echo ""
 
@@ -48,7 +69,11 @@ echo ""
 
 echo "8. Проверка Helm релиза..."
 echo "-----------------------------------"
-helm list -n $NAMESPACE | grep $RELEASE_NAME || echo "Helm релиз не найден"
+if [ "$HAS_HELM" = 1 ]; then
+    helm list -n $NAMESPACE | grep $RELEASE_NAME || echo "Helm релиз не найден"
+else
+    echo "helm не установлен — шаг пропущен"
+fi
 echo ""
 
 # Проверка проблемных состояний
@@ -74,18 +99,22 @@ if kubectl get pods -n $NAMESPACE 2>/dev/null | grep -q "Pending"; then
 fi
 
 # Проверка неготовых подов
-NOT_READY=$(kubectl get pods -n $NAMESPACE -o json 2>/dev/null | \
-    jq -r '.items[] | select(.status.phase != "Running" or ([.status.containerStatuses[]? | select(.ready == false)] | length > 0)) | .metadata.name')
+if [ "$HAS_JQ" = 1 ]; then
+    NOT_READY=$(kubectl get pods -n $NAMESPACE -o json 2>/dev/null | \
+        jq -r '.items[] | select(.status.phase != "Running" or ([.status.containerStatuses[]? | select(.ready == false)] | length > 0)) | .metadata.name')
 
-if [ ! -z "$NOT_READY" ]; then
-    echo "⚠️  Под(ы) не готовы:"
-    echo "$NOT_READY" | while read pod; do
-        if [ ! -z "$pod" ]; then
-            echo "   - $pod"
-            STATUS=$(kubectl get pod $pod -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null)
-            echo "     Статус: $STATUS"
-        fi
-    done
+    if [ ! -z "$NOT_READY" ]; then
+        echo "⚠️  Под(ы) не готовы:"
+        echo "$NOT_READY" | while read pod; do
+            if [ ! -z "$pod" ]; then
+                echo "   - $pod"
+                STATUS=$(kubectl get pod $pod -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null)
+                echo "     Статус: $STATUS"
+            fi
+        done
+    fi
+else
+    echo "ℹ jq не установлен — детальная проверка готовности подов пропущена"
 fi
 
 echo ""

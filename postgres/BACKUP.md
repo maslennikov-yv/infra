@@ -211,19 +211,27 @@ make restore BACKUP_FILE=$BACKUP_FILE
 
 ### Cron job для регулярных бэкапов
 
-Добавьте в crontab для ежедневного бэкапа в 2:00 ночи:
+Добавьте в crontab для ежедневного бэкапа в 2:00 ночи. Путь — корень
+репозитория `infra/`, цель — корневая `postgres-backup` с явным `ENV`:
 
 ```bash
-0 2 * * * cd /home/user/projects/postgres && make backup >> /var/log/postgres-backup.log 2>&1
+# /etc/crontab или crontab -e на ноде, где доступен kubectl
+0 2 * * * cd /path/to/infra && make postgres-backup ENV=prod >> /var/log/postgres-backup.log 2>&1
 ```
+
+`make postgres-backup` под капотом делает `make -C postgres backup ENV=...`
+с правильным `KUBECONFIG` из `environments/<env>.mk`. Файл бэкапа попадёт
+в `infra/postgres/backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz` (если не
+переопределено `BACKUP_DIR`).
 
 ### Скрипт для ротации бэкапов
 
-Создайте скрипт для удаления старых бэкапов (старше 30 дней):
+Создайте скрипт для удаления старых бэкапов (старше 30 дней). Путь — тот же
+каталог, куда складывает бэкапы `make postgres-backup`:
 
 ```bash
 #!/bin/bash
-find backups/ -name "*.sql.gz" -mtime +30 -delete
+find /path/to/infra/postgres/backups/ -name "*.sql.gz" -mtime +30 -delete
 ```
 
 ## Безопасность

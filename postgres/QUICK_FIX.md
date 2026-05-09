@@ -33,7 +33,7 @@ kubectl describe pod postgres-postgresql-0 -n postgres
 make load-containerd
 
 # Или из файлов
-make load-from-files
+make images-load
 make load-containerd
 ```
 
@@ -69,11 +69,11 @@ kubectl get endpoints postgres-postgresql -n postgres
 # Port-forward для теста
 kubectl port-forward svc/postgres-postgresql -n postgres 5432:5432
 
-# Тест подключения из кластера
+# Тест подключения из кластера (под superuser postgres)
 kubectl run postgres-client --rm -it --restart=Never -n postgres \
-  --image=registry-1.docker.io/bitnami/postgresql:latest \
-  --env="PGPASSWORD=$(kubectl get secret postgres-postgresql -n postgres -o jsonpath='{.data.password}' | base64 -d)" \
-  -- psql --host postgres-postgresql.postgres.svc.cluster.local -U app_user -d app_db
+  --image=localhost:32000/bitnami/postgresql:18.0.0 \
+  --env="PGPASSWORD=$(kubectl get secret postgres-postgresql -n postgres -o jsonpath='{.data.postgres-password}' | base64 -d)" \
+  -- psql --host postgres-postgresql.postgres.svc.cluster.local -U postgres -d postgres
 ```
 
 ## 🔧 Полезные команды

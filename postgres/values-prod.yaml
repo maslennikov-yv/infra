@@ -30,7 +30,10 @@ auth:
 architecture: standalone
 
 primary:
-  replicaCount: 2
+  # architecture: standalone — primary.replicaCount должен быть 1, иначе
+  # получим N независимых primary с собственными PVC за одним ClusterIP
+  # (расщепление данных). Для HA — переходить на architecture: replication.
+  replicaCount: 1
   resources:
     requests:
       cpu: 250m
