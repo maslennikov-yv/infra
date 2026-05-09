@@ -45,9 +45,23 @@ metrics:
     image:
       registry: localhost:32000
 
+# Standard prod-профиль: 3 controller-pod (KRaft quorum), 16Gi PVC, 1-2Gi heap-friendly.
+# При росте топиков/throughput — пересмотреть resources.limits.memory и persistence.size.
+# Изменение persistence.size у StatefulSet — через make kafka-recreate-prep + restore-meta-topics
+# (см. kafka/BACKUP.md, сценарий C: новый PV, метаданные восстанавливаются из backup-meta).
 controller:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
   persistence:
     enabled: true
+    size: 16Gi
+    storageClass: ""
 
 broker:
   persistence:

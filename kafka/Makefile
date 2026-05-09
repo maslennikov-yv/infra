@@ -1,6 +1,8 @@
+# Используется bash (не dash) — recipe полагаются на read -p, <<<, set -o pipefail и массивы.
+SHELL := /bin/bash
+
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	pull-images tag-images push-images load-images save-images load-images-from-file clean clean-images-files \
 	check-registry setup-local-registry setup \
 	secrets-init bootstrap reset \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-print-env app-verify \
@@ -20,6 +22,14 @@ endif
 
 INFRA_ROOT ?= $(abspath $(CURDIR)/..)
 APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
+
+# Контракт admin-пароля для kafka-*.sh:
+# - В values-*.yaml `sasl.client.users: [user1]` (РОВНО один юзер).
+# - Bitnami chart кладёт пароли в Secret kafka/kafka-user-passwords как CSV
+#   по ключу `client-passwords` в порядке списка users.
+# - `cut -d, -f1` берёт первое (и единственное) поле — пароль user1.
+# - Если когда-нибудь добавится второй client-user, нужно будет переписать на
+#   awk -F, или явный индекс по имени; до этого контракт «user1 = первый» держится.
 
 # Образы, используемые chart'ом (см. kafka/kafka/values.yaml и Chart.yaml annotations)
 KAFKA_TAG ?= 4.0.0-debian-12-r10
@@ -215,25 +225,25 @@ app-create:
 		exit 1; \
 	fi; \
 	echo "Creating Kafka user/ACL for $$APP_USER (topic prefix: $(APP)., group prefix: $(APP).)"; \
-	kubectl run kafka-admin-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+	| kubectl run kafka-admin-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
-		--rm -i --env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" --env="APP_USER=$$APP_USER" --env="APP_PASSWORD=$$APP_PASSWORD" --command -- bash -ec "\
-			cat > /tmp/admin.properties <<'EOF'\n\
-security.protocol=SASL_PLAINTEXT\n\
-sasl.mechanism=SCRAM-SHA-256\n\
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
-EOF\n\
-			kafka-configs.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
-				--alter --add-config \"SCRAM-SHA-256=[iterations=4096,password=$${APP_PASSWORD}]\" --entity-type users --entity-name \"$${APP_USER}\";\n\
-			kafka-acls.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
-				--add --allow-principal \"User:$${APP_USER}\" --operation Read --operation Write --operation Describe --operation Create \\\n\
-				--topic \"$(APP).\" --resource-pattern-type prefixed;\n\
-			kafka-acls.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
-				--add --allow-principal \"User:$${APP_USER}\" --operation Read --operation Describe \\\n\
-				--group \"$(APP).\" --resource-pattern-type prefixed;\n\
-		"; \
+		--rm -i --quiet \
+		--env="APP_USER=$$APP_USER" --env="APP_PASSWORD=$$APP_PASSWORD" \
+		--env="BS=$(KAFKA_BOOTSTRAP_SERVER)" --env="APP_PREFIX=$(APP)." \
+		--command -- bash -ec ' \
+			cat > /tmp/admin.properties; \
+			kafka-configs.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--alter --add-config "SCRAM-SHA-256=[iterations=4096,password=$${APP_PASSWORD}]" --entity-type users --entity-name "$${APP_USER}"; \
+			kafka-acls.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--add --allow-principal "User:$${APP_USER}" --operation Read --operation Write --operation Describe --operation Create \
+				--topic "$${APP_PREFIX}" --resource-pattern-type prefixed; \
+			kafka-acls.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--add --allow-principal "User:$${APP_USER}" --operation Read --operation Describe \
+				--group "$${APP_PREFIX}" --resource-pattern-type prefixed; \
+		'; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -283,25 +293,25 @@ app-drop:
 		exit 1; \
 	fi; \
 	echo "Removing ACLs and SCRAM user $$APP_USER..."; \
-	kubectl run kafka-drop-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+	| kubectl run kafka-drop-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
-		--rm -i --env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" --env="APP_USER=$$APP_USER" --command -- bash -ec "\
-			cat > /tmp/admin.properties <<'EOF'\n\
-security.protocol=SASL_PLAINTEXT\n\
-sasl.mechanism=SCRAM-SHA-256\n\
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
-EOF\n\
-			kafka-acls.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
-				--remove --allow-principal \"User:$${APP_USER}\" --operation Read --operation Write --operation Describe --operation Create \\\n\
-				--topic \"$(APP).\" --resource-pattern-type prefixed 2>/dev/null || true;\n\
-			kafka-acls.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
-				--remove --allow-principal \"User:$${APP_USER}\" --operation Read --operation Describe \\\n\
-				--group \"$(APP).\" --resource-pattern-type prefixed 2>/dev/null || true;\n\
-			kafka-configs.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \\\n\
-				--alter --delete-config SCRAM-SHA-256 --entity-type users --entity-name \"$${APP_USER}\" 2>/dev/null || true;\n\
-		"; \
+		--rm -i --quiet \
+		--env="APP_USER=$$APP_USER" \
+		--env="BS=$(KAFKA_BOOTSTRAP_SERVER)" --env="APP_PREFIX=$(APP)." \
+		--command -- bash -ec ' \
+			cat > /tmp/admin.properties; \
+			kafka-acls.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--remove --allow-principal "User:$${APP_USER}" --operation Read --operation Write --operation Describe --operation Create \
+				--topic "$${APP_PREFIX}" --resource-pattern-type prefixed 2>/dev/null || true; \
+			kafka-acls.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--remove --allow-principal "User:$${APP_USER}" --operation Read --operation Describe \
+				--group "$${APP_PREFIX}" --resource-pattern-type prefixed 2>/dev/null || true; \
+			kafka-configs.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--alter --delete-config SCRAM-SHA-256 --entity-type users --entity-name "$${APP_USER}" 2>/dev/null || true; \
+		'; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" kafka || true; \
@@ -389,33 +399,30 @@ topic-create:
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; exit 1; fi; \
 	echo "Create topic: $$TOPIC (partitions=$$PARTITIONS rf=$$REPLICATION_FACTOR configs=$$CONFIGS)"; \
-	kubectl run kafka-admin-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+	| kubectl run kafka-admin-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
-		--rm -i \
-		--env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" \
+		--rm -i --quiet \
 		--env="TOPIC=$$TOPIC" \
 		--env="PARTITIONS=$$PARTITIONS" \
 		--env="REPLICATION_FACTOR=$$REPLICATION_FACTOR" \
 		--env="CONFIGS=$$CONFIGS" \
-		--command -- bash -ec "\
-			cat > /tmp/admin.properties <<'EOF'\n\
-security.protocol=SASL_PLAINTEXT\n\
-sasl.mechanism=SCRAM-SHA-256\n\
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
-EOF\n\
+		--env="BS=$(KAFKA_BOOTSTRAP_SERVER)" \
+		--command -- bash -ec ' \
+			cat > /tmp/admin.properties; \
 			ARGS=(); \
-			if [ -n \"$$CONFIGS\" ]; then \
-			  IFS=',' read -ra KV <<< \"$$CONFIGS\"; \
-			  for x in \"$${KV[@]}\"; do \
-			    x=$$(echo \"$$x\" | xargs); \
-			    [ -n \"$$x\" ] && ARGS+=(--config \"$$x\"); \
-			  done; \
+			if [ -n "$$CONFIGS" ]; then \
+				IFS="," read -ra KV <<< "$$CONFIGS"; \
+				for x in "$${KV[@]}"; do \
+					x=$$(echo "$$x" | xargs); \
+					[ -n "$$x" ] && ARGS+=(--config "$$x"); \
+				done; \
 			fi; \
-			kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \
-			  --create --if-not-exists --topic \"$$TOPIC\" --partitions \"$$PARTITIONS\" --replication-factor \"$$REPLICATION_FACTOR\" \"$${ARGS[@]}\"; \
-		"
+			kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+				--create --if-not-exists --topic "$$TOPIC" --partitions "$$PARTITIONS" --replication-factor "$$REPLICATION_FACTOR" "$${ARGS[@]}"; \
+		'
 
 # Alter a topic: increase partitions and/or change configs.
 # Usage:
@@ -428,30 +435,27 @@ topic-alter:
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; exit 1; fi; \
 	echo "Alter topic: $(TOPIC) (partitions=$$PARTITIONS configs=$$CONFIGS)"; \
-	kubectl run kafka-admin-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+	| kubectl run kafka-admin-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
-		--rm -i \
-		--env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" \
+		--rm -i --quiet \
 		--env="TOPIC=$(TOPIC)" \
 		--env="PARTITIONS=$$PARTITIONS" \
 		--env="CONFIGS=$$CONFIGS" \
-		--command -- bash -ec "\
-			cat > /tmp/admin.properties <<'EOF'\n\
-security.protocol=SASL_PLAINTEXT\n\
-sasl.mechanism=SCRAM-SHA-256\n\
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
-EOF\n\
-			if [ -n \"$$PARTITIONS\" ]; then \
-			  kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \
-			    --alter --topic \"$$TOPIC\" --partitions \"$$PARTITIONS\"; \
+		--env="BS=$(KAFKA_BOOTSTRAP_SERVER)" \
+		--command -- bash -ec ' \
+			cat > /tmp/admin.properties; \
+			if [ -n "$$PARTITIONS" ]; then \
+				kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+					--alter --topic "$$TOPIC" --partitions "$$PARTITIONS"; \
 			fi; \
-			if [ -n \"$$CONFIGS\" ]; then \
-			  kafka-configs.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties \
-			    --alter --entity-type topics --entity-name \"$$TOPIC\" --add-config \"$$CONFIGS\"; \
+			if [ -n "$$CONFIGS" ]; then \
+				kafka-configs.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties \
+					--alter --entity-type topics --entity-name "$$TOPIC" --add-config "$$CONFIGS"; \
 			fi; \
-		"
+		'
 
 # Describe a topic (partitions + configs)
 # Usage: make topic-describe TOPIC=myapp.events
@@ -459,25 +463,22 @@ topic-describe:
 	@if [ -z "$(TOPIC)" ]; then echo "✗ TOPIC не задан (пример: make topic-describe TOPIC=myapp.events)"; exit 1; fi
 	@ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; exit 1; fi; \
-	kubectl run kafka-admin-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+	| kubectl run kafka-admin-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
-		--rm -i \
-		--env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" \
+		--rm -i --quiet \
 		--env="TOPIC=$(TOPIC)" \
-		--command -- bash -ec "\
-			cat > /tmp/admin.properties <<'EOF'\n\
-security.protocol=SASL_PLAINTEXT\n\
-sasl.mechanism=SCRAM-SHA-256\n\
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
-EOF\n\
-			echo '--- kafka-topics.sh --describe ---'; \
-			kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties --describe --topic \"$$TOPIC\"; \
-			echo ''; \
-			echo '--- kafka-configs.sh --describe ---'; \
-			kafka-configs.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties --describe --entity-type topics --entity-name \"$$TOPIC\" || true; \
-		"
+		--env="BS=$(KAFKA_BOOTSTRAP_SERVER)" \
+		--command -- bash -ec ' \
+			cat > /tmp/admin.properties; \
+			echo "--- kafka-topics.sh --describe ---"; \
+			kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --topic "$$TOPIC"; \
+			echo ""; \
+			echo "--- kafka-configs.sh --describe ---"; \
+			kafka-configs.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type topics --entity-name "$$TOPIC" || true; \
+		'
 
 # List topics (optionally by prefix)
 # Usage: make topic-list [PREFIX=myapp.]
@@ -485,25 +486,22 @@ topic-list:
 	@PREFIX=$${PREFIX:-}; \
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; exit 1; fi; \
-	kubectl run kafka-admin-$$(date +%s) \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+	| kubectl run kafka-admin-$$(date +%s) \
 		--restart='Never' \
 		--image=$(KAFKA_IMAGE_LOCAL) \
 		--namespace=$(KAFKA_NAMESPACE) \
-		--rm -i \
-		--env="KAFKA_ADMIN_PASSWORD=$$ADMIN_PASSWORD" \
+		--rm -i --quiet \
 		--env="PREFIX=$$PREFIX" \
-		--command -- bash -ec "\
-			cat > /tmp/admin.properties <<'EOF'\n\
-security.protocol=SASL_PLAINTEXT\n\
-sasl.mechanism=SCRAM-SHA-256\n\
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\\\"user1\\\" password=\\\"$${KAFKA_ADMIN_PASSWORD}\\\";\n\
-EOF\n\
-			if [ -n \"$$PREFIX\" ]; then \
-			  kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties --list | grep \"^$$PREFIX\" || true; \
+		--env="BS=$(KAFKA_BOOTSTRAP_SERVER)" \
+		--command -- bash -ec ' \
+			cat > /tmp/admin.properties; \
+			if [ -n "$$PREFIX" ]; then \
+				kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list | grep "^$$PREFIX" || true; \
 			else \
-			  kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVER) --command-config /tmp/admin.properties --list; \
+				kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list; \
 			fi; \
-		"
+		'
 
 # Полная установка всего необходимого в MicroK8s
 setup:
@@ -547,7 +545,12 @@ setup:
 	@echo "✓ Все необходимые аддоны включены"
 	@echo ""
 	@echo "4. Применение StorageClass..."
-	@if [ -f storageclass.yaml ]; then \
+	@# storageclass.yaml — local-path provisioner для microk8s. На prod-кластерах
+	@# с собственным default-классом этот шаг создаст конфликт; поэтому применяем
+	@# только при ENV=local (для других env оператор должен полагаться на штатный default).
+	@if [ "$(ENV)" != "local" ]; then \
+		echo "  ENV=$(ENV) — пропускаем (storageclass.yaml только для local microk8s)"; \
+	elif [ -f storageclass.yaml ]; then \
 		kubectl apply -f storageclass.yaml && echo "✓ StorageClass применен" || echo "⚠ Не удалось применить StorageClass (возможно, уже существует)"; \
 	else \
 		echo "⚠ Файл storageclass.yaml не найден, пропускаем"; \
@@ -571,8 +574,13 @@ setup:
 	@echo "=== Установка завершена! ==="
 	@echo "Проверьте статус: make status"
 
-# Установить Kafka в namespace
-install:
+# Установить Kafka в namespace.
+# values-*.yaml ссылаются на existingKraftSecret + sasl.existingSecret — без них чарт
+# не запустится. secrets-init создаёт оба Secret'а, если их ещё нет.
+# Для первичной установки на pristine кластере с включённым authorizer
+# рекомендуется make bootstrap (он стартует с values-bootstrap.yaml без authorizer,
+# дожидается KRaft-кворума и затем апгрейдится на values-$(ENV).yaml).
+install: secrets-init
 	@if [ -n "$(KUBECONFIG)" ]; then export KUBECONFIG="$(KUBECONFIG)"; fi; \
 	echo "Установка Kafka в namespace $(KAFKA_NAMESPACE)..."; \
 	kubectl create namespace $(KAFKA_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
@@ -784,16 +792,6 @@ images-clean-files:
 	@if [ -d "$(IMAGES_DIR)" ]; then rm -f $(IMAGES_DIR)/*.tar 2>/dev/null || true; fi
 	@echo "✓ Файлы образов удалены"
 
-# Совместимость со старыми именами target'ов
-pull-images: images-pull
-tag-images: images-tag
-push-images: images-push
-load-images: images-sync
-save-images: images-save
-load-images-from-file: images-load
-clean: images-clean
-clean-images-files: images-clean-files
-
 setup-local-registry: images-sync
 	@echo "Готово. Установите/обновите релиз с values-файлом (по умолчанию $(VALUES_FILE))."
 
@@ -934,7 +932,8 @@ BACKUP_DIR ?= backups
 # Данные топиков НЕ бэкапятся (для них нужен MirrorMaker / отдельная процедура).
 backup-meta:
 	@mkdir -p $(BACKUP_DIR)
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@set -eo pipefail; \
+	TS=$$(date +%Y%m%d-%H%M%S); \
 	OUT="$(BACKUP_DIR)/kafka-meta-$$TS.tar.gz"; \
 	echo "Создание meta-бэкапа Kafka в $$OUT..."; \
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
@@ -952,13 +951,16 @@ backup-meta:
 		| kubectl exec -i "$$HELPER" -n $(KAFKA_NAMESPACE) -- sh -c 'cat > /tmp/admin.properties && chmod 600 /tmp/admin.properties'; \
 	echo "  Сбор definitions..."; \
 	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- bash -ec ' \
+		set -eo pipefail; \
 		mkdir -p /tmp/meta && cd /tmp/meta; \
 		BS="'"$$BS"'"; \
-		kafka-topics.sh   --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list                                  > topics.list      2>/dev/null || true; \
-		kafka-topics.sh   --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe                              > topics-describe.txt 2>/dev/null || true; \
-		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type topics         > topics-configs.txt  2>/dev/null || true; \
-		kafka-acls.sh     --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list                                  > acls.txt            2>/dev/null || true; \
-		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type users          > scram-users.txt     2>/dev/null || true; \
+		kafka-topics.sh   --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list                                  > topics.list; \
+		kafka-topics.sh   --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe                              > topics-describe.txt; \
+		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type topics         > topics-configs.txt; \
+		kafka-acls.sh     --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list                                  > acls.txt; \
+		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type users          > scram-users.txt; \
+		[ -s topics.list ]          || { echo "✗ topics.list пуст"; exit 1; }; \
+		[ -s topics-describe.txt ]  || { echo "✗ topics-describe.txt пуст"; exit 1; }; \
 		# Собрать recreate-topics.sh из topics-describe.txt (skip internal topics).
 		: > recreate-topics.sh; \
 		echo "#!/usr/bin/env bash" >> recreate-topics.sh; \
@@ -988,8 +990,9 @@ backup-meta:
 		rm -f /tmp/admin.properties; \
 	'; \
 	echo "  Копирую архив на хост..."; \
-	kubectl cp "$(KAFKA_NAMESPACE)/$$HELPER:/tmp/kafka-meta.tar.gz" "$$OUT" >/dev/null; \
-	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- cat /tmp/kafka-meta.tar.gz > "$$OUT"; \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
 	echo "✓ Meta-бэкап создан: $$OUT ($$SIZE)"
 
 list-backups:

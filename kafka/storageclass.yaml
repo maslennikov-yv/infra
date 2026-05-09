@@ -1,3 +1,10 @@
+# StorageClass для локального microk8s (rancher.io/local-path).
+# Применяется через `make setup` (только для ENV=local) или вручную:
+#   kubectl apply -f storageclass.yaml
+#
+# ⚠ На prod-кластерах НЕ применять: там обычно уже есть свой default StorageClass
+# (Ceph, EBS, CSI-driver…). Применение этого манифеста создаст конфликт двух
+# default-классов (Kubernetes выберет один произвольно).
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:

@@ -45,9 +45,23 @@ metrics:
     image:
       registry: localhost:32000
 
+# Lightweight local-профиль: 1 controller (без quorum-выборов), минимальные limits.
+# JVM Kafka требует ~256Mi heap, ниже не стартует. Если make bootstrap делает первый
+# запуск с chart-дефолтом replicaCount=3 (values-bootstrap.yaml не задаёт его),
+# последующий upgrade на values-local скейлит обратно к 1.
 controller:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
   persistence:
     enabled: true
+    size: 2Gi
+    storageClass: ""
 
 broker:
   persistence:

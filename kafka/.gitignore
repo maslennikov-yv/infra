@@ -5,3 +5,12 @@
 #   - из директории сервиса: `make images-save ENV=<env>`
 images/*.tar
 
+# Директория с meta-бэкапами Kafka (topic definitions + ACL + SCRAM users list)
+backups/
+*.tar.gz
+
+# Временные файлы
+*.swp
+*.swo
+*~
+
