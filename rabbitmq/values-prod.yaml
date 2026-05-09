@@ -21,6 +21,16 @@ resources:
     cpu: "1"
     memory: 1Gi
 
+# Standard prod-профиль: PVC 8Gi (durable queues + mnesia metadata).
+# При росте durable queue depth — пересмотреть размер.
+# Изменение persistence.size у StatefulSet — через make rabbitmq-recreate-prep
+# (см. rabbitmq/BACKUP.md: backup-defs + recreate + restore-defs + apps-apply;
+# сообщения в durable queues при этом теряются).
+persistence:
+  enabled: true
+  size: 8Gi
+  storageClass: ""
+
 volumePermissions:
   enabled: false
   image:

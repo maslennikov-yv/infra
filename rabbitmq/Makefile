@@ -1,3 +1,6 @@
+# Используется bash (не dash) — recipe полагаются на read -p и set -o pipefail.
+SHELL := /bin/bash
+
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
 	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
@@ -99,16 +102,19 @@ app-create:
 	RMQ_PORT=5672; \
 	RMQ_MGMT_PORT=15672; \
 	echo "Creating vhost $$APP_VHOST and user $$APP_USER"; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- bash -ec "\
+	: "Передаём vhost/user/password в pod через positional argv (\$$1/\$$2/\$$3),"; \
+	: "не через shell-string interp в bash -ec — пароль с '/'/\$$/backquote не ломает парсер."; \
+	kubectl exec -i "$$POD" -n $(NAMESPACE) -- bash -c ' \
 		set -e; \
-		rabbitmqctl list_vhosts -q | grep -Fx \"$$APP_VHOST\" >/dev/null || rabbitmqctl add_vhost \"$$APP_VHOST\"; \
-		if rabbitmqctl list_users -q | awk '{print $$1}' | grep -Fx \"$$APP_USER\" >/dev/null; then \
-			rabbitmqctl change_password \"$$APP_USER\" \"$$APP_PASSWORD\"; \
+		vhost="$$1"; user="$$2"; password="$$3"; \
+		rabbitmqctl list_vhosts -q | grep -Fx "$$vhost" >/dev/null || rabbitmqctl add_vhost "$$vhost"; \
+		if rabbitmqctl list_users -q | awk "{print \$$1}" | grep -Fx "$$user" >/dev/null; then \
+			rabbitmqctl change_password "$$user" "$$password"; \
 		else \
-			rabbitmqctl add_user \"$$APP_USER\" \"$$APP_PASSWORD\"; \
+			rabbitmqctl add_user "$$user" "$$password"; \
 		fi; \
-		rabbitmqctl set_permissions -p \"$$APP_VHOST\" \"$$APP_USER\" \".*\" \".*\" \".*\"; \
-	"; \
+		rabbitmqctl set_permissions -p "$$vhost" "$$user" ".*" ".*" ".*"; \
+	' bash "$$APP_VHOST" "$$APP_USER" "$$APP_PASSWORD"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	AMQP_URL="amqp://$${APP_USER}:$${APP_PASSWORD}@$$RMQ_HOST:$$RMQ_PORT/$$APP_VHOST"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
@@ -190,20 +196,23 @@ app-drop:
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	echo "Deleting vhost $$APP_VHOST and user $$APP_USER..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- bash -ec "\
-		rabbitmqctl delete_vhost \"$$APP_VHOST\" 2>/dev/null || true; \
-		rabbitmqctl delete_user \"$$APP_USER\" 2>/dev/null || true; \
-	"; \
+	kubectl exec -i "$$POD" -n $(NAMESPACE) -- bash -c ' \
+		rabbitmqctl delete_vhost "$$1" 2>/dev/null || true; \
+		rabbitmqctl delete_user  "$$2" 2>/dev/null || true; \
+	' bash "$$APP_VHOST" "$$APP_USER"; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" rabbitmq || true; \
 	echo "✓ vhost $$APP_VHOST, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 images-verify:
-	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
+	@# Проверяем именно SRC-теги через $$(IMAGES_SRC) — то, что реально pull-ится.
+	@# Сейчас *_SRC_TAG ?= $$(*_TAG), но переключение устойчиво к будущему выпилу
+	@# mutable-тегов в bitnamilegacy (как уже произошло для postgres/redis/kafka).
+	@echo "Проверка доступности SRC-тегов в docker.io/bitnamilegacy..."
 	@command -v docker >/dev/null 2>&1 || { echo "✗ docker не установлен"; exit 1; }
 	@FAIL=0; \
-	for img in docker.io/bitnamilegacy/rabbitmq:$(RABBITMQ_TAG) docker.io/bitnamilegacy/os-shell:$(OS_SHELL_TAG); do \
+	for img in $(IMAGES_SRC); do \
 		echo "  - $$img"; \
 		if docker manifest inspect "$$img" >/dev/null 2>&1; then \
 			echo "    ✓ OK"; \
@@ -214,10 +223,11 @@ images-verify:
 	done; \
 	if [ $$FAIL -ne 0 ]; then \
 		echo ""; \
-		echo "✗ Некоторые теги в bitnamilegacy недоступны."; \
+		echo "✗ Некоторые SRC-теги в bitnamilegacy недоступны."; \
+		echo "  Подсказка: проверьте/обновите *_SRC_TAG в Makefile (см. https://hub.docker.com/u/bitnamilegacy)."; \
 		exit 1; \
 	fi; \
-	echo "✓ Все теги доступны в bitnamilegacy"
+	echo "✓ Все SRC-теги доступны в bitnamilegacy"
 
 check-updates: ## Проверить наличие новых версий чарта и образов
 	@echo "Проверка обновлений для RabbitMQ..."
@@ -254,23 +264,62 @@ check-updates: ## Проверить наличие новых версий ча
 
 install:
 	@kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	@if [ -f $(VALUES_FILE) ]; then \
-		echo "Использование файла $(VALUES_FILE)"; \
-		helm install $(RELEASE) $(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE); \
-	else \
-		echo "Файл $(VALUES_FILE) не найден"; exit 1; \
+	@# values-*.yaml ссылаются на auth.existingPasswordSecret/existingErlangSecret: $(RABBITMQ_SECRET_NAME).
+	@# При первом разворачивании Secret отсутствует — генерируем admin password + erlang-cookie.
+	@# В корневой цели `make up` логика та же.
+	@if ! kubectl get secret -n $(NAMESPACE) $(RABBITMQ_SECRET_NAME) >/dev/null 2>&1; then \
+		echo "Secret $(NAMESPACE)/$(RABBITMQ_SECRET_NAME) отсутствует — создаю..."; \
+		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден"; exit 1; }; \
+		RABBITMQ_PASSWORD=$$(openssl rand -hex 16); \
+		RABBITMQ_COOKIE=$$(openssl rand -hex 32); \
+		kubectl create secret generic $(RABBITMQ_SECRET_NAME) -n $(NAMESPACE) \
+			--from-literal=rabbitmq-password="$$RABBITMQ_PASSWORD" \
+			--from-literal=rabbitmq-erlang-cookie="$$RABBITMQ_COOKIE" >/dev/null; \
+		echo "✓ Secret $(NAMESPACE)/$(RABBITMQ_SECRET_NAME) создан"; \
 	fi
+	@# Bitnami chart требует auth.password и auth.erlangCookie через --set (так же делает helmfile.yaml.gotmpl).
+	@if [ ! -f $(VALUES_FILE) ]; then echo "Файл $(VALUES_FILE) не найден"; exit 1; fi
+	@RMQ_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RABBITMQ_SECRET_NAME) -o jsonpath='{.data.rabbitmq-password}' 2>/dev/null | base64 -d); \
+	RMQ_COOKIE=$$(kubectl get secret -n $(NAMESPACE) $(RABBITMQ_SECRET_NAME) -o jsonpath='{.data.rabbitmq-erlang-cookie}' 2>/dev/null | base64 -d); \
+	if [ -z "$$RMQ_PASSWORD" ] || [ -z "$$RMQ_COOKIE" ]; then \
+		echo "✗ Не удалось прочитать rabbitmq-password / rabbitmq-erlang-cookie из Secret"; exit 1; \
+	fi; \
+	echo "Использование файла $(VALUES_FILE)"; \
+	helm install $(RELEASE) $(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE) \
+		--set auth.password="$$RMQ_PASSWORD" --set auth.erlangCookie="$$RMQ_COOKIE"
 
 upgrade:
-	@if [ -f $(VALUES_FILE) ]; then \
-		echo "Использование файла $(VALUES_FILE)"; \
-		helm upgrade $(RELEASE) $(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE); \
-	else \
-		echo "Файл $(VALUES_FILE) не найден"; exit 1; \
-	fi
+	@if [ ! -f $(VALUES_FILE) ]; then echo "Файл $(VALUES_FILE) не найден"; exit 1; fi
+	@# Так же, как в install: Bitnami chart требует пароль/erlang-cookie через --set
+	@# (PASSWORDS ERROR при upgrade без них). Помимо install — здесь без auto-create Secret:
+	@# upgrade подразумевает существующий release с уже установленным Secret.
+	@RMQ_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RABBITMQ_SECRET_NAME) -o jsonpath='{.data.rabbitmq-password}' 2>/dev/null | base64 -d); \
+	RMQ_COOKIE=$$(kubectl get secret -n $(NAMESPACE) $(RABBITMQ_SECRET_NAME) -o jsonpath='{.data.rabbitmq-erlang-cookie}' 2>/dev/null | base64 -d); \
+	if [ -z "$$RMQ_PASSWORD" ] || [ -z "$$RMQ_COOKIE" ]; then \
+		echo "✗ Secret $(NAMESPACE)/$(RABBITMQ_SECRET_NAME) не найден или пуст. Сначала: make install"; exit 1; \
+	fi; \
+	echo "Использование файла $(VALUES_FILE)"; \
+	helm upgrade $(RELEASE) $(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE) \
+		--set auth.password="$$RMQ_PASSWORD" --set auth.erlangCookie="$$RMQ_COOKIE"
 
 uninstall:
-	@helm uninstall $(RELEASE) --namespace $(NAMESPACE) || true
+	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)."
+	@echo "  Останутся в namespace $(NAMESPACE):"
+	@echo "    - PVC с данными RabbitMQ (mnesia, durable queues, vhosts/users definitions);"
+	@echo "    - Secret $(RABBITMQ_SECRET_NAME) (admin password + erlang-cookie — критично:"
+	@echo "      без правильного erlang-cookie новый кластер не подхватит существующий PV mnesia,"
+	@echo "      см. rabbitmq/BACKUP.md, раздел «Известные ограничения»);"
+	@echo "    - Secrets <APP>-rabbitmq в namespace приложений (с APP-кредами)."
+	@echo "  Полная зачистка (включая данные) — отдельными командами:"
+	@echo "    kubectl delete pvc -n $(NAMESPACE) -l app.kubernetes.io/name=rabbitmq"
+	@echo "    kubectl delete secret $(RABBITMQ_SECRET_NAME) -n $(NAMESPACE)"
+	@read -p "Вы уверены? (y/N): " confirm && \
+		if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+			helm uninstall $(RELEASE) --namespace $(NAMESPACE) || echo "Helm release не найден"; \
+		else \
+			echo "Отменено."; \
+			exit 0; \
+		fi
 
 status:
 	@helm status $(RELEASE) --namespace $(NAMESPACE) 2>/dev/null || echo "Helm release не найден"
@@ -342,7 +391,8 @@ BACKUP_DIR ?= backups
 # в JSON. Сообщения и состояние очередей НЕ бэкапятся — для durability используется persistence + replication.
 backup-defs:
 	@mkdir -p $(BACKUP_DIR)
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@set -eo pipefail; \
+	TS=$$(date +%Y%m%d-%H%M%S); \
 	OUT="$(BACKUP_DIR)/rabbitmq-defs-$$TS.json.gz"; \
 	echo "Экспорт definitions RabbitMQ в $$OUT..."; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
@@ -350,7 +400,10 @@ backup-defs:
 	kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl export_definitions /tmp/rabbitmq-defs.json >/dev/null; \
 	kubectl exec "$$POD" -n $(NAMESPACE) -- cat /tmp/rabbitmq-defs.json | gzip > "$$OUT"; \
 	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/rabbitmq-defs.json >/dev/null 2>&1 || true; \
-	SIZE=$$(ls -lh "$$OUT" | awk '{print $$5}'); \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не создан"; exit 1; }; \
+	: "Проверяем что внутри валидный JSON (gunzip + базовая проверка структуры)"; \
+	gunzip -c "$$OUT" | head -c 1 | grep -q '{' || { echo "✗ Архив $$OUT не содержит валидный JSON"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
 	echo "✓ Definitions экспортированы: $$OUT ($$SIZE)"
 
 list-backups:
@@ -375,8 +428,11 @@ restore-defs:
 		read -p "Продолжить? (y/N): " confirm; \
 		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
 	fi
-	@POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	@set -eo pipefail; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден"; exit 1; fi; \
+	: "Базовая проверка валидности gzip — ловит битый архив до запуска import"; \
+	gunzip -t "$(BACKUP_FILE)" || { echo "✗ $(BACKUP_FILE) — невалидный gzip"; exit 1; }; \
 	echo "  Копирую $(BACKUP_FILE) в pod..."; \
 	gunzip -c "$(BACKUP_FILE)" | kubectl exec -i "$$POD" -n $(NAMESPACE) -- sh -c 'cat > /tmp/rabbitmq-defs.json'; \
 	echo "  rabbitmqctl import_definitions..."; \

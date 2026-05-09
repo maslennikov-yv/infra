@@ -12,6 +12,20 @@ image:
   repository: bitnami/rabbitmq
   tag: "4.1.3-debian-12-r1"
 
+# Lightweight local-профиль: минимальные limits для dev-машины.
+# Erlang VM требует ~256Mi heap, ниже не стартует.
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    cpu: 200m
+    memory: 512Mi
+persistence:
+  enabled: true
+  size: 4Gi
+  storageClass: ""
+
 volumePermissions:
   enabled: false
   image:

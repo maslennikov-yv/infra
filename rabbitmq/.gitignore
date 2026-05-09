@@ -5,3 +5,12 @@
 #   - из директории сервиса: `make images-save ENV=<env>`
 images/*.tar
 
+# Директория с definitions-бэкапами RabbitMQ (включая SHA256 хэши паролей пользователей)
+backups/
+*.json.gz
+
+# Временные файлы
+*.swp
+*.swo
+*~
+
