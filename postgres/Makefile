@@ -356,8 +356,11 @@ app-drop:
 	: "DROP DATABASE ... WITH (FORCE) (PG13+) сам терминирует подключения"; \
 	: "и блокирует новые — pg_terminate_backend + REVOKE CONNECT не нужны."; \
 	: ":\"var\" в psql — безопасная подстановка идентификатора."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v app_db="$$APP_DB" -c "DROP DATABASE IF EXISTS :\"app_db\" WITH (FORCE);"; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v app_user="$$APP_USER" -c "DROP ROLE IF EXISTS :\"app_user\";"; \
+	: "psql 17+ не интерпретирует :var в -c, поэтому подаём SQL через stdin (kubectl exec -i)."; \
+	echo 'DROP DATABASE IF EXISTS :"app_db" WITH (FORCE);' | \
+		kubectl exec -i "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v app_db="$$APP_DB"; \
+	echo 'DROP ROLE IF EXISTS :"app_user";' | \
+		kubectl exec -i "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v app_user="$$APP_USER"; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" postgres || true; \
