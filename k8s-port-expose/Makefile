@@ -1,5 +1,5 @@
 # microk8s nginx ingress TCP: DaemonSet hostPort + ConfigMap nginx-ingress-tcp-microk8s-conf
-.PHONY: help show patch patch-tcp patch-hostport apply-config diff-config
+.PHONY: help show patch patch-tcp patch-hostport apply-config diff-config apply diff
 
 ENV ?= local
 REPO_ROOT ?= $(abspath $(CURDIR)/..)
@@ -38,15 +38,21 @@ RESET := \033[0m
 
 help:
 	@echo "k8s port expose (microk8s ingress TCP)"
-	@echo "  с корня репо: make k8s-port-expose-show / k8s-port-expose-patch / k8s-port-expose-apply"
+	@echo "  с корня репо: make k8s-port-expose-show / k8s-port-expose-patch / k8s-port-expose-apply / k8s-port-expose-diff"
 	@echo "  make show $(YELLOW)ENV=$(ENV)$(RESET)  - DaemonSet и TCP ConfigMap в $(INGRESS_NS)"
 	@echo "  make patch $(YELLOW)ENV=$(ENV) LAYER=tcp HOST_PORT=1883 BACKEND=myns/mysvc:1883$(RESET)"
-	@echo "  make patch $(YELLOW)ENV=$(ENV) LAYER=tcp HOST_PORT=1883 RM=1$(RESET)  - удалить ключ из ConfigMap"
+	@echo "  make patch $(YELLOW)ENV=$(ENV) LAYER=tcp HOST_PORT=1883 RM=1$(RESET)  - удалить ключ из ConfigMap (идемпотентно)"
 	@echo "  make patch $(YELLOW)ENV=$(ENV) LAYER=hostport OP=add ...$(RESET)"
 	@echo "  make patch $(YELLOW)ENV=$(ENV) LAYER=hostport OP=rm HOST_PORT=1883$(RESET) - убрать hostPort из DS"
 	@echo "  make apply-config $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)PORT_EXPOSE_CONFIG=...$(RESET)] — YAML → кластер ($(YELLOW)scripts/k8s-port-expose-apply-config.sh$(RESET))"
+	@echo "  make diff-config $(YELLOW)ENV=$(ENV)$(RESET)  [$(YELLOW)PORT_EXPOSE_CONFIG=...$(RESET)] — drift: YAML vs live DaemonSet+ConfigMap (без изменений)"
+	@echo "  алиасы: $(YELLOW)make apply$(RESET) → apply-config; $(YELLOW)make diff$(RESET) → diff-config (для согласованности с корневым $(YELLOW)k8s-port-expose-{apply,diff}$(RESET))"
 	@echo "  опции: $(YELLOW)DRY_RUN=client|server$(RESET) — без записи в API (server строже admission)"
 	@echo ""
+
+# Локальные алиасы для согласованности с корневым Makefile (k8s-port-expose-apply / k8s-port-expose-diff).
+apply: apply-config
+diff: diff-config
 
 apply-config:
 	@command -v kubectl >/dev/null 2>&1 || { echo "✗ kubectl не найден"; exit 1; }
@@ -99,8 +105,10 @@ patch-tcp:
 	@HP_OK=$$(jq -n --arg hp "$(HOST_PORT)" 'try (($$hp | tonumber) as $$n | ($$n >= 1 and $$n <= 65535)) catch false'); \
 	if [ "$$HP_OK" != "true" ]; then echo "✗ HOST_PORT: ожидается целое число 1–65535"; exit 1; fi
 	@if [ "$(RM)" = "1" ]; then \
-		PATCH=$$(jq -n --arg hp "$(HOST_PORT)" '[{"op":"remove","path":("/data/" + $$hp)}]'); \
-		kubectl patch configmap "$(INGRESS_TCP_CM)" -n "$(INGRESS_NS)" --type=json -p "$$PATCH" $(KUBECTL_DRY); \
+		: "JSON Merge Patch с null удаляет ключ (RFC 7396) и идемпотентно — no-op на несуществующем."; \
+		: "Раньше использовался JSON Patch op:remove, который падает с 422 на отсутствующем ключе."; \
+		PATCH=$$(jq -n --arg hp "$(HOST_PORT)" '{"data":{($$hp):null}}'); \
+		kubectl patch configmap "$(INGRESS_TCP_CM)" -n "$(INGRESS_NS)" --type=merge -p "$$PATCH" $(KUBECTL_DRY); \
 	else \
 		if [ -z "$(strip $(BACKEND))" ]; then echo "✗ для LAYER=tcp без RM=1 нужен BACKEND=<ns>/<svc>:<port>"; exit 1; fi; \
 		BE_OK=$$(jq -n --arg b "$(BACKEND)" 'try ($$b | capture("^(?<ns>[^/]+)/(?<svc>[^:]+):(?<port>[0-9]+)$$") | (.port | tonumber) as $$p | ($$p >= 1 and $$p <= 65535)) catch false'); \

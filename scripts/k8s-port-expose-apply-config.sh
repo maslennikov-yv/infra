@@ -39,10 +39,14 @@ INGRESS_TCP_CM="${INGRESS_TCP_CM:-nginx-ingress-tcp-microk8s-conf}"
 INGRESS_CONTAINER="${INGRESS_CONTAINER:-nginx-ingress-microk8s}"
 
 merge_ingress_from_yaml() {
-	INGRESS_NS="$("${YQBIN}" '.ingressNamespace // strenv(E)' --arg E "${INGRESS_NS}" "${CFG}")"
-	INGRESS_DS="$("${YQBIN}" '.daemonSet // strenv(E)' --arg E "${INGRESS_DS}" "${CFG}")"
-	INGRESS_TCP_CM="$("${YQBIN}" '.tcpConfigMap // strenv(E)' --arg E "${INGRESS_TCP_CM}" "${CFG}")"
-	INGRESS_CONTAINER="$("${YQBIN}" '.containerName // strenv(E)' --arg E "${INGRESS_CONTAINER}" "${CFG}")"
+	# Передаём fallback через env-var: mikefarah/yq НЕ поддерживает --arg (это синтаксис jq);
+	# strenv(E) обращается к environment, а не к yq-переменной — раньше было два бага:
+	# 1) yq падал с `unknown flag: --arg`; 2) даже если бы --arg работал, strenv(E)
+	# всё равно смотрел бы в env, а не в yq-scope. Теперь правильно: E=... yq '... // strenv(E)'.
+	INGRESS_NS="$(E="${INGRESS_NS}" "${YQBIN}" '.ingressNamespace // strenv(E)' "${CFG}")"
+	INGRESS_DS="$(E="${INGRESS_DS}" "${YQBIN}" '.daemonSet // strenv(E)' "${CFG}")"
+	INGRESS_TCP_CM="$(E="${INGRESS_TCP_CM}" "${YQBIN}" '.tcpConfigMap // strenv(E)' "${CFG}")"
+	INGRESS_CONTAINER="$(E="${INGRESS_CONTAINER}" "${YQBIN}" '.containerName // strenv(E)' "${CFG}")"
 }
 
 merge_ingress_from_yaml
