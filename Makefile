@@ -619,8 +619,9 @@ rabbitmq-app-drop:
 # отдельные wrapper-ы (другая семантика).
 postgres-backup:
 	@$(MAKE) -C postgres backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" postgres/backups "postgres-backup-*.sql.gz"
 postgres-restore:
-	@$(MAKE) -C postgres restore ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)"
+	$(call _restore_with_decrypt,postgres,restore)
 postgres-delete-pvcs:
 	@$(MAKE) -C postgres delete-pvcs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 postgres-recreate-prep:
@@ -1359,18 +1360,25 @@ env-backup:
 	tar -czf "$$ARCHIVE" -C "$$TMP_DIR" "$(ENV)"; \
 	rm -rf "$$TMP_DIR"; \
 	echo "✓ Saved: $$ARCHIVE"
+	@# Опциональное шифрование (если задан BACKUP_AGE_RECIPIENT). См. docs/runbooks/backups-encryption.md.
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" environments/backups "$(ENV)-*.tar.gz"
 
 # env-restore: применяет tar.gz обратно. Подробности и флаги — в scripts/env-restore.sh.
 # Существующие apps/conf/<APP>/ НЕ перезатираются; локальный apps/registry.yaml не перезаписывается, если отличается.
 env-restore:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
-		echo "✗ Укажите BACKUP_FILE: make env-restore BACKUP_FILE=environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"; \
+		echo "✗ Укажите BACKUP_FILE: make env-restore BACKUP_FILE=environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz[.age] ENV=$(ENV)"; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
-	@BACKUP_FILE="$(BACKUP_FILE)" KUBECONFIG="$(KUBECONFIG)" REPO_ROOT="$(REPO_ROOT)" YQ="$(YQ)" \
+	@# Опциональная дешифровка если файл .age (passthrough иначе). См. docs/runbooks/backups-encryption.md.
+	@PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$(BACKUP_FILE)") || exit 1; \
+	BACKUP_FILE="$$PLAIN" KUBECONFIG="$(KUBECONFIG)" REPO_ROOT="$(REPO_ROOT)" YQ="$(YQ)" \
 		CONFIRM="$(CONFIRM)" SKIP_APPS_CONF="$(SKIP_APPS_CONF)" SKIP_K8S="$(SKIP_K8S)" \
-		"$(REPO_ROOT)/scripts/env-restore.sh"
+		"$(REPO_ROOT)/scripts/env-restore.sh"; \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$(BACKUP_FILE)" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
 
 monitoring-status:
 	@$(MAKE) -C monitoring/netdata status ENV=$(ENV)
@@ -1429,31 +1437,63 @@ k8s-port-expose-diff:
 # postgres-backup / postgres-restore — определены выше (вместе с recreate-prep).
 # Каждая *-backup* / *-restore* цель — тонкая обёртка над per-service Makefile.
 # Документация: postgres/BACKUP.md, redis/BACKUP.md, kafka/BACKUP.md, minio/BACKUP.md, clickhouse/BACKUP.md, rabbitmq/BACKUP.md.
+#
+# Опциональное шифрование через age:
+# - backup: после успешного $(MAKE) -C вызывается scripts/backup-encrypt.sh, который
+#   зашифрует свежий файл, если BACKUP_AGE_RECIPIENT задан в env. Иначе — no-op.
+# - restore: BACKUP_FILE может быть как plain (*.tar.gz, *.sql.gz), так и зашифрованным
+#   (*.age). scripts/backup-decrypt.sh prepass'ит plain, либо расшифрует .age во временный
+#   *.decrypted рядом с оригиналом и подставит его в make -C; после restore временный
+#   файл удаляется. См. docs/runbooks/backups-encryption.md.
+
+# Опциональный recipient (age public key) для шифрования; пусто = шифрование выключено.
+BACKUP_AGE_RECIPIENT ?=
+BACKUP_AGE_KEY_FILE ?=
+
+# Шорткат: вызвать backup-decrypt.sh для $(SVC)/$(BACKUP_FILE), запустить $(MAKE) -C $(SVC) $(TGT) BACKUP_FILE=...
+# с relative-к-сервису путём, потом убрать .decrypted если был создан.
+# Используется в каждой *-restore-* цели ниже.
+define _restore_with_decrypt
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=…"; exit 1; fi; \
+	FULL="$(1)/$(BACKUP_FILE)"; \
+	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
+	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
+	REL_PLAIN=$$(echo "$$PLAIN" | sed "s|^$(1)/||"); \
+	$(MAKE) -C "$(1)" "$(2)" ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$REL_PLAIN" SKIP_CONFIRM="$(SKIP_CONFIRM)"; \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
+endef
 
 redis-backup:
 	@$(MAKE) -C redis backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" redis/backups "redis-backup-*.tar.gz"
 redis-restore-acl:
-	@$(MAKE) -C redis restore-acl ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+	$(call _restore_with_decrypt,redis,restore-acl)
 
 kafka-backup-meta:
 	@$(MAKE) -C kafka backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" kafka/backups "kafka-meta-*.tar.gz"
 kafka-restore-meta-topics:
-	@$(MAKE) -C kafka restore-meta-topics ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+	$(call _restore_with_decrypt,kafka,restore-meta-topics)
 
 minio-backup-meta:
 	@$(MAKE) -C minio backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" minio/backups "minio-meta-*.tar.gz"
 minio-restore-meta:
-	@$(MAKE) -C minio restore-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+	$(call _restore_with_decrypt,minio,restore-meta)
 
 clickhouse-backup:
 	@$(MAKE) -C clickhouse backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" clickhouse/backups "clickhouse-backup-*"
 clickhouse-restore:
-	@$(MAKE) -C clickhouse restore ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+	$(call _restore_with_decrypt,clickhouse,restore)
 
 rabbitmq-backup-defs:
 	@$(MAKE) -C rabbitmq backup-defs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" rabbitmq/backups "rabbitmq-defs-*"
 rabbitmq-restore-defs:
-	@$(MAKE) -C rabbitmq restore-defs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$(BACKUP_FILE)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+	$(call _restore_with_decrypt,rabbitmq,restore-defs)
 
 # backup-all: запустить все сервисные backup-цели подряд.
 # Учитывает ENABLED_SERVICES / EXCLUDE_SERVICES (как helmfile / apps-apply).

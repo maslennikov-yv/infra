@@ -44,6 +44,14 @@
 
 - [docs/runbooks/network-policy.md](runbooks/network-policy.md) — текущее состояние NetworkPolicy в инфра-сервисах (`allowExternal: true`, фактически noop) и пошаговый план перехода на жёсткую сегментацию (label namespaces + `allowExternal: false` + `ingressNSMatchLabels`).
 
+### «Защитить бэкапы шифрованием (age)»
+
+- [docs/runbooks/backups-encryption.md](runbooks/backups-encryption.md) — опциональное шифрование всех backup-целей (включая `env-backup` с Kubernetes secrets) через age. Включается через `BACKUP_AGE_RECIPIENT` в `environments/<env>.mk`; по умолчанию выключено. Restore-цели делают auto-decrypt при `.age` суффиксе.
+
+### «Защитить данные от случайного удаления PVC (storageClass + Retain)»
+
+- [docs/runbooks/storage-class.md](runbooks/storage-class.md) — текущее состояние (`storageClass: ""` → `microk8s-hostpath` с `reclaimPolicy: Delete`), threat model и пошаговый план миграции на явный SC с `Retain` через `<svc>-recreate-prep`.
+
 ### «Зашифровать Kafka listeners (controller / interbroker / client)»
 
 - [docs/runbooks/kafka-listener-security.md](runbooks/kafka-listener-security.md) — текущее состояние (controller/interbroker `PLAINTEXT`, client `SASL_PLAINTEXT`), threat model, целевое состояние (`SSL` для controller/interbroker, `SASL_SSL` для client), план миграции с downtime через `kafka-recreate-prep` + `restore-meta-topics`, smoke-тест и rollback.
