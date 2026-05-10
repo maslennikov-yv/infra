@@ -63,3 +63,10 @@ metrics:
     prometheus.io/scrape: "true"
     prometheus.io/port: "8001"
     prometheus.io/path: "/metrics"
+
+# NetworkPolicy: создаётся chart'ом, но allowExternal: true делает её
+# фактически noop. Для жёсткой сегментации — см. docs/runbooks/network-policy.md.
+networkPolicy:
+  enabled: true
+  allowExternal: true
+  allowExternalEgress: true

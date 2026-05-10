@@ -123,6 +123,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 - Ingress и внешние endpoint'ы (MinIO API, console, Netdata, RabbitMQ management) — только осознанно через `values-<ENV>.yaml`. Админские UI не публиковать в интернет без явной необходимости.
 - Учётки приложений изолированы по namespace + Secret + ACL/policy/vhost/prefix; пользователи приложений **не получают** постоянные S3-ключи — backend выдаёт presigned URL (для presign на внешний домен передавайте `APP_PUBLIC_ENDPOINT` в `make minio-app-create`).
+- **NetworkPolicy** включён в `values-prod.yaml` всех сервисов (Bitnami chart создаёт NP-ресурсы), но `allowExternal: true` делает их функционально noop. План жёсткой сегментации (`allowExternal: false` + `ingressNSMatchLabels: { infra-client: "true" }` + label app-namespaces) — `docs/runbooks/network-policy.md`.
 - Примеры в `examples/` согласованы с тем, как в кластере создаются Secret и политики доступа — при изменении flow обновлять и примеры.
 
 ## Спец-сценарии (skills из `.claude/skills/`)
