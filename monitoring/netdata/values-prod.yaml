@@ -9,6 +9,13 @@ replicaCount: 1
 ingress:
   enabled: true
   className: nginx
+  # Basic-auth: Secret netdata-basic-auth/monitoring создаётся целью
+  # `make -C monitoring/netdata secrets-init` (вызывается из корневого `make up`
+  # и из netdata-`install`/`upgrade`). Креды: `make -C monitoring/netdata show-creds`.
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: netdata-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Netdata (prod)"
   hosts:
     - host: netdata.prod.local
       paths:

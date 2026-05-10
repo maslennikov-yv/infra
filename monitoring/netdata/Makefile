@@ -3,13 +3,18 @@ SHELL := /bin/bash
 
 .PHONY: help install upgrade uninstall status logs port-forward top-nodes events pod-events describe-pod \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	check-registry
+	check-registry secrets-init show-creds regen-password
 
 NAMESPACE ?= monitoring
 RELEASE ?= netdata
 CHART_PATH ?= netdata
 ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
+
+# Basic-auth для ingress (используется в values-prod.yaml через
+# nginx.ingress.kubernetes.io/auth-secret: $(BASIC_AUTH_SECRET))
+BASIC_AUTH_SECRET ?= netdata-basic-auth
+BASIC_AUTH_USER ?= admin
 
 # Локальный registry MicroK8s
 REGISTRY ?= localhost:32000
@@ -36,6 +41,11 @@ help:
 	@echo "  make logs            - Логи Netdata"
 	@echo "  make port-forward    - Локальный доступ: http://localhost:19999"
 	@echo ""
+	@echo "Basic-auth (ingress):"
+	@echo "  make secrets-init    - Создать Secret $(BASIC_AUTH_SECRET) (идемпотентно)"
+	@echo "  make show-creds      - Показать username/password basic-auth"
+	@echo "  make regen-password  - Сгенерировать новый пароль (с подтверждением)"
+	@echo ""
 	@echo "Диагностика (Pending/ресурсы):"
 	@echo "  make top-nodes       - Использование CPU/памяти на нодах"
 	@echo "  make events          - Последние события в namespace monitoring"
@@ -55,12 +65,12 @@ help:
 	@echo "  make images-clean           - Удалить локальные docker-образы"
 	@echo "  make images-clean-files     - Удалить сохраненные tar"
 
-install:
+install: secrets-init
 	@helm upgrade --install $(RELEASE) $(CHART_PATH) \
 		-n $(NAMESPACE) --create-namespace \
 		-f $(VALUES_FILE)
 
-upgrade:
+upgrade: secrets-init
 	@helm upgrade $(RELEASE) $(CHART_PATH) \
 		-n $(NAMESPACE) \
 		-f $(VALUES_FILE)
@@ -130,6 +140,76 @@ describe-pod:
 		exit 1; \
 	fi; \
 	kubectl describe pod $$POD -n $(NAMESPACE)
+
+## =========================
+## Basic-auth для ingress
+## =========================
+##
+## Создаёт Secret $(BASIC_AUTH_SECRET) в namespace $(NAMESPACE) с двумя
+## ключами:
+##   - auth        — htpasswd-формат (admin:$$apr1$$...) для nginx-ingress;
+##   - password    — plain-пароль (для `make show-creds`).
+##
+## Идемпотентно: если Secret уже существует, ничего не пересоздаётся.
+## Используется в values-prod.yaml через annotations:
+##   nginx.ingress.kubernetes.io/auth-type: basic
+##   nginx.ingress.kubernetes.io/auth-secret: netdata-basic-auth
+
+secrets-init:
+	@set -e; \
+	if kubectl get secret -n $(NAMESPACE) $(BASIC_AUTH_SECRET) >/dev/null 2>&1; then \
+		exit 0; \
+	fi; \
+	kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$$KUBECONFIG)"; exit 1; }; \
+	command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля и htpasswd)"; exit 1; }; \
+	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	PASSWORD=$$(openssl rand -hex 16); \
+	SALT=$$(openssl rand -base64 6 | tr -d '/+='); \
+	HASH=$$(openssl passwd -apr1 -salt "$$SALT" "$$PASSWORD"); \
+	kubectl create secret generic $(BASIC_AUTH_SECRET) -n $(NAMESPACE) \
+		--from-literal=auth="$(BASIC_AUTH_USER):$$HASH" \
+		--from-literal=username="$(BASIC_AUTH_USER)" \
+		--from-literal=password="$$PASSWORD" \
+		>/dev/null; \
+	echo "✓ Создан Secret $(NAMESPACE)/$(BASIC_AUTH_SECRET) (user=$(BASIC_AUTH_USER), пароль см. make show-creds)"
+
+show-creds:
+	@set -e; \
+	if ! kubectl get secret -n $(NAMESPACE) $(BASIC_AUTH_SECRET) >/dev/null 2>&1; then \
+		echo "✗ Secret $(NAMESPACE)/$(BASIC_AUTH_SECRET) не найден. Сначала: make secrets-init ENV=$(ENV)"; exit 1; \
+	fi; \
+	USER=$$(kubectl get secret -n $(NAMESPACE) $(BASIC_AUTH_SECRET) -o jsonpath='{.data.username}' | base64 -d); \
+	PASS=$$(kubectl get secret -n $(NAMESPACE) $(BASIC_AUTH_SECRET) -o jsonpath='{.data.password}' | base64 -d); \
+	if [ -z "$$PASS" ]; then \
+		echo "⚠ В Secret отсутствует ключ 'password' (вероятно, Secret создан вручную)."; \
+		echo "  Username: $$USER"; \
+		echo "  Hash:     $$(kubectl get secret -n $(NAMESPACE) $(BASIC_AUTH_SECRET) -o jsonpath='{.data.auth}' | base64 -d)"; \
+		exit 0; \
+	fi; \
+	echo "Username: $$USER"; \
+	echo "Password: $$PASS"
+
+regen-password:
+	@set -e; \
+	if ! kubectl get secret -n $(NAMESPACE) $(BASIC_AUTH_SECRET) >/dev/null 2>&1; then \
+		echo "✗ Secret $(NAMESPACE)/$(BASIC_AUTH_SECRET) не найден. Сначала: make secrets-init ENV=$(ENV)"; exit 1; \
+	fi; \
+	command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден"; exit 1; }; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будет сгенерирован НОВЫЙ пароль basic-auth для Netdata ($(NAMESPACE)/$(BASIC_AUTH_SECRET))."; \
+		echo "  Все активные сессии в браузере перестанут работать после применения."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi; \
+	PASSWORD=$$(openssl rand -hex 16); \
+	SALT=$$(openssl rand -base64 6 | tr -d '/+='); \
+	HASH=$$(openssl passwd -apr1 -salt "$$SALT" "$$PASSWORD"); \
+	kubectl create secret generic $(BASIC_AUTH_SECRET) -n $(NAMESPACE) \
+		--from-literal=auth="$(BASIC_AUTH_USER):$$HASH" \
+		--from-literal=username="$(BASIC_AUTH_USER)" \
+		--from-literal=password="$$PASSWORD" \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+	echo "✓ Пароль обновлён. Новые креды: make show-creds"
 
 ## =========================
 ## Images (offline / microk8s registry)

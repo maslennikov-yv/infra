@@ -172,10 +172,44 @@ Netdata требует:
   endpoints/configmaps/deployments/statefulsets/daemonsets/replicasets — для
   Kubernetes-плагинов.
 
-⚠ Это значимая security surface. Не публикуйте Netdata UI наружу без
-auth-proxy (basic-auth ingress, OAuth2 proxy). По умолчанию
-`ingress.enabled: true` в local/prod, но без TLS и без auth — только для
-внутренней сети / dev.
+⚠ Это значимая security surface. По умолчанию `ingress.enabled: true` в
+local/prod. В **prod** ingress закрыт **basic-auth** (см. ниже). Для
+**local** auth не настраивается — это dev-окружение, доступ
+ограничен внутренней сетью / port-forward.
+
+## Basic-auth для prod ingress
+
+`values-prod.yaml` подключает nginx-ingress basic-auth через annotations:
+
+```yaml
+nginx.ingress.kubernetes.io/auth-type: basic
+nginx.ingress.kubernetes.io/auth-secret: netdata-basic-auth
+```
+
+Secret `netdata-basic-auth` в namespace `monitoring` создаётся идемпотентно
+целью `secrets-init`, которая вызывается:
+
+- автоматически при `make up ENV=prod` (если netdata включён в helmfile);
+- автоматически при локальных `make install` / `make upgrade` в
+  `monitoring/netdata/`;
+- вручную: `make secrets-init` (создаст, если нет).
+
+Команды:
+
+```bash
+make secrets-init        # идемпотентно создать Secret (user=admin, пароль 32 hex)
+make show-creds          # вывести username/password
+make regen-password      # сгенерировать новый пароль (с подтверждением)
+```
+
+Структура Secret:
+
+- `auth` — `admin:$apr1$...` (htpasswd-формат, читается nginx-ingress);
+- `username`, `password` — plain-значения для `make show-creds`.
+
+Секрет **не удаляется** при `helm uninstall` — он живёт вне Helm release.
+При полной зачистке (например, `make down`) удалите вручную:
+`kubectl delete secret -n monitoring netdata-basic-auth`.
 
 ## Ограничения
 

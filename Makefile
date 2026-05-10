@@ -20,6 +20,7 @@
 	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply k8s-port-expose-diff \
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
+	monitoring-secrets-init monitoring-show-creds monitoring-regen-password \
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
@@ -320,6 +321,9 @@ help:
 	@echo "  make monitoring-events $(YELLOW)ENV=$(ENV)$(RESET)        - последние события в namespace monitoring"
 	@echo "  make monitoring-pod-events $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)POD=имя-пода$(RESET)] - события по поду Netdata"
 	@echo "  make monitoring-describe-pod $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)POD=имя-пода$(RESET)] - describe пода Netdata"
+	@echo "  make monitoring-secrets-init $(YELLOW)ENV=$(ENV)$(RESET)    - создать Secret netdata-basic-auth (идемпотентно)"
+	@echo "  make monitoring-show-creds $(YELLOW)ENV=$(ENV)$(RESET)      - показать username/password basic-auth"
+	@echo "  make monitoring-regen-password $(YELLOW)ENV=$(ENV)$(RESET)  - сгенерировать новый пароль (с подтверждением)"
 
 # Usage: make images-save ENV=prod [SERVICE=redis]
 images-save:
@@ -922,6 +926,15 @@ up:
 	if [ $$kafka_active -eq 1 ]; then \
 		$(MAKE) -C kafka secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
 	fi; \
+	netdata_active=0; \
+	if [ -n "$(ENABLED_SERVICES)" ]; then \
+		echo ",$(ENABLED_SERVICES)," | grep -qF ",netdata," && netdata_active=1; \
+	else \
+		echo ",$(EXCLUDE_SERVICES)," | grep -qF ",netdata," || netdata_active=1; \
+	fi; \
+	if [ $$netdata_active -eq 1 ]; then \
+		$(MAKE) -C monitoring/netdata secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
+	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
 	if [ "$(SKIP_APPS_APPLY)" != "1" ]; then \
 		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" APPS_APPLY_CONTINUE_ON_ERROR="$(APPS_APPLY_CONTINUE_ON_ERROR)" "$(REPO_ROOT)/scripts/apps-apply.sh"; \
@@ -1371,6 +1384,15 @@ monitoring-pod-events:
 
 monitoring-describe-pod:
 	@$(MAKE) -C monitoring/netdata describe-pod ENV=$(ENV) POD="$(POD)"
+
+monitoring-secrets-init:
+	@$(MAKE) -C monitoring/netdata secrets-init ENV=$(ENV)
+
+monitoring-show-creds:
+	@$(MAKE) -C monitoring/netdata show-creds ENV=$(ENV)
+
+monitoring-regen-password:
+	@$(MAKE) -C monitoring/netdata regen-password ENV=$(ENV) SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
 # microk8s nginx ingress: hostPort + TCP ConfigMap (skill: .claude/skills/k8s-port-expose-microk8s)
 k8s-port-expose-show:
