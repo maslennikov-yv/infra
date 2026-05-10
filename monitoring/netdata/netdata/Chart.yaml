@@ -3,4 +3,4 @@ name: netdata
 description: Lightweight Kubernetes monitoring with Netdata
 type: application
 version: 0.1.0
-appVersion: "stable"
+appVersion: "v2.10.3"

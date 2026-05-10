@@ -1,8 +1,22 @@
 image:
+  # registry пустой по дефолту (chart-level fallback на docker.io).
+  # values-{local,prod}.yaml переопределяют на localhost:32000 — convention репо
+  # (см. CLAUDE.md: «Образы тянутся из docker.io/..., публикуются в localhost:32000»).
+  registry: ""
   repository: netdata/netdata
-  tag: stable
+  # Pin на immutable-тег. `stable` — moving target, при каждом pull может тянуть
+  # разную версию и ломать reproducibility (см. CLAUDE.md). Обновлять явным PR.
+  tag: v2.10.3
   pullPolicy: IfNotPresent
 
+# single-node coverage by design: netdata собирает метрики ноды, на которой запущен
+# (через hostPID/hostNetwork + hostPath /proc, /sys, /cgroup). Этот chart использует
+# Deployment с replicaCount: 1, поэтому видимы метрики ОДНОЙ случайной ноды кластера.
+# Для multi-node coverage потребуется переписать template на DaemonSet (по pod на ноду);
+# сейчас инфраструктура single-node microk8s, поэтому такой выбор — осознанный и достаточный.
+# НЕ повышайте replicaCount > 1 — netdata-pods не видят метрики друг друга, два pod'а
+# на одной ноде дадут идентичные данные с разной seriesID, у двух pod'ов на разных нодах
+# через ClusterIP-балансировщик клиент будет получать случайно одну из двух картин.
 replicaCount: 1
 
 serviceAccount:

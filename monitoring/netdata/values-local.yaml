@@ -1,12 +1,16 @@
 image:
+  registry: localhost:32000
   repository: netdata/netdata
-  tag: stable
+  tag: v2.10.3
+
+# single-node coverage by design — см. netdata/values.yaml для пояснения.
+replicaCount: 1
 
 ingress:
   enabled: true
   className: nginx
   hosts:
-    - host: netdata.local.local
+    - host: netdata.local
       paths:
         - /
 
