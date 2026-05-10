@@ -60,6 +60,17 @@ make port-forward                # http://localhost:19999
 # http://netdata.local
 ```
 
+### Где смотреть метрики по сервисам
+
+- Раздел **Kubernetes** → фильтры по namespace (`postgres`, `redis`, `kafka`, `rabbitmq`, `minio`, `clickhouse`).
+- Раздел **Containers/Apps** → метрики конкретных pod'ов.
+
+### Вход без Netdata Cloud
+
+В этой конфигурации Netdata работает **полностью автономно** — без Netdata Cloud (нет claim-token, streaming не настроен; алерты и метрики оцениваются локально в поде, видны в разделе **Alarms** в UI).
+
+При первом открытии Netdata показывает экран «Welcome to Netdata» с предложением Sign-in. Чтобы пользоваться дашбордом без регистрации, нажмите ссылку **Skip and use the dashboard anonymously** под кнопкой Sign-in — откроется полный дашборд с метриками и алертами, все данные остаются локально.
+
 ## Конфигурация
 
 Pin версии:
@@ -76,6 +87,51 @@ Netdata config (в `netdata/values.yaml`):
 - `memoryMode: ram` — история в RAM (1 час). При рестарте теряется.
   Для долговременного хранения — отдельный Prometheus + Grafana.
 - `history: 3600` — длина истории в секундах.
+
+## Алертинг
+
+Netdata автоматически отслеживает метрики и поднимает алерты при превышении порогов; видны в UI в разделе **Alarms**, через API (`http://<host>/api/v1/alarms?all`) и в логах (`/var/log/netdata/error.log`).
+
+### Кастомные алерты
+
+Конфиг — через `monitoring/netdata/netdata/templates/configmap.yaml`:
+
+```yaml
+data:
+  custom-alerts.conf: |
+    alarm: cpu_usage
+      on: system.cpu
+      lookup: average -10m percentage of user,system,softirq,irq
+      every: 1m
+      warn: $this > 80
+      crit: $this > 95
+      info: CPU usage is above threshold
+```
+
+Если файл монтируется как отдельный том — добавьте volume mount в deployment.
+
+### Уведомления
+
+Без Netdata Cloud доступны локальные каналы (exec-скрипты, webhooks, SMTP) через `health_alarm_notify.conf`:
+
+```yaml
+data:
+  health_alarm_notify.conf: |
+    SEND_EMAIL="YES"
+    DEFAULT_RECIPIENT_EMAIL="admin@example.com"
+    SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+    exec_alarm_notify_cmd="/path/to/script.sh"
+```
+
+### Отключение стандартных алертов
+
+```yaml
+data:
+  netdata.conf: |
+    [health]
+      enabled = yes
+      # health/conf.d/*.conf = DISABLED
+```
 
 ## Полезные команды
 

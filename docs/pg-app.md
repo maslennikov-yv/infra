@@ -15,6 +15,7 @@
 - [MinIO](#minio)
 - [ClickHouse](#clickhouse)
 - [RabbitMQ](#rabbitmq)
+- [Локальная разработка: исходники приложения в pod](#локальная-разработка-исходники-приложения-в-pod)
 
 ## Окружение и доступ к кластеру
 
@@ -375,6 +376,46 @@ make rabbitmq-app-drop APP=myapp ENV=stage   # vhost, пользователь, 
 4. `make rabbitmq-app-create APP=myapp ENV=<env>`
 
 ---
+
+## Локальная разработка: исходники приложения в pod
+
+Для `ENV=local` (microk8s на той же машине, где репозиторий) исходники приложения из `apps/src/<APP>` можно отдавать в pod без сборки образа на каждый чих — через **hostPath**.
+
+### Подготовка: клонирование репозитория приложения
+
+`apps-src-clone` читает поля `repo_url` и `repo_branch` из `apps/registry.yaml` и клонирует репо в `apps/src/<APP>`:
+
+```bash
+make apps-src-clone APP=myapp
+```
+
+Каталог `apps/src/` в `.gitignore` — клон не коммитится.
+
+### Способ 1: через Helm-чарт приложения (предпочтительно)
+
+Чарт приложения должен поддерживать опции `app.volumes.*` (hostPath + mount). Для генерации правильных строк `--set` (с абсолютным путём `apps/src/<APP>` на хосте microk8s):
+
+```bash
+make apps-local-src-helm-sets ENV=local APP=myapp
+```
+
+Вывод копируется в `helm upgrade --set …` чарта приложения. Преимущество: монтирование задано в самом манифесте, `helm upgrade` не сломает его.
+
+### Способ 2: точечный hostPath patch (запасной)
+
+Когда правка чарта приложения недоступна — можно точечно пропатчить уже задеплоенный workload:
+
+```bash
+make app-local-src-hostpath-mount ENV=local APP=myapp \
+  APP_LOCAL_K8S_WORKLOAD=deployment/myapp
+# опционально:
+#   APP_LOCAL_SRC_MOUNT_PATH=/app
+#   APP_LOCAL_SRC_CONTAINER=app           # имя контейнера (если их несколько)
+#   APP_LOCAL_SRC_READ_ONLY=1             # readOnly mount
+#   APP_NS=myapp                          # namespace, если отличается от APP
+```
+
+`APP_LOCAL_K8S_WORKLOAD` — `deployment/<имя>`, `statefulset/<имя>`, `daemonset/<имя>` или `pod/<имя>`. Скрипт идемпотентен (повторный запуск не дублирует volume/volumeMount); том прокидывается в `initContainers` и `containers` одинаково. Ограничение: **следующий `helm upgrade` приложения может затереть патч** — для устойчивого решения используйте Способ 1.
 
 ## Сводка
 

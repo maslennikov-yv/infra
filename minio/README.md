@@ -106,6 +106,31 @@ make app-append APP=myapp BUCKET=archive PREFIX=cold/ ACCESS_MODE=private_ro
 по обновлённому `buckets.json`, применяет через `mc admin policy create` и
 attach'ит к существующей IAM-учётке. Tracking-secret обновляется атомарно.
 
+### Presigned URL и публичный доступ
+
+Рекомендуемая схема для веб-приложений: пользователи **не получают** постоянные S3-ключи; backend после проверки JWT/session выдаёт **presigned URL** (GET/PUT/POST). Снаружи используется **path-style**: `https://files.appA.com/<bucket>/<key>`.
+
+Ingress для MinIO API настраивается в `minio/values-$(ENV).yaml` (блок `ingress:`). По умолчанию `console.ingress` выключен и не должен публиковаться в интернет. Чтобы presigned URL подписывались на «внешний» домен, при `app-create` передавайте `APP_PUBLIC_ENDPOINT`.
+
+### CORS
+
+Если браузер ходит по presigned URL напрямую — настройте CORS на bucket через `mc cors set` (XML). Минимальный пример (фронт `https://appA.com`):
+
+```xml
+<CORSConfiguration>
+  <CORSRule>
+    <AllowedOrigin>https://appA.com</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedMethod>HEAD</AllowedMethod>
+    <AllowedMethod>PUT</AllowedMethod>
+    <AllowedMethod>POST</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+    <ExposeHeader>ETag</ExposeHeader>
+    <MaxAgeSeconds>3600</MaxAgeSeconds>
+  </CORSRule>
+</CORSConfiguration>
+```
+
 ## Бэкапы и восстановление
 
 `make backup-meta` сохраняет **definitions**: IAM users, policies (содержимое),
