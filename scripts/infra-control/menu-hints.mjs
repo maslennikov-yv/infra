@@ -321,6 +321,13 @@ export const MENU_HELP = {
       "• Пересоздание — цель postgres-recreate-prep (цепочка с PVC).\n" +
       "• Удалить PVC — цель postgres-delete-pvcs (опасно).",
   },
+  serviceBackup: {
+    title: "Справка: бэкап и восстановление сервиса",
+    body:
+      "• Бэкап — цель <svc>-backup (для kafka/minio: -backup-meta; для rabbitmq: -backup-defs). Параметры не нужны.\n" +
+      "• Восстановление — цель <svc>-restore (redis: -restore-acl; kafka: -restore-meta-topics; minio: -restore-meta; rabbitmq: -restore-defs). Запрашивается BACKUP_FILE; SKIP_CONFIRM=1 проставляется автоматически после явного подтверждения в TUI.\n" +
+      "• Подробности форматов и тонкости restore — <svc>/BACKUP.md.",
+  },
   monitoringExtras: {
     title: "Справка: Netdata — дополнительно",
     body:

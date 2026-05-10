@@ -1977,6 +1977,85 @@ export function runInfraControl() {
     }
   }
 
+  /** Конфиг backup/restore для stateful-сервисов, кроме postgres (у того
+   *  своё меню с recreate-prep / delete-pvcs). Restore-цели единообразны:
+   *  все принимают BACKUP_FILE и SKIP_CONFIRM. */
+  const STATEFUL_BACKUP_CFG = {
+    redis: {
+      title: "Redis: бэкап и восстановление",
+      backupTarget: "redis-backup",
+      restoreTarget: "redis-restore-acl",
+      restoreHint: "BACKUP_FILE: путь к ACL-бэкапу (см. redis/BACKUP.md)",
+    },
+    kafka: {
+      title: "Kafka: бэкап метаданных и восстановление топиков",
+      backupTarget: "kafka-backup-meta",
+      restoreTarget: "kafka-restore-meta-topics",
+      restoreHint: "BACKUP_FILE: путь к meta-бэкапу (см. kafka/BACKUP.md)",
+    },
+    minio: {
+      title: "MinIO: бэкап метаданных и восстановление",
+      backupTarget: "minio-backup-meta",
+      restoreTarget: "minio-restore-meta",
+      restoreHint: "BACKUP_FILE: путь к meta-бэкапу (см. minio/BACKUP.md)",
+    },
+    clickhouse: {
+      title: "ClickHouse: бэкап и восстановление",
+      backupTarget: "clickhouse-backup",
+      restoreTarget: "clickhouse-restore",
+      restoreHint: "BACKUP_FILE: путь к бэкапу (см. clickhouse/BACKUP.md)",
+    },
+    rabbitmq: {
+      title: "RabbitMQ: бэкап и восстановление definitions",
+      backupTarget: "rabbitmq-backup-defs",
+      restoreTarget: "rabbitmq-restore-defs",
+      restoreHint: "BACKUP_FILE: путь к definitions-бэкапу (см. rabbitmq/BACKUP.md)",
+    },
+  };
+
+  async function serviceBackupMenu(svc) {
+    const cfg = STATEFUL_BACKUP_CFG[svc];
+    if (!cfg) return;
+    for (;;) {
+      const action = ensure(
+        await select({
+          message: cfg.title,
+          options: [
+            { value: "backup", label: "Сделать резервную копию" },
+            { value: "restore", label: "Восстановить из архива (указать файл)" },
+            OPT_HELP,
+            { value: "back", label: "Назад" },
+          ],
+        }),
+      );
+      if (action === HELP_VALUE) {
+        showMenuHelp("serviceBackup");
+        continue;
+      }
+      if (action === "back") return;
+
+      try {
+        if (action === "backup") await runTarget(cfg.backupTarget, {});
+        else if (action === "restore") {
+          const f = ensure(
+            await text({
+              message: cfg.restoreHint,
+              validate: (s) => s?.trim() || "Нужно",
+            }),
+          );
+          if (!(await dangerousProceed(`Восстановление ${svc} из ${String(f).trim()}.`)))
+            continue;
+          await runTarget(cfg.restoreTarget, {
+            BACKUP_FILE: String(f).trim(),
+            SKIP_CONFIRM: "1",
+          });
+        }
+      } catch (e) {
+        log.error(String(e?.stack || e));
+      }
+    }
+  }
+
   async function monitoringExtrasMenu() {
     for (;;) {
       const action = ensure(
@@ -2113,6 +2192,12 @@ export function runInfraControl() {
           label: "Бэкапы, восстановление и PVC",
 
         });
+      else if (STATEFUL_BACKUP_CFG[svc])
+        options.push({
+          value: "data",
+          label: "Бэкапы и восстановление",
+
+        });
       if (isMon)
         options.push({
           value: "more",
@@ -2139,6 +2224,10 @@ export function runInfraControl() {
       try {
         if (action === "data" && svc === "postgres") {
           await postgresDataMenu();
+          continue;
+        }
+        if (action === "data" && STATEFUL_BACKUP_CFG[svc]) {
+          await serviceBackupMenu(svc);
           continue;
         }
         if (action === "more" && isMon) {
