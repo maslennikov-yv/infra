@@ -225,8 +225,10 @@ export const MENU_HELP = {
   manageEnv: {
     title: "Справка: управление — среда",
     body:
-      "• Кластер и доступ — статус, kubeconfig, SSH, MicroK8s.\n" +
-      "• Архив окружения — цель env-backup.\n" +
+      "• Кластер и доступ — статус, kubeconfig, SSH, MicroK8s, doctor.\n" +
+      "• Архив окружения — цель env-backup (платформенные Secrets, apps/registry.yaml, apps/conf/<APP>/).\n" +
+      "• Восстановить из архива — цель env-restore (BACKUP_FILE; CONFIRM=1 после подтверждения в TUI). Не перезатирает существующие apps/conf и не перезаписывает apps/registry.yaml, если локально отличается.\n" +
+      "• Бэкап всех stateful-сервисов — цель backup-all (postgres + redis + kafka-meta + minio-meta + clickhouse + rabbitmq-defs; учитывает ENABLED_SERVICES / EXCLUDE_SERVICES).\n" +
       "• Образы — save/push Bitnami-образов.\n" +
       "• Helm весь набор — цель up|diff|down.",
   },

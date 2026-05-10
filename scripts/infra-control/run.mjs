@@ -1181,6 +1181,16 @@ export function runInfraControl() {
 
             },
             {
+              value: "rs",
+              label: "Восстановить окружение из архива (опасно)",
+
+            },
+            {
+              value: "ball",
+              label: "Бэкап всех stateful-сервисов разом (backup-all)",
+
+            },
+            {
               value: "img",
               label: "Образы контейнеров",
 
@@ -1206,6 +1216,32 @@ export function runInfraControl() {
         else if (action === "bu") {
           if (await dangerousProceed("Секреты уйдут в локальный архив."))
             await runTarget("env-backup", {});
+        } else if (action === "rs") {
+          const f = ensure(
+            await text({
+              message:
+                "BACKUP_FILE: путь к env-архиву (environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz)",
+              validate: (s) => s?.trim() || "Нужно",
+            }),
+          );
+          if (
+            !(await dangerousProceed(
+              "Восстановление env-backup: применит платформенные Secrets в кластер. Существующие apps/conf/<APP>/ не перезатираются; apps/registry.yaml не перезапишется, если локально отличается.",
+            ))
+          )
+            continue;
+          await runTarget("env-restore", {
+            BACKUP_FILE: String(f).trim(),
+            CONFIRM: "1",
+          });
+        } else if (action === "ball") {
+          if (
+            !(await dangerousProceed(
+              "Запуск backup-all: последовательно вызовет postgres-backup / redis-backup / kafka-backup-meta / minio-backup-meta / clickhouse-backup / rabbitmq-backup-defs. Учитываются ENABLED_SERVICES / EXCLUDE_SERVICES.",
+            ))
+          )
+            continue;
+          await runTarget("backup-all", {});
         } else if (action === "img") {
           await imagesMenu();
         } else {
