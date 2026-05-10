@@ -136,6 +136,7 @@ export const MENU_HELP = {
       "• Обзор кластера — цель status.\n" +
       "• Загрузка узлов — цель top-totals.\n" +
       "• Информация о kubeconfig — цель kubeconfig-info.\n" +
+      "• Полная диагностика стека — цель doctor (тулинг + кластер + helm vs helmfile + rollouts + per-app verify).\n" +
       "• Kubeconfig: удалённо kubeconfig-fetch (SSH_HOST); локально kubeconfig-microk8s-local (без SSH).\n" +
       "• SSH / MicroK8s setup / uninstall — те же цели, что в бутстрапе (где применимо).\n" +
       "• Удалить MicroK8s — цель microk8s-uninstall (опасно).",

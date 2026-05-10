@@ -550,6 +550,11 @@ export function runInfraControl() {
 
             },
             {
+              value: "doctor",
+              label: "Полная диагностика стека (doctor)",
+
+            },
+            {
               value: "kcfetch",
               label: "Kubeconfig: удалённый сервер (SSH, microk8s на ноде)",
             },
@@ -587,6 +592,7 @@ export function runInfraControl() {
         if (action === "status") await runTarget("status", {});
         else if (action === "top") await runTarget("top-totals", {});
         else if (action === "kcinfo") await runTarget("kubeconfig-info", {});
+        else if (action === "doctor") await runTarget("doctor", {});
         else if (action === "kcfetch") {
           await runTarget("kubeconfig-fetch", {
             SSH_HOST: await promptSshHost(),
