@@ -52,3 +52,14 @@ auth:
   username: admin
   existingSecret: clickhouse
   existingSecretKey: admin-password
+
+# Prometheus метрики через встроенный ClickHouse endpoint (port 8001, /metrics).
+# Дополнительный exporter не нужен. podAnnotations включают auto-discovery в
+# Prometheus/Netdata-go.d через стандартные prometheus.io/* аннотации.
+# Endpoint доступен только in-cluster (8001 не публикуется через ingress).
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8001"
+    prometheus.io/path: "/metrics"

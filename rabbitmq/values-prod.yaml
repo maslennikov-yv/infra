@@ -47,3 +47,10 @@ ingress:
   annotations:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
   tls: false
+
+# Prometheus метрики через встроенный rabbitmq_prometheus plugin (port 15692, /metrics).
+# Bitnami chart автоматически добавляет podAnnotations prometheus.io/scrape:"true".
+# Дополнительный exporter-образ не требуется. Metrics-port 15692 не публикуется
+# через ingress (выше enabled: false), так что доступен только in-cluster.
+metrics:
+  enabled: true

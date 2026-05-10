@@ -71,3 +71,13 @@ persistence:
   enabled: true
   size: 50Gi
   storageClass: ""
+
+# Prometheus метрики через встроенный MinIO endpoint. Дополнительный exporter не нужен.
+# ⚠ В prod ingress включён → endpoint /minio/v2/metrics/cluster и /node будут
+# доступны публично при prometheusAuthType: public. Используем jwt — scraper
+# должен передавать Bearer-токен админа MinIO. Альтернатива: оставить public и
+# заблокировать /minio/v2/metrics/ через nginx server-snippet annotation.
+# См. https://min.io/docs/minio/linux/operations/monitoring/collect-minio-metrics-using-prometheus.html
+metrics:
+  enabled: true
+  prometheusAuthType: jwt

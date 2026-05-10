@@ -70,3 +70,10 @@ persistence:
   size: 4Gi
   storageClass: ""
 
+# Prometheus метрики через встроенный MinIO endpoint (publicAuthType: public —
+# /minio/v2/metrics/cluster и /node без auth). Дополнительный exporter не нужен.
+# В local ingress disabled, метрики только in-cluster.
+metrics:
+  enabled: true
+  prometheusAuthType: public
+
