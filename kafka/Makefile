@@ -758,13 +758,13 @@ images-sync: images-push
 	@echo "✓ Images sync completed"
 
 # Сохранить все образы в tar
-images-save: images-pull
-	@echo "Сохранение Docker образов в файлы..."
+images-save: images-tag
+	@echo "Сохранение Docker образов в файлы (с LOCAL-тегом $(REGISTRY)/bitnami/*)..."
 	@mkdir -p $(IMAGES_DIR)
-	@docker save $(KAFKA_IMAGE_SRC) -o $(IMAGES_DIR)/kafka-$(KAFKA_TAG).tar
-	@docker save $(OS_SHELL_IMAGE_SRC) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
-	@docker save $(KUBECTL_IMAGE_SRC) -o $(IMAGES_DIR)/kubectl-$(KUBECTL_TAG).tar
-	@docker save $(JMX_EXPORTER_IMAGE_SRC) -o $(IMAGES_DIR)/jmx-exporter-$(JMX_EXPORTER_TAG).tar
+	@docker save $(KAFKA_IMAGE_LOCAL) -o $(IMAGES_DIR)/kafka-$(KAFKA_TAG).tar
+	@docker save $(OS_SHELL_IMAGE_LOCAL) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
+	@docker save $(KUBECTL_IMAGE_LOCAL) -o $(IMAGES_DIR)/kubectl-$(KUBECTL_TAG).tar
+	@docker save $(JMX_EXPORTER_IMAGE_LOCAL) -o $(IMAGES_DIR)/jmx-exporter-$(JMX_EXPORTER_TAG).tar
 	@echo "✓ Образы сохранены в $(IMAGES_DIR)/"
 
 # Загрузить образы из tar

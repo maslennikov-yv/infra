@@ -403,14 +403,14 @@ images-push: check-registry images-tag
 images-sync: images-push
 	@echo "✓ Images sync completed"
 
-images-save: images-pull
-	@echo "Сохранение Docker образов в файлы..."
+images-save: images-tag
+	@echo "Сохранение Docker образов в файлы (с LOCAL-тегом $(REGISTRY)/bitnami/*)..."
 	@mkdir -p $(IMAGES_DIR)
-	@docker save $(REDIS_IMAGE_SRC) -o $(IMAGES_DIR)/redis-$(REDIS_TAG).tar
-	@docker save $(REDIS_SENTINEL_IMAGE_SRC) -o $(IMAGES_DIR)/redis-sentinel-$(REDIS_SENTINEL_TAG).tar
-	@docker save $(REDIS_EXPORTER_IMAGE_SRC) -o $(IMAGES_DIR)/redis-exporter-$(REDIS_EXPORTER_TAG).tar
-	@docker save $(OS_SHELL_IMAGE_SRC) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
-	@docker save $(KUBECTL_IMAGE_SRC) -o $(IMAGES_DIR)/kubectl-$(KUBECTL_TAG).tar
+	@docker save $(REDIS_IMAGE_LOCAL) -o $(IMAGES_DIR)/redis-$(REDIS_TAG).tar
+	@docker save $(REDIS_SENTINEL_IMAGE_LOCAL) -o $(IMAGES_DIR)/redis-sentinel-$(REDIS_SENTINEL_TAG).tar
+	@docker save $(REDIS_EXPORTER_IMAGE_LOCAL) -o $(IMAGES_DIR)/redis-exporter-$(REDIS_EXPORTER_TAG).tar
+	@docker save $(OS_SHELL_IMAGE_LOCAL) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
+	@docker save $(KUBECTL_IMAGE_LOCAL) -o $(IMAGES_DIR)/kubectl-$(KUBECTL_TAG).tar
 	@echo "✓ Образы сохранены в $(IMAGES_DIR)/"
 
 images-load:

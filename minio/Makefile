@@ -563,12 +563,12 @@ images-push: check-registry images-tag
 
 images-sync: images-push
 
-images-save: images-pull
+images-save: images-tag
 	@mkdir -p $(IMAGES_DIR)
-	@docker save $(MINIO_IMAGE_SRC) -o $(IMAGES_DIR)/minio-$(MINIO_TAG).tar
-	@docker save $(MINIO_CLIENT_IMAGE_SRC) -o $(IMAGES_DIR)/minio-client-$(MINIO_CLIENT_TAG).tar
-	@docker save $(MINIO_OBJECT_BROWSER_IMAGE_SRC) -o $(IMAGES_DIR)/minio-object-browser-$(MINIO_OBJECT_BROWSER_TAG).tar
-	@docker save $(OS_SHELL_IMAGE_SRC) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
+	@docker save $(MINIO_IMAGE_LOCAL) -o $(IMAGES_DIR)/minio-$(MINIO_TAG).tar
+	@docker save $(MINIO_CLIENT_IMAGE_LOCAL) -o $(IMAGES_DIR)/minio-client-$(MINIO_CLIENT_TAG).tar
+	@docker save $(MINIO_OBJECT_BROWSER_IMAGE_LOCAL) -o $(IMAGES_DIR)/minio-object-browser-$(MINIO_OBJECT_BROWSER_TAG).tar
+	@docker save $(OS_SHELL_IMAGE_LOCAL) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
 
 images-load:
 	@if [ ! -d "$(IMAGES_DIR)" ]; then echo "✗ Директория $(IMAGES_DIR) не найдена"; exit 1; fi

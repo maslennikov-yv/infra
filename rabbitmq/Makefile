@@ -366,10 +366,10 @@ images-push: check-registry images-tag
 
 images-sync: images-push
 
-images-save: images-pull
+images-save: images-tag
 	@mkdir -p $(IMAGES_DIR)
-	@docker save $(RABBITMQ_IMAGE_SRC) -o $(IMAGES_DIR)/rabbitmq-$(RABBITMQ_TAG).tar
-	@docker save $(OS_SHELL_IMAGE_SRC) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
+	@docker save $(RABBITMQ_IMAGE_LOCAL) -o $(IMAGES_DIR)/rabbitmq-$(RABBITMQ_TAG).tar
+	@docker save $(OS_SHELL_IMAGE_LOCAL) -o $(IMAGES_DIR)/os-shell-$(OS_SHELL_TAG).tar
 
 images-load:
 	@if [ ! -d "$(IMAGES_DIR)" ]; then echo "✗ Директория $(IMAGES_DIR) не найдена"; exit 1; fi
