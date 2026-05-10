@@ -860,79 +860,87 @@ up:
 	# create порождал НОВЫЙ Secret, тогда как живой Redis-pod продолжал работать
 	# со СТАРЫМ паролем → WRONGPASS у клиентов до перезапуска pod.
 	# Теперь: явный if-Secret-exists, отдельный cluster-info check, без delete.
-	if kubectl get secret -n redis redis >/dev/null 2>&1; then \
-		REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
-		[ -n "$$REDIS_PASSWORD" ] || { echo "✗ Secret redis/redis есть, но ключ redis-password пуст. Восстановите вручную."; exit 1; }; \
-	else \
-		kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
-		echo "Redis password secret not found (redis/redis). Creating one for first install..."; \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
-		REDIS_PASSWORD=$$(openssl rand -hex 16); \
-		kubectl create namespace redis --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl create secret generic redis -n redis --from-literal=redis-password="$$REDIS_PASSWORD" >/dev/null; \
-	fi; \
-	if kubectl get secret -n rabbitmq rabbitmq >/dev/null 2>&1; then \
-		RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' | base64 -d); \
-		RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' | base64 -d); \
-		if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
-			echo "✗ Secret rabbitmq/rabbitmq есть, но rabbitmq-password или rabbitmq-erlang-cookie пуст. Восстановите вручную."; exit 1; \
+	# Каждый блок секрет-init обёрнут в `svc_active <svc>` — при ENABLED_SERVICES/
+	# EXCLUDE_SERVICES не создаём namespace и Secret для исключённых сервисов.
+	svc_active() { \
+		local svc="$$1"; \
+		if [ -n "$(ENABLED_SERVICES)" ]; then \
+			echo ",$(ENABLED_SERVICES)," | grep -qF ",$$svc,"; \
+		else \
+			! echo ",$(EXCLUDE_SERVICES)," | grep -qF ",$$svc,"; \
 		fi; \
-	else \
-		kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
-		echo "RabbitMQ secret not found (rabbitmq/rabbitmq). Creating one for first install..."; \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
-		RABBITMQ_PASSWORD=$$(openssl rand -hex 16); \
-		RABBITMQ_COOKIE=$$(openssl rand -hex 32); \
-		kubectl create namespace rabbitmq --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl create secret generic rabbitmq -n rabbitmq \
-			--from-literal=rabbitmq-password="$$RABBITMQ_PASSWORD" \
-			--from-literal=rabbitmq-erlang-cookie="$$RABBITMQ_COOKIE" \
-			>/dev/null; \
+	}; \
+	if svc_active redis; then \
+		if kubectl get secret -n redis redis >/dev/null 2>&1; then \
+			REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
+			[ -n "$$REDIS_PASSWORD" ] || { echo "✗ Secret redis/redis есть, но ключ redis-password пуст. Восстановите вручную."; exit 1; }; \
+		else \
+			kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
+			echo "Redis password secret not found (redis/redis). Creating one for first install..."; \
+			command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+			REDIS_PASSWORD=$$(openssl rand -hex 16); \
+			kubectl create namespace redis --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+			kubectl create secret generic redis -n redis --from-literal=redis-password="$$REDIS_PASSWORD" >/dev/null; \
+		fi; \
 	fi; \
-	if ! kubectl get secret -n postgres postgres-postgresql >/dev/null 2>&1; then \
-		echo "PostgreSQL admin secret not found (postgres/postgres-postgresql). Creating one for first install..."; \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
-		PG_PASSWORD=$$(openssl rand -hex 16); \
-		kubectl create namespace postgres --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl create secret generic postgres-postgresql -n postgres \
-			--from-literal=postgres-password="$$PG_PASSWORD" \
-			>/dev/null; \
+	if svc_active rabbitmq; then \
+		if kubectl get secret -n rabbitmq rabbitmq >/dev/null 2>&1; then \
+			RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' | base64 -d); \
+			RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' | base64 -d); \
+			if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
+				echo "✗ Secret rabbitmq/rabbitmq есть, но rabbitmq-password или rabbitmq-erlang-cookie пуст. Восстановите вручную."; exit 1; \
+			fi; \
+		else \
+			kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
+			echo "RabbitMQ secret not found (rabbitmq/rabbitmq). Creating one for first install..."; \
+			command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+			RABBITMQ_PASSWORD=$$(openssl rand -hex 16); \
+			RABBITMQ_COOKIE=$$(openssl rand -hex 32); \
+			kubectl create namespace rabbitmq --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+			kubectl create secret generic rabbitmq -n rabbitmq \
+				--from-literal=rabbitmq-password="$$RABBITMQ_PASSWORD" \
+				--from-literal=rabbitmq-erlang-cookie="$$RABBITMQ_COOKIE" \
+				>/dev/null; \
+		fi; \
 	fi; \
-	if ! kubectl get secret -n minio minio >/dev/null 2>&1; then \
-		echo "MinIO root secret not found (minio/minio). Creating one for first install..."; \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
-		MINIO_ROOT_PASSWORD=$$(openssl rand -hex 16); \
-		kubectl create namespace minio --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl create secret generic minio -n minio \
-			--from-literal=root-user="admin" \
-			--from-literal=root-password="$$MINIO_ROOT_PASSWORD" \
-			>/dev/null; \
+	if svc_active postgres; then \
+		if ! kubectl get secret -n postgres postgres-postgresql >/dev/null 2>&1; then \
+			echo "PostgreSQL admin secret not found (postgres/postgres-postgresql). Creating one for first install..."; \
+			command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+			PG_PASSWORD=$$(openssl rand -hex 16); \
+			kubectl create namespace postgres --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+			kubectl create secret generic postgres-postgresql -n postgres \
+				--from-literal=postgres-password="$$PG_PASSWORD" \
+				>/dev/null; \
+		fi; \
 	fi; \
-	if ! kubectl get secret -n clickhouse clickhouse >/dev/null 2>&1; then \
-		echo "ClickHouse admin secret not found (clickhouse/clickhouse). Creating one for first install..."; \
-		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
-		CH_PASSWORD=$$(openssl rand -hex 16); \
-		kubectl create namespace clickhouse --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl create secret generic clickhouse -n clickhouse \
-			--from-literal=admin-password="$$CH_PASSWORD" \
-			>/dev/null; \
+	if svc_active minio; then \
+		if ! kubectl get secret -n minio minio >/dev/null 2>&1; then \
+			echo "MinIO root secret not found (minio/minio). Creating one for first install..."; \
+			command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+			MINIO_ROOT_PASSWORD=$$(openssl rand -hex 16); \
+			kubectl create namespace minio --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+			kubectl create secret generic minio -n minio \
+				--from-literal=root-user="admin" \
+				--from-literal=root-password="$$MINIO_ROOT_PASSWORD" \
+				>/dev/null; \
+		fi; \
 	fi; \
-	kafka_active=0; \
-	if [ -n "$(ENABLED_SERVICES)" ]; then \
-		echo ",$(ENABLED_SERVICES)," | grep -qF ",kafka," && kafka_active=1; \
-	else \
-		echo ",$(EXCLUDE_SERVICES)," | grep -qF ",kafka," || kafka_active=1; \
+	if svc_active clickhouse; then \
+		if ! kubectl get secret -n clickhouse clickhouse >/dev/null 2>&1; then \
+			echo "ClickHouse admin secret not found (clickhouse/clickhouse). Creating one for first install..."; \
+			command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
+			CH_PASSWORD=$$(openssl rand -hex 16); \
+			kubectl create namespace clickhouse --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
+			kubectl create secret generic clickhouse -n clickhouse \
+				--from-literal=admin-password="$$CH_PASSWORD" \
+				>/dev/null; \
+		fi; \
 	fi; \
-	if [ $$kafka_active -eq 1 ]; then \
+	if svc_active kafka; then \
 		$(MAKE) -C kafka secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
 	fi; \
-	netdata_active=0; \
-	if [ -n "$(ENABLED_SERVICES)" ]; then \
-		echo ",$(ENABLED_SERVICES)," | grep -qF ",netdata," && netdata_active=1; \
-	else \
-		echo ",$(EXCLUDE_SERVICES)," | grep -qF ",netdata," || netdata_active=1; \
-	fi; \
-	if [ $$netdata_active -eq 1 ]; then \
+	if svc_active netdata; then \
 		$(MAKE) -C monitoring/netdata secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
 	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
