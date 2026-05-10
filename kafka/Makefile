@@ -14,14 +14,16 @@ SHELL := /bin/bash
 # Локальный registry MicroK8s
 REGISTRY ?= localhost:32000
 
-# KUBECONFIG (передаётся из root Makefile)
-KUBECONFIG ?=
-ifneq ($(KUBECONFIG),)
-export KUBECONFIG
-endif
-
 INFRA_ROOT ?= $(abspath $(CURDIR)/..)
 APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
+
+# KUBECONFIG: при прямом запуске из каталога сервиса берём из корня репо
+# (k8s/config/<ENV>), чтобы kubectl не уходил на ~/.kube/config. Корневой
+# Makefile при $(MAKE) -C ... KUBECONFIG=... переопределяет это значение.
+# (ENV объявляется ниже; на момент чтения KUBECONFIG он уже доступен —
+# Make вычисляет переменные лениво при использовании, не при объявлении.)
+KUBECONFIG ?= $(INFRA_ROOT)/k8s/config/$(ENV)
+export KUBECONFIG
 
 # Контракт admin-пароля для kafka-*.sh:
 # - В values-*.yaml `sasl.client.users: [user1]` (РОВНО один юзер).

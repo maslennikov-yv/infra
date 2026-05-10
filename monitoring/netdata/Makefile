@@ -11,6 +11,14 @@ CHART_PATH ?= netdata
 ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
 
+INFRA_ROOT ?= $(abspath $(CURDIR)/../..)
+
+# KUBECONFIG: при прямом запуске из каталога сервиса берём из корня репо
+# (k8s/config/<ENV>), чтобы kubectl не уходил на ~/.kube/config. Корневой
+# Makefile при $(MAKE) -C ... KUBECONFIG=... переопределяет это значение.
+KUBECONFIG ?= $(INFRA_ROOT)/k8s/config/$(ENV)
+export KUBECONFIG
+
 # Basic-auth для ingress (используется в values-prod.yaml через
 # nginx.ingress.kubernetes.io/auth-secret: $(BASIC_AUTH_SECRET))
 BASIC_AUTH_SECRET ?= netdata-basic-auth

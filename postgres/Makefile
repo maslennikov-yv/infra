@@ -15,6 +15,12 @@ VALUES_FILE ?= values-$(ENV).yaml
 INFRA_ROOT ?= $(abspath $(CURDIR)/..)
 APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 
+# KUBECONFIG: при прямом запуске из каталога сервиса берём из корня репо
+# (k8s/config/<ENV>), чтобы kubectl не уходил на ~/.kube/config. Корневой
+# Makefile при $(MAKE) -C ... KUBECONFIG=... переопределяет это значение.
+KUBECONFIG ?= $(INFRA_ROOT)/k8s/config/$(ENV)
+export KUBECONFIG
+
 # Локальные теги, которые будут использоваться в chart'е (НЕ latest)
 POSTGRESQL_TAG ?= 18.0.0
 OS_SHELL_TAG ?= 12-debian-12-r51

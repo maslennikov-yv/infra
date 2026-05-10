@@ -17,6 +17,14 @@ CHART_PATH ?= redis
 ENV ?= local
 VALUES_FILE ?= values-$(ENV).yaml
 
+INFRA_ROOT ?= $(abspath $(CURDIR)/..)
+
+# KUBECONFIG: при прямом запуске из каталога сервиса берём из корня репо
+# (k8s/config/<ENV>), чтобы kubectl не уходил на ~/.kube/config. Корневой
+# Makefile при $(MAKE) -C ... KUBECONFIG=... переопределяет это значение.
+KUBECONFIG ?= $(INFRA_ROOT)/k8s/config/$(ENV)
+export KUBECONFIG
+
 # Имя и ключ Secret с паролем админа — как в values-*.yaml: auth.existingSecret / auth.existingSecretPasswordKey
 REDIS_AUTH_SECRET_NAME ?= redis
 REDIS_AUTH_SECRET_PASSWORD_KEY ?= redis-password
