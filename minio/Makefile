@@ -616,7 +616,7 @@ backup-meta:
 	trap 'rm -rf "$$TMP"; kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
 	echo "  Сбор IAM users + policies + buckets..."; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) --env="ROOT_USER=$$ROOT_USER" --env="ROOT_PASSWORD=$$ROOT_PASSWORD" --env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" -- sh -ec ' \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env ROOT_USER="$$ROOT_USER" ROOT_PASSWORD="$$ROOT_PASSWORD" MINIO_ENDPOINT="$$MINIO_ENDPOINT" sh -ec ' \
 		mkdir -p /tmp/meta/policies /tmp/meta/buckets; cd /tmp/meta; \
 		mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
 		mc admin info       --json minio > info.json         2>/dev/null || echo "{}" > info.json; \
@@ -702,7 +702,7 @@ restore-meta:
 			>/dev/null; \
 		trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true; rm -rf "$$TMP"' EXIT INT TERM; \
 		kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
-		kubectl exec "$$HELPER" -n $(NAMESPACE) --env="ROOT_USER=$$ROOT_USER" --env="ROOT_PASSWORD=$$ROOT_PASSWORD" --env="MINIO_ENDPOINT=$$MINIO_ENDPOINT" -- sh -ec ' \
+		kubectl exec "$$HELPER" -n $(NAMESPACE) -- env ROOT_USER="$$ROOT_USER" ROOT_PASSWORD="$$ROOT_PASSWORD" MINIO_ENDPOINT="$$MINIO_ENDPOINT" sh -ec ' \
 			mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
 		'; \
 		APPLIED=0; SKIPPED=0; \

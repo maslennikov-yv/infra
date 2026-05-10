@@ -227,9 +227,9 @@ app-drop:
 	echo "✓ БД $$DB, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 images-verify:
-	@# Проверяем именно SRC-теги ($$(CLICKHOUSE_SRC_TAG) и т.п.) — то, что реально \
-	@# pull-ится. Сейчас они равны *_TAG (Bitnami ещё не выпилил mutable-теги для \
-	@# clickhouse), но на postgres/redis/kafka уже sha256-* — устойчивее проверять \
+	@# Проверяем именно SRC-теги ($$(CLICKHOUSE_SRC_TAG) и т.п.) — то, что реально
+	@# pull-ится. Сейчас они равны *_TAG (Bitnami ещё не выпилил mutable-теги для
+	@# clickhouse), но на postgres/redis/kafka уже sha256-* — устойчивее проверять
 	@# именно то, что подаётся в `docker pull` через $(IMAGES_SRC).
 	@echo "Проверка доступности SRC-тегов в docker.io/bitnamilegacy..."
 	@command -v docker >/dev/null 2>&1 || { echo "✗ docker не установлен"; exit 1; }
@@ -421,10 +421,10 @@ backup:
 	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
 	echo "  Сбор schemas + users + grants..."; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) \
-			--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
-			--env="CLICKHOUSE_USER=admin" --env="CLICKHOUSE_PASSWORD=$$ADMIN_PASSWORD" \
-			-- bash -ec ' \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+			CLICKHOUSE_HOST="$$CH_HOST" CLICKHOUSE_PORT=9000 \
+			CLICKHOUSE_USER=admin CLICKHOUSE_PASSWORD="$$ADMIN_PASSWORD" \
+			bash -ec ' \
 		set -eo pipefail; \
 		mkdir -p /tmp/meta/schemas; cd /tmp/meta; \
 		: "clickhouse-client подхватывает CLICKHOUSE_HOST/PORT/USER/PASSWORD из env — нет shell-quoting issues с паролями"; \
@@ -494,10 +494,10 @@ restore:
 	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
 	kubectl cp "$(BACKUP_FILE)" "$(NAMESPACE)/$$HELPER:/tmp/backup.tar.gz" >/dev/null; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) \
-			--env="CLICKHOUSE_HOST=$$CH_HOST" --env="CLICKHOUSE_PORT=9000" \
-			--env="CLICKHOUSE_USER=admin" --env="CLICKHOUSE_PASSWORD=$$ADMIN_PASSWORD" \
-			-- bash -ec ' \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+			CLICKHOUSE_HOST="$$CH_HOST" CLICKHOUSE_PORT=9000 \
+			CLICKHOUSE_USER=admin CLICKHOUSE_PASSWORD="$$ADMIN_PASSWORD" \
+			bash -ec ' \
 		set -eo pipefail; \
 		mkdir -p /tmp/meta && tar -xzf /tmp/backup.tar.gz -C /tmp/meta; \
 		cd /tmp/meta; \

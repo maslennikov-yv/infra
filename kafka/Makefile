@@ -963,7 +963,7 @@ backup-meta:
 		kafka-configs.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type users          > scram-users.txt; \
 		[ -s topics.list ]          || { echo "✗ topics.list пуст"; exit 1; }; \
 		[ -s topics-describe.txt ]  || { echo "✗ topics-describe.txt пуст"; exit 1; }; \
-		# Собрать recreate-topics.sh из topics-describe.txt (skip internal topics).
+		: "Собрать recreate-topics.sh из topics-describe.txt (skip internal topics)."; \
 		: > recreate-topics.sh; \
 		echo "#!/usr/bin/env bash" >> recreate-topics.sh; \
 		echo "# Авто-генерация при kafka backup-meta. Запускать внутри kafka-image pod с /tmp/admin.properties." >> recreate-topics.sh; \
@@ -978,8 +978,8 @@ backup-meta:
 			[ -z "$$name" ] || [ -z "$$parts" ] || [ -z "$$repl" ] && continue; \
 			cmd="kafka-topics.sh --bootstrap-server \"\$$BS\" --command-config /tmp/admin.properties --create --if-not-exists --topic $$name --partitions $$parts --replication-factor $$repl"; \
 			if [ -n "$$cfgs" ]; then \
-				# Split на запятых, но НЕ внутри значений: используем perl с look-ahead на ",<key>=".
-				# Без этого "cleanup.policy=compact,delete,retention.ms=N" разорвалось бы на 3 KV.
+				: "Split на запятых, но НЕ внутри значений: используем perl с look-ahead на \",<key>=\"."; \
+				: "Без этого cleanup.policy=compact,delete,retention.ms=N разорвалось бы на 3 KV."; \
 				while IFS= read -r kv; do \
 					kv_trim=$$(echo "$$kv" | xargs); \
 					[ -n "$$kv_trim" ] && cmd="$$cmd --config $$kv_trim"; \

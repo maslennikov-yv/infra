@@ -234,8 +234,6 @@ app-verify:
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	echo "Проверка $$APP_USER (db=$$REDIS_DB_VAL)..."; \
-	# Пароль уходит через REDISCLI_AUTH (env переменная), не argv → не виден в `ps`
-	# внутри пода и устойчив к спецсимволам в пароле.
 	OUT=$$(kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$APP_PASSWORD" sh -c \
 		'redis-cli --user "$$1" --no-auth-warning -n "$$2" PING' \
 		sh "$$APP_USER" "$$REDIS_DB_VAL" 2>&1) || { echo "✗ PING не удался: $$OUT"; exit 1; }; \
