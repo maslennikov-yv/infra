@@ -356,7 +356,7 @@ export const MENU_HELP = {
       "• Показать — цель k8s-port-expose-show.\n" +
       "• Изменить — цель k8s-port-expose-patch (после серии вопросов).\n" +
       "• Применить YAML — k8s-port-expose-apply (файл k8s-port-expose/ports-ENV.yaml или PORT_EXPOSE_CONFIG).\n" +
-      "Подробности: .cursor/skills/k8s-port-expose-microk8s; пример полей — k8s-port-expose/ports.example.yaml.",
+      "Подробности: .claude/skills/k8s-port-expose-microk8s; пример полей — k8s-port-expose/ports.example.yaml.",
   },
   k8sPortLayer: {
     title: "Справка: слой проброса",

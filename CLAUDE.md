@@ -123,9 +123,9 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 - Учётки приложений изолированы по namespace + Secret + ACL/policy/vhost/prefix; пользователи приложений **не получают** постоянные S3-ключи — backend выдаёт presigned URL (для presign на внешний домен передавайте `APP_PUBLIC_ENDPOINT` в `make minio-app-create`).
 - Примеры в `examples/` согласованы с тем, как в кластере создаются Secret и политики доступа — при изменении flow обновлять и примеры.
 
-## Спец-сценарии (skills из `.cursor/skills/`)
+## Спец-сценарии (skills из `.claude/skills/`)
 
-- **microk8s ingress TCP / hostPort** (`.cursor/skills/k8s-port-expose-microk8s/SKILL.md`). Открытие/закрытие TCP-портов на ноде через `nginx-ingress-microk8s-controller` (DaemonSet `hostPort`) + ConfigMap `nginx-ingress-tcp-microk8s-conf` (`HOST_PORT: "ns/svc:port"`). Открытие нового порта: сначала `LAYER=hostport OP=add`, затем `LAYER=tcp` с `BACKEND`. Удаление — обратный порядок. `DRY_RUN=client|server` для прогона без записи. Для каталога целевого состояния — `make k8s-port-expose-apply ENV=...` (только доводит до состояния списка, **не удаляет** лишнее).
+- **microk8s ingress TCP / hostPort** (`.claude/skills/k8s-port-expose-microk8s/SKILL.md`). Открытие/закрытие TCP-портов на ноде через `nginx-ingress-microk8s-controller` (DaemonSet `hostPort`) + ConfigMap `nginx-ingress-tcp-microk8s-conf` (`HOST_PORT: "ns/svc:port"`). Открытие нового порта: сначала `LAYER=hostport OP=add`, затем `LAYER=tcp` с `BACKEND`. Удаление — обратный порядок. `DRY_RUN=client|server` для прогона без записи. Для каталога целевого состояния — `make k8s-port-expose-apply ENV=...` (только доводит до состояния списка, **не удаляет** лишнее).
 
 ## Язык
 

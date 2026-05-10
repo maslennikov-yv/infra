@@ -1372,7 +1372,7 @@ monitoring-pod-events:
 monitoring-describe-pod:
 	@$(MAKE) -C monitoring/netdata describe-pod ENV=$(ENV) POD="$(POD)"
 
-# microk8s nginx ingress: hostPort + TCP ConfigMap (skill: .cursor/skills/k8s-port-expose-microk8s)
+# microk8s nginx ingress: hostPort + TCP ConfigMap (skill: .claude/skills/k8s-port-expose-microk8s)
 k8s-port-expose-show:
 	@$(MAKE) -C k8s-port-expose show ENV=$(ENV)
 
