@@ -112,6 +112,22 @@ attach'ит к существующей IAM-учётке. Tracking-secret обн
 
 Ingress для MinIO API настраивается в `minio/values-$(ENV).yaml` (блок `ingress:`). По умолчанию `console.ingress` выключен и не должен публиковаться в интернет. Чтобы presigned URL подписывались на «внешний» домен, при `app-create` передавайте `APP_PUBLIC_ENDPOINT`.
 
+#### Реальный публичный hostname (overlay)
+
+`values-prod.yaml` в git хранит placeholder `s3.example.com`. Реальный
+hostname (под который выпущен TLS-сертификат cert-manager) задайте в
+`minio/values-prod.local.yaml` — этот файл gitignored
+(`**/values-*.local.yaml` в корневом `.gitignore`) и не попадает в публичный
+репозиторий. helmfile подключает его автоматически, если файл существует.
+
+```yaml
+# minio/values-prod.local.yaml — пример (НЕ КОММИТИТЬ)
+ingress:
+  hostname: s3.your-real-domain.com
+```
+
+Та же overlay-конвенция действует для всех сервисов: `<svc>/values-<env>.local.yaml`. Используйте её для любых env-specific данных, которые не должны быть в публичном репо (личные домены/email'ы, IP-allowlist'ы и т.п.).
+
 ### CORS
 
 Если браузер ходит по presigned URL напрямую — настройте CORS на bucket через `mc cors set` (XML). Минимальный пример (фронт `https://appA.com`):

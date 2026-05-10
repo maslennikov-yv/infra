@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Корневой `Makefile`** инклюдит `environments/$(ENV).mk` (per-env: `SSH_HOST`, `SSH_KEY`, `KUBECONFIG`, `REGISTRY` и т.п.). `KUBECONFIG ?= k8s/config/$(ENV)` — без файла команды с `kubectl` падают намеренно (никаких тихих fallback-ов на `~/.kube/config`).
 - **Per-service `Makefile`** работает напрямую через `helm` (не `helmfile`) и используется для управления образами и точечных операций (`make install`/`upgrade`/`uninstall`/`status` и т.д.).
 - **Окружения** — суффикс файлов values: `ENV=local` → `values-local.yaml`, `ENV=prod` → `values-prod.yaml`, `ENV=stage` → `values-stage.yaml`. Имя `ENV` должно совпадать с суффиксом — `ENV=staging` ищет `values-staging.yaml`, не `values-stage.yaml`.
+- **Overlay для env-specific данных, не попадающих в git.** Каждый release принимает второй values-файл `<svc>/values-<ENV>.local.yaml`, если он существует (helmfile проверяет наличие через `readDir`). Файл gitignored (`**/values-*.local.yaml`) и предназначен для оверрайдов, которые не должны попадать в публичный репозиторий: реальные публичные hostname'ы ingress, личные домены/email'ы для cert-manager, IP-allowlist'ы и т.п. См. `minio/README.md` (раздел «Реальный публичный hostname (overlay)»).
 
 ### Учётки и данные приложений (`apps/`)
 

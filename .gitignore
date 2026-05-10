@@ -34,6 +34,12 @@ terraform.tfvars
 !terraform.tfvars.example
 *.kubeconfig
 
+# Per-env values overlay для helmfile (см. helmfile.yaml.gotmpl, optional: true).
+# Реальные публичные hostname'ы, личные домены/email'ы для cert-manager,
+# IP-allowlist'ы и другие env-specific данные, которые не должны попадать
+# в публичный репозиторий. См. minio/README.md (раздел про hostname).
+**/values-*.local.yaml
+
 # Temporary files
 *.swp
 *.swo

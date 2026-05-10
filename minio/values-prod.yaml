@@ -37,7 +37,10 @@ defaultInitContainers:
 ingress:
   enabled: true
   ingressClassName: nginx
-  hostname: s3.natalya-maslennikova.ru
+  # Placeholder. Реальный публичный hostname (под который выпущен TLS-сертификат
+  # cert-manager) переопределите в minio/values-prod.local.yaml — этот файл
+  # gitignored и не попадёт в публичный репозиторий. См. minio/README.md.
+  hostname: s3.example.com
   path: /
   pathType: Prefix
   annotations:

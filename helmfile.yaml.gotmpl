@@ -60,6 +60,24 @@ environments:
   {{- fail "RABBITMQ_PASSWORD и RABBITMQ_ERLANG_COOKIE обязательны при включённом rabbitmq. Используйте `make up`/`make diff` либо экспортируйте обе переменные вручную." -}}
 {{- end -}}
 
+{{- /* Overlay-конвенция: каждый release принимает второй values-файл
+       <svc>/values-<env>.local.yaml, если он существует. Файл gitignored
+       (см. правило для values-<env>.local.yaml в корневом .gitignore) и
+       предназначен для оверрайдов, которые не должны попадать в публичный
+       репозиторий: реальные hostname'ы ingress, личные домены/email'ы для
+       cert-manager, IP-allowlist'ы и т.п.
+       Если файла нет — рендерится только основной values. */ -}}
+{{- $overlayName := printf "values-%s.local.yaml" $env -}}
+{{- $overlays := dict -}}
+{{- $serviceDirs := dict "postgres" "postgres" "minio" "minio" "redis" "redis" "rabbitmq" "rabbitmq" "clickhouse" "clickhouse" "kafka" "kafka" "netdata" "monitoring/netdata" -}}
+{{- range $svc, $dir := $serviceDirs -}}
+  {{- range readDir $dir -}}
+    {{- if eq (base .) $overlayName -}}
+      {{- $_ := set $overlays $svc true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
 releases:
 {{- if or (and $hasEnabled (hasKey $enabled "postgres")) (and (not $hasEnabled) (not (hasKey $exclude "postgres"))) }}
   - name: postgres
@@ -67,6 +85,9 @@ releases:
     chart: ./postgres/postgresql
     values:
       - ./postgres/values-{{ $env }}.yaml
+{{- if hasKey $overlays "postgres" }}
+      - ./postgres/{{ $overlayName }}
+{{- end }}
 {{- end }}
 
 {{- if or (and $hasEnabled (hasKey $enabled "minio")) (and (not $hasEnabled) (not (hasKey $exclude "minio"))) }}
@@ -75,6 +96,9 @@ releases:
     chart: ./minio/minio
     values:
       - ./minio/values-{{ $env }}.yaml
+{{- if hasKey $overlays "minio" }}
+      - ./minio/{{ $overlayName }}
+{{- end }}
 {{- end }}
 
 {{- if or (and $hasEnabled (hasKey $enabled "redis")) (and (not $hasEnabled) (not (hasKey $exclude "redis"))) }}
@@ -83,6 +107,9 @@ releases:
     chart: ./redis/redis
     values:
       - ./redis/values-{{ $env }}.yaml
+{{- if hasKey $overlays "redis" }}
+      - ./redis/{{ $overlayName }}
+{{- end }}
     set:
       # Required for Bitnami Redis chart rendering when ACL is enabled (it needs the password to build users.acl).
       # `make up`/`make diff` will populate REDIS_PASSWORD from the cluster secret.
@@ -96,6 +123,9 @@ releases:
     chart: ./rabbitmq/rabbitmq
     values:
       - ./rabbitmq/values-{{ $env }}.yaml
+{{- if hasKey $overlays "rabbitmq" }}
+      - ./rabbitmq/{{ $overlayName }}
+{{- end }}
     set:
       # Bitnami RabbitMQ chart requires passing current passwords on upgrade/diff.
       # `make up`/`make diff` will populate these env vars from the cluster secret.
@@ -111,6 +141,9 @@ releases:
     chart: ./clickhouse/clickhouse
     values:
       - ./clickhouse/values-{{ $env }}.yaml
+{{- if hasKey $overlays "clickhouse" }}
+      - ./clickhouse/{{ $overlayName }}
+{{- end }}
 {{- end }}
 
 {{- if or (and $hasEnabled (hasKey $enabled "kafka")) (and (not $hasEnabled) (not (hasKey $exclude "kafka"))) }}
@@ -119,6 +152,9 @@ releases:
     chart: ./kafka/kafka
     values:
       - ./kafka/values-{{ $env }}.yaml
+{{- if hasKey $overlays "kafka" }}
+      - ./kafka/{{ $overlayName }}
+{{- end }}
 {{- end }}
 
 {{- if or (and $hasEnabled (hasKey $enabled "netdata")) (and (not $hasEnabled) (not (hasKey $exclude "netdata"))) }}
@@ -127,5 +163,8 @@ releases:
     chart: ./monitoring/netdata/netdata
     values:
       - ./monitoring/netdata/values-{{ $env }}.yaml
+{{- if hasKey $overlays "netdata" }}
+      - ./monitoring/netdata/{{ $overlayName }}
+{{- end }}
 {{- end }}
 
