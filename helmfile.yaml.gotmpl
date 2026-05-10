@@ -27,6 +27,39 @@ environments:
 {{- end -}}
 {{- $hasEnabled := gt (len $enabled) 0 -}}
 
+{{- /* Валидация ENABLED_SERVICES / EXCLUDE_SERVICES против известного списка
+       сервисов. Без этого опечатка вида ENABLED_SERVICES=postgrs молча проходит
+       (releases оказывается пустым), и оператор думает, что сервис задеплоен.
+       Список синхронен с conditional-блоками `releases:` ниже. */ -}}
+{{- $known := list "postgres" "minio" "redis" "rabbitmq" "clickhouse" "kafka" "netdata" -}}
+{{- range (keys $enabled) -}}
+  {{- if not (has . $known) -}}
+    {{- fail (printf "ENABLED_SERVICES: неизвестный сервис %q (известны: %v)" . $known) -}}
+  {{- end -}}
+{{- end -}}
+{{- range (keys $exclude) -}}
+  {{- if not (has . $known) -}}
+    {{- fail (printf "EXCLUDE_SERVICES: неизвестный сервис %q (известны: %v)" . $known) -}}
+  {{- end -}}
+{{- end -}}
+
+{{- /* Флаги «сервис включён в этой инвокации» — используются и в проверке env-vars
+       ниже, и в условиях release-блоков. */ -}}
+{{- $redisOn := or (and $hasEnabled (hasKey $enabled "redis")) (and (not $hasEnabled) (not (hasKey $exclude "redis"))) -}}
+{{- $rabbitmqOn := or (and $hasEnabled (hasKey $enabled "rabbitmq")) (and (not $hasEnabled) (not (hasKey $exclude "rabbitmq"))) -}}
+
+{{- /* Fail-fast при пустых env-vars для сервисов, которым Bitnami chart требует
+       пароль/cookie через --set (см. release-блоки ниже). Корневой `make up`/
+       `make diff` подтягивает их из Secret и экспортирует; прямой `helmfile apply`
+       без env молча отрендерит пустые значения, и chart упадёт позже с
+       малопонятной ошибкой. */ -}}
+{{- if and $redisOn (empty (env "REDIS_PASSWORD")) -}}
+  {{- fail "REDIS_PASSWORD не задан. Используйте `make up`/`make diff` (он подтянет из Secret в кластере), либо `export REDIS_PASSWORD=...` перед `helmfile apply`." -}}
+{{- end -}}
+{{- if and $rabbitmqOn (or (empty (env "RABBITMQ_PASSWORD")) (empty (env "RABBITMQ_ERLANG_COOKIE"))) -}}
+  {{- fail "RABBITMQ_PASSWORD и RABBITMQ_ERLANG_COOKIE обязательны при включённом rabbitmq. Используйте `make up`/`make diff` либо экспортируйте обе переменные вручную." -}}
+{{- end -}}
+
 releases:
 {{- if or (and $hasEnabled (hasKey $enabled "postgres")) (and (not $hasEnabled) (not (hasKey $exclude "postgres"))) }}
   - name: postgres
