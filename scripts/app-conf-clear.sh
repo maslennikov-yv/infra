@@ -11,6 +11,12 @@ REPO="${1:?repo_root}"
 APP="${2:?APP}"
 SERVICE="${3:?service}"
 
+# Валидация APP — defence-in-depth от path-traversal.
+if ! [[ "$APP" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+	echo "✗ неверное имя APP: $APP (ожидается ^[a-z0-9][a-z0-9_-]{0,62}\$)" >&2
+	exit 1
+fi
+
 case "$SERVICE" in
 postgres | redis | kafka | minio | clickhouse | rabbitmq) ;;
 *)

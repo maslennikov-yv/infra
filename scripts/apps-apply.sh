@@ -209,7 +209,9 @@ while IFS= read -r app_disabled; do
 	ns=$(app_ns_for "$app_disabled")
 	[[ -n "$ns" ]] || continue
 
-	for svc in postgres redis kafka minio clickhouse rabbitmq; do
+	# Используем ALL[@] вместо хардкода — иначе при изменении lib/data-services.txt
+	# второй проход (drift detection для disabled apps) разойдётся с первым.
+	for svc in "${ALL[@]}"; do
 		svc_active "$svc" || continue
 		secret=$(secret_name_for "$svc" "$app_disabled")
 		# Имя корневой make-цели для drop (postgres использует pg-app-drop, остальные следуют шаблону).

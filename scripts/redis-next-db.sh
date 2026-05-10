@@ -17,13 +17,13 @@ APP="${2:?APP name}"
 	exit 1
 }
 
-RDB=$(env APP="$APP" "$YQBIN" -r '.apps[] | select(.name == strenv(APP)) | .redis_db // empty' "$MERGED")
+RDB=$(env APP="$APP" "$YQBIN" -r '.apps[] | select(.name == strenv(APP)) | .redis_db // ""' "$MERGED")
 if [ -n "$RDB" ] && [ "$RDB" != "null" ]; then
 	echo "$RDB"
 	exit 0
 fi
 
-USED=$(env APP="$APP" "$YQBIN" -r '.apps[] | select(.name != strenv(APP)) | .redis_db // empty' "$MERGED" | grep -E '^[0-9]+$' | grep -v '^0$' | sort -n -u || true)
+USED=$(env APP="$APP" "$YQBIN" -r '.apps[] | select(.name != strenv(APP)) | .redis_db // ""' "$MERGED" | grep -E '^[0-9]+$' | grep -v '^0$' | sort -n -u || true)
 for n in $(seq 1 127); do
 	if ! echo "$USED" | grep -qx "$n"; then
 		echo "$n"

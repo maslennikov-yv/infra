@@ -10,6 +10,14 @@ source "$DIR/apps-yq-probe.sh"
 REPO="${1:?repo_root}"
 APP="${2:?APP}"
 
+# Валидация APP — defence-in-depth от path-traversal через apps/conf/<APP>/secrets.yaml.
+# Все стандартные вызовы (Makefile, configure-infra.mjs) проверяют APP до нас, но
+# полагаться на это нельзя.
+if ! [[ "$APP" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
+	echo "✗ неверное имя APP: $APP (ожидается ^[a-z0-9][a-z0-9_-]{0,62}\$)" >&2
+	exit 1
+fi
+
 secrets="$REPO/apps/conf/$APP/secrets.yaml"
 mkdir -p "$(dirname "$secrets")"
 
@@ -20,7 +28,9 @@ cat >"$patch"
 if [[ ! -s "$secrets" ]]; then
 	echo '{}' >"$secrets"
 elif ! "$YQBIN" '.' "$secrets" >/dev/null 2>&1; then
-	echo '{}' >"$secrets"
+	echo "✗ $secrets существует, но не валидный YAML — отказываюсь перезаписать (потеряли бы данные)." >&2
+	echo "  Исправьте файл вручную или удалите его перед app-conf-set." >&2
+	exit 1
 fi
 
 "$YQBIN" eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' "$secrets" "$patch" >"${secrets}.new"

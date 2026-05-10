@@ -282,6 +282,18 @@ def main() -> int:
             )
             return 1
     else:
+        # Если у workload вообще нет ключа `volumes` в pod-spec, JSON Patch
+        # `op:add path=/volumes/-` упадёт 422 (RFC 6902: append к несуществующему
+        # array — ошибка). Сначала добавляем пустой массив, затем — элемент.
+        # То же решение, что для volumeMounts в append_volume_mount_patches.
+        if "volumes" not in template:
+            patches.append(
+                {
+                    "op": "add",
+                    "path": f"{json_prefix}/volumes",
+                    "value": [],
+                }
+            )
         patches.append(
             {
                 "op": "add",

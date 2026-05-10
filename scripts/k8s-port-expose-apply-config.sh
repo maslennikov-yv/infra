@@ -51,12 +51,16 @@ merge_ingress_from_yaml() {
 
 merge_ingress_from_yaml
 
+# `(.exposes // []) | length` всегда возвращает число (0 если ключ отсутствует),
+# поэтому `[[ -z "$n" ]] || [[ "$n" == "null" ]]` — недостижимая ветка.
+# Отдельно ругаемся на «ключ отсутствует» vs «массив пустой» — оператору яснее.
+has_exposes="$("${YQBIN}" 'has("exposes")' "${CFG}")"
 n="$("${YQBIN}" '(.exposes // []) | length' "${CFG}")"
-if [[ -z "${n}" ]] || [[ "${n}" == "null" ]]; then
-	echo "✗ не удалось прочитать exposes из ${CFG}" >&2
+if [[ "${has_exposes}" != "true" ]]; then
+	echo "✗ в ${CFG} нет ключа exposes — нечего применять" >&2
 	exit 1
 fi
-if ! [[ "${n}" =~ ^[0-9]+$ ]] || (( n < 1 )); then
+if (( n < 1 )); then
 	echo "✗ в ${CFG} массив exposes пустой — нечего применять" >&2
 	exit 1
 fi

@@ -47,6 +47,10 @@ terraform.tfvars
 # Node (infra-lab / @clack/prompts)
 node_modules/
 
+# Python (scripts/lib/*.py — кэш импорта)
+__pycache__/
+*.pyc
+
 # IDE
 .tools/
 .vscode/
