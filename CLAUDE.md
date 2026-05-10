@@ -26,7 +26,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Merge выполняется через `mikefarah/yq` v4 (либо `YQ=...`, либо бинарь `./.tools/yq-mikefarah`).
 - `make apps-merge-print` — собранный merge в stdout для отладки.
 - `make apps-apply ENV=...` — идемпотентно создаёт учётки (Postgres/Redis/Kafka/RabbitMQ/MinIO/ClickHouse) для каждого `enabled: true` приложения с заданными паролями/ключами в merge. По умолчанию останавливается на первой ошибке `make`; `APPS_APPLY_CONTINUE_ON_ERROR=1` пытается остальные шаги (код выхода всё равно ненулевой при сбоях).
-- После `make up` автоматически запускается `apps-apply`, если не задан `SKIP_APPS_APPLY=1`. Те же фильтры `ENABLED_SERVICES` / `EXCLUDE_SERVICES` действуют и для `apps-apply`.
+- `make apps-apply-diff ENV=...` — dry-run для `apps-apply`: печатает дельту (would create / update / drop / drift), ничего не меняет. Использовать перед `apps-apply` после правок реестра или `apps/conf/`.
+- После `make up` автоматически запускается `apps-apply`, если не задан `SKIP_APPS_APPLY=1`. Те же фильтры `ENABLED_SERVICES` / `EXCLUDE_SERVICES` действуют и для `apps-apply` / `apps-apply-diff`.
 - Учётки приложения создают Secret `<APP>-<service>` в namespace приложения (`postgres`, `redis`, `kafka`, `rabbitmq`, `minio`, `clickhouse`); изоляция — на уровне БД/role/ACL/policy/vhost/prefix.
 
 ### Образы

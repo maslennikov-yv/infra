@@ -249,6 +249,7 @@ make check-registry         # Проверить доступность registry
 Изоляция приложений: реестр в [`apps/registry.yaml`](apps/registry.yaml) (`enabled: true|false`, уникальные `name`), секреты — в `apps/conf/<APP>/*.yaml` (deep-merge с реестром, не в git; образец [`apps/conf/_example/`](apps/conf/_example/)). Зависимость — [yq mikefarah v4](https://github.com/mikefarah/yq) или `./.tools/yq-mikefarah`.
 
 - **Применение учёток в кластер:** `make apps-apply ENV=…` (с фильтрами `ENABLED_SERVICES` / `EXCLUDE_SERVICES`; запускается автоматически после `make up`, если не задан `SKIP_APPS_APPLY=1`; продолжать после ошибки одного шага — `APPS_APPLY_CONTINUE_ON_ERROR=1`).
+- **Dry-run перед apply:** `make apps-apply-diff ENV=…` — печатает дельту (would create / would update / would drop / drift), ничего не меняет в кластере. Используйте перед `apps-apply`, особенно после правок `apps/registry.yaml` или `apps/conf/`.
 - **Просмотр merge:** `make apps-merge-print`.
 - **Per-сервис цели** (создание/просмотр/удаление учётки, проверка подключения, особенности по сервису — Kafka SASL+ACL, MinIO профили бакетов, Redis ACL+REDIS_DB и т.д.) — **полная справка в [docs/pg-app.md](docs/pg-app.md)**. Per-service подробности (особенно MinIO: presigned URL, CORS, профили доступа) — в `<service>/README.md`.
 

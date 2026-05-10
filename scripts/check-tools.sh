@@ -94,7 +94,10 @@ for entry in "${TOOLS[@]}"; do
 		continue
 	fi
 	# Получим версию (читаем больше строк — у kubectl gitVersion ниже первых трёх).
-	out=$(eval "$cmd" 2>&1 | head -20 | tr '\n' ' ')
+	# Разбиваем команду на массив и выполняем без eval/`bash -c` —
+	# в TOOLS нет кавычек/пайпов/переменных, простой split по пробелам корректен.
+	read -ra args <<<"$cmd"
+	out=$("${args[@]}" 2>&1 | head -20 | tr '\n' ' ')
 	ver=$(extract_version "$out")
 	[ -z "$ver" ] && ver="?"
 	if ver_ge "$ver" "$min"; then
