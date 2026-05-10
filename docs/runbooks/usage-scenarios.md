@@ -184,14 +184,41 @@ flowchart LR
 
 ---
 
-## Сценарий 7: онбординг оператора без зубрёжки длинных команд
+## Сценарий 7: бутстрап нового окружения с нуля
 
-**Цель:** новый человек не помнит все `APP`, `ENV`, `ENABLED_SERVICES`.
+**Цель:** развернуть инфру на новой ноде (свежий microk8s) либо ввести новое `ENV` (например `staging`) рядом с уже существующими.
 
-- `npm ci && node scripts/infra-lab.mjs` — задачи × объекты в TUI; опасные операции с дополнительным подтверждением.
+1. Создать рыбу окружения: `make env-new ENV=staging` — `environments/staging.{mk,yaml}`, `k8s/config/staging`, `values-staging.yaml` в каждом сервисе ([README — окружения](../../README.md#окружения-localprodstaging)).
+2. **Удалённая нода:** заполнить `SSH_HOST` / `SSH_KEY` в `environments/staging.mk`, затем `make microk8s-setup ENV=staging` (microk8s + аддоны + Docker) и `make kubeconfig-fetch ENV=staging` (kubeconfig в `k8s/config/staging`). **Локальный microk8s:** `make kubeconfig-microk8s-local ENV=local` (без SSH).
+3. Образы: `make images-save ENV=staging`, затем `make images-push-remote ENV=staging` (scp tar + push в registry на удалённой ноде) либо `make images-push ENV=local` (локальный registry microk8s).
+4. Развёртывание: `make up ENV=staging`. Если не задан `SKIP_APPS_APPLY=1` — вместе с учётками приложений из `apps/registry.yaml` + `apps/conf/<app>/`.
+5. Sanity: `make doctor ENV=staging` (тулинг + кластер + helm vs helmfile + rollouts + per-app verify).
 
-**Итог:** те же именованные цели репозитория, меньше ручных опечаток.
+**Итог:** воспроизводимый старт нового окружения через те же именованные цели, что и регулярная эксплуатация. Полный runbook на случай восстановления существующего ENV из git + бэкапов — [disaster-recovery.md](./disaster-recovery.md).
 
 ### Через infra-lab
 
-Использовать дерево **Бутстрап / Конфигурирование / Управление** × **Сессия / Среда / Сервис / Приложение**. На первом уровне доступны **Справка** (контекст раздела и расшифровка целей) и **Выход**. Практические цепочки по кейсам — в подразделах «Через infra-lab» сценариев 1–6 выше. Helm-`values` и сами чарты по-прежнему правятся в репозитории, не через TUI.
+1. **Бутстрап → Среда** — «Создать рыбу окружения», затем «Настроить microk8s на удалённой ноде» / «Скачать kubeconfig» / «Kubeconfig локального microk8s».
+2. **Бутстрап → Сервис** — образы и первичный helm `up` по сервисам или весь стек.
+3. **Управление → Среда → Релизы Helm: весь набор → Развернуть** — финальный `up` (см. [общие замечания](#infra-lab-общие-замечания)).
+
+---
+
+## Сценарий 8: регулярные бэкапы и проверка восстановления
+
+**Цель:** свежие бэкапы стейтфул-сервисов и периодический smoke-тест, что они применимы.
+
+1. По графику (cron / systemd timer / CI) для каждого `ENV`:
+   - **Все сервисы разом:** `make backup-all ENV=…` — последовательно `postgres-backup`, `redis-backup`, `kafka-backup-meta`, `minio-backup-meta`, `clickhouse-backup`, `rabbitmq-backup-defs`. Артефакты — в `<service>/backups/` (gitignored). Подробности — `<service>/BACKUP.md`.
+   - **Платформенные Secrets и `apps/conf/`:** `make env-backup ENV=…` — архив `environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz` с Secrets data-сервисов, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/`. Без него восстановление с нуля невозможно.
+2. Хранить артефакты **вне той же ноды** (rsync/rclone в S3, отдельный сервер, при необходимости шифрование — см. [secrets-management.md](./secrets-management.md) и [onboarding-admin.md](../onboarding-admin.md)).
+3. Ротация: чистить старые архивы с учётом RPO/RTO (политику задаёт оператор).
+4. **Smoke-тест восстановления** в local или staging кластере: `make postgres-restore BACKUP_FILE=… ENV=…`, аналогично для redis / kafka / minio / clickhouse / rabbitmq (см. конкретный `<service>/BACKUP.md`). Цель — убедиться, что архив читается и схема/данные применяются. Без этого «бэкап есть» ≠ «бэкап применим».
+5. При смене паролей/ACL и при изменениях `apps/registry.yaml` или `apps/conf/<app>/` — новый `env-backup`, иначе старый архив содержит устаревшие Secrets.
+
+**Итог:** регулярные данные-бэкапы + актуальный env-backup + проверенный путь до restore. Полный runbook DR — [disaster-recovery.md](./disaster-recovery.md).
+
+### Через infra-lab
+
+- Один сервис: **Управление → Сервис → Диагностика сервисов → PostgreSQL → Бэкапы, восстановление и PVC** (для остальных движков — соответствующий пункт сервиса).
+- Все сразу и `env-backup`: из CLI (`make backup-all ENV=…`, `make env-backup ENV=…`); расписание задаётся в системе оператора, не в TUI.
