@@ -44,6 +44,10 @@
 
 - [docs/runbooks/network-policy.md](runbooks/network-policy.md) — текущее состояние NetworkPolicy в инфра-сервисах (`allowExternal: true`, фактически noop) и пошаговый план перехода на жёсткую сегментацию (label namespaces + `allowExternal: false` + `ingressNSMatchLabels`).
 
+### «Зашифровать Kafka listeners (controller / interbroker / client)»
+
+- [docs/runbooks/kafka-listener-security.md](runbooks/kafka-listener-security.md) — текущее состояние (controller/interbroker `PLAINTEXT`, client `SASL_PLAINTEXT`), threat model, целевое состояние (`SSL` для controller/interbroker, `SASL_SSL` для client), план миграции с downtime через `kafka-recreate-prep` + `restore-meta-topics`, smoke-тест и rollback.
+
 ### «Открыть TCP-порт на ноде (microk8s ingress)»
 
 - Skill: [`.claude/skills/k8s-port-expose-microk8s/SKILL.md`](../.claude/skills/k8s-port-expose-microk8s/SKILL.md) — `make k8s-port-expose-show / -patch / -apply / -diff`.

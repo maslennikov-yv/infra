@@ -20,6 +20,10 @@ listeners:
   controller:
     # IMPORTANT: Keep controller listener PLAINTEXT to avoid a bootstrap chicken-egg.
     # KRaft quorum needs to come up before SCRAM users can be written to metadata.
+    # Целевое состояние — SSL (mTLS) для controller/interbroker и SASL_SSL для
+    # client; план миграции, threat model и risk assessment — в
+    # docs/runbooks/kafka-listener-security.md. Первая линия защиты до миграции —
+    # NetworkPolicy (docs/runbooks/network-policy.md).
     protocol: PLAINTEXT
   interbroker:
     protocol: PLAINTEXT
