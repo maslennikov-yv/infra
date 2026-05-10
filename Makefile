@@ -26,6 +26,12 @@
 	infra-control-parity-check infra-lab \
 	tools-check doctor
 
+# Используется bash (не dash) — recipe полагаются на process substitution `<(...)`
+# (например `doctor`-цель), `read -p`, `set -o pipefail`. На Debian/Ubuntu
+# /bin/sh = dash, который этого не поддерживает; без явного SHELL некоторые цели
+# падают с `Syntax error: "(" unexpected`.
+SHELL := /bin/bash
+
 # Do not print "Entering/Leaving directory ..." on recursive make
 MAKEFLAGS += --no-print-directory
 
@@ -75,13 +81,10 @@ MICROK8S_CMD ?= microk8s
 # на новых машинах. Переопределите в environments/<env>.mk при необходимости (например, 1.31/stable).
 MICROK8S_CHANNEL ?= 1.30/stable
 
-# ANSI color codes
+# ANSI color codes (используются только в `make help` и шапках секций).
 CYAN := \033[0;36m
 GREEN := \033[0;32m
 YELLOW := \033[0;33m
-BLUE := \033[0;34m
-MAGENTA := \033[0;35m
-RED := \033[0;31m
 BOLD := \033[1m
 RESET := \033[0m
 
@@ -122,7 +125,7 @@ doctor:
 		echo "  ⚠ helm не найден"; FAIL=$$((FAIL+1)); \
 	fi; \
 	echo ""; echo "=== 4/5 Rollout статусы (per-service) ==="; \
-	for svc in postgres redis kafka minio clickhouse rabbitmq; do \
+	for svc in $(SERVICES); do \
 		ns="$$svc"; \
 		if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get statefulset,deployment 2>/dev/null | grep -q .; then \
 			echo "  ↷ $$ns: нет workload (сервис не задеплоен)"; continue; \
@@ -144,7 +147,7 @@ doctor:
 			ANY=1; \
 			echo "  app=$$app:"; \
 			ns=$$(NM="$$app" "$(YQ)" -r '.apps[] | select(.name == strenv(NM)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)"); \
-			for svc in postgres redis kafka minio clickhouse rabbitmq; do \
+			for svc in $(SERVICES); do \
 				secret="$$app-$$svc"; \
 				if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get secret "$$secret" >/dev/null 2>&1; then continue; fi; \
 				case "$$svc" in postgres) tgt=pg-app-verify ;; *) tgt=$${svc}-app-verify ;; esac; \
@@ -426,23 +429,10 @@ images-push-remote:
 	rm -f "$$MAP_FILE"; \
 	echo "✓ Done"
 
-kafka-verify:
-	@$(MAKE) -C kafka images-verify
-
-postgres-verify:
-	@$(MAKE) -C postgres images-verify
-
-redis-verify:
-	@$(MAKE) -C redis images-verify
-
-minio-verify:
-	@$(MAKE) -C minio images-verify
-
-clickhouse-verify:
-	@$(MAKE) -C clickhouse images-verify
-
-rabbitmq-verify:
-	@$(MAKE) -C rabbitmq images-verify
+# Static-pattern targets для всех сервисов из $(SERVICES). Static-pattern (не `%-verify:`)
+# намеренно: ограничиваем перехват только нашим списком сервисов.
+$(addsuffix -verify,$(SERVICES)):
+	@$(MAKE) -C $(@:-verify=) images-verify
 
 ## =========================
 ## Updates check (new chart/image versions)
@@ -451,35 +441,10 @@ rabbitmq-verify:
 check-updates: ## Проверить наличие новых версий чартов и образов для всех сервисов
 	@echo "$(BOLD)$(GREEN)Проверка обновлений для всех сервисов...$(RESET)"
 	@echo ""
-	@$(MAKE) postgres-check-updates
-	@echo ""
-	@$(MAKE) redis-check-updates
-	@echo ""
-	@$(MAKE) kafka-check-updates
-	@echo ""
-	@$(MAKE) minio-check-updates
-	@echo ""
-	@$(MAKE) clickhouse-check-updates
-	@echo ""
-	@$(MAKE) rabbitmq-check-updates
+	@for s in $(SERVICES); do $(MAKE) $$s-check-updates; echo ""; done
 
-postgres-check-updates:
-	@$(MAKE) -C postgres check-updates
-
-redis-check-updates:
-	@$(MAKE) -C redis check-updates
-
-kafka-check-updates:
-	@$(MAKE) -C kafka check-updates
-
-minio-check-updates:
-	@$(MAKE) -C minio check-updates
-
-clickhouse-check-updates:
-	@$(MAKE) -C clickhouse check-updates
-
-rabbitmq-check-updates:
-	@$(MAKE) -C rabbitmq check-updates
+$(addsuffix -check-updates,$(SERVICES)):
+	@$(MAKE) -C $(@:-check-updates=) check-updates
 
 apps-merge-print:
 	@"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)"
@@ -555,6 +520,12 @@ apps-conf-edit:
 		echo "✗ .sops.yaml в корне репо не найден"; exit 1; \
 	fi
 	@FILE="apps/conf/$(APP)/secrets.enc.yaml"; \
+	if [ ! -f "$$FILE" ]; then \
+		echo "✗ $$FILE не найден. Чтобы создать зашифрованный файл из plain (apps/conf/$(APP)/secrets.yaml):"; \
+		echo "    make apps-conf-encrypt APP=$(APP)"; \
+		echo "  Запуск sops на отсутствующем файле создал бы PLAIN-text — отказываюсь."; \
+		exit 1; \
+	fi; \
 	mkdir -p "apps/conf/$(APP)"; \
 	sops "$$FILE"
 
@@ -579,7 +550,11 @@ app-local-src-hostpath-mount:
 		"$(REPO_ROOT)/scripts/app-local-src-hostpath-mount.sh"
 
 pg-app-create:
-	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)" APPS_REGISTRY="$(APPS_REGISTRY)" YQ="$(YQ)"
+	@# Не передаём POSTGRES_ADMIN_PASSWORD пустым — иначе затирается ?= дефолт
+	# в postgres/Makefile и ломается логика fallback в app-create-in-pod.sh.
+	# Тот же паттерн, что для REDIS_AUTH_* в redis-app-create ниже.
+	@$(MAKE) -C postgres app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)" YQ="$(YQ)" \
+		$(if $(strip $(POSTGRES_ADMIN_PASSWORD)),POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)")
 postgres-db:
 	@$(MAKE) pg-app-psql APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 pg-app-psql:
@@ -587,7 +562,8 @@ pg-app-psql:
 pg-app-show-creds:
 	@$(MAKE) -C postgres app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 pg-app-drop:
-	@$(MAKE) -C postgres app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+	@$(MAKE) -C postgres app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)" \
+		$(if $(strip $(POSTGRES_ADMIN_PASSWORD)),POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)")
 pg-app-verify:
 	@$(MAKE) -C postgres app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
@@ -610,7 +586,7 @@ redis-app-drop:
 		$(if $(strip $(APP_USER)),APP_USER="$(APP_USER)")
 
 kafka-app-create:
-	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
 kafka-app-show-creds:
 	@$(MAKE) -C kafka app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" KUBECONFIG="$(KUBECONFIG)"
@@ -622,7 +598,7 @@ kafka-app-drop:
 	@$(MAKE) -C kafka app-drop APP="$(APP)" APP_NS="$(APP_NS)" APP_USER="$(APP_USER)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
 rabbitmq-app-create:
-	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
 rabbitmq-app-show-creds:
 	@$(MAKE) -C rabbitmq app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
@@ -638,12 +614,9 @@ rabbitmq-app-drop:
 ## Per-service diagnostics (status/logs/shell)
 ## =========================
 
-postgres-status:
-	@$(MAKE) -C postgres status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-postgres-logs:
-	@$(MAKE) -C postgres logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-postgres-shell:
-	@$(MAKE) -C postgres shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+# status/logs/shell для всех сервисов через static-pattern (см. блок ниже после
+# postgres-recreate-prep). Postgres-специфичные backup/restore/recreate-prep —
+# отдельные wrapper-ы (другая семантика).
 postgres-backup:
 	@$(MAKE) -C postgres backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 postgres-restore:
@@ -803,44 +776,20 @@ rabbitmq-recreate-prep:
 	@echo "  3. make rabbitmq-restore-defs BACKUP_FILE=rabbitmq/backups/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz ENV=$(ENV)"
 	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=rabbitmq   (актуальные пароли пользователей приложений)"
 
-redis-status:
-	@$(MAKE) -C redis status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-redis-logs:
-	@$(MAKE) -C redis logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-redis-shell:
-	@$(MAKE) -C redis shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+# status/logs/shell для всех сервисов из $(SERVICES) через static-pattern.
+# Раньше: 18 однотипных wrapper-ов postgres/redis/kafka/minio/clickhouse/rabbitmq.
+$(addsuffix -status,$(SERVICES)):
+	@$(MAKE) -C $(@:-status=) status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+$(addsuffix -logs,$(SERVICES)):
+	@$(MAKE) -C $(@:-logs=) logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+$(addsuffix -shell,$(SERVICES)):
+	@$(MAKE) -C $(@:-shell=) shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
+# kafka-специфичные обёртки (нет аналогов у других сервисов).
 kafka-bootstrap:
 	@$(MAKE) -C kafka bootstrap ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 kafka-reset:
 	@$(MAKE) -C kafka reset ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-kafka-status:
-	@$(MAKE) -C kafka status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-kafka-logs:
-	@$(MAKE) -C kafka logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-kafka-shell:
-	@$(MAKE) -C kafka shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-
-minio-status:
-	@$(MAKE) -C minio status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-minio-logs:
-	@$(MAKE) -C minio logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-minio-shell:
-	@$(MAKE) -C minio shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-
-clickhouse-status:
-	@$(MAKE) -C clickhouse status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-clickhouse-logs:
-	@$(MAKE) -C clickhouse logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-clickhouse-shell:
-	@$(MAKE) -C clickhouse shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-
-rabbitmq-status:
-	@$(MAKE) -C rabbitmq status ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-rabbitmq-logs:
-	@$(MAKE) -C rabbitmq logs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-rabbitmq-shell:
-	@$(MAKE) -C rabbitmq shell ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
 kafka-topic-create:
 	@$(MAKE) -C kafka topic-create \
@@ -905,24 +854,36 @@ minio-app-append:
 		APP_PUBLIC_ENDPOINT="$(APP_PUBLIC_ENDPOINT)"
 
 up:
-	@REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d || true); \
-	if [ -z "$$REDIS_PASSWORD" ]; then \
+	@# Раньше: `kubectl get | base64 -d || true` — `|| true` маскировало ЛЮБЫЕ
+	# ошибки kubectl (network/RBAC/wrong KUBECONFIG), не только NotFound.
+	# Если kubectl упал, REDIS_PASSWORD оставался пустым, и ниже kubectl delete +
+	# create порождал НОВЫЙ Secret, тогда как живой Redis-pod продолжал работать
+	# со СТАРЫМ паролем → WRONGPASS у клиентов до перезапуска pod.
+	# Теперь: явный if-Secret-exists, отдельный cluster-info check, без delete.
+	if kubectl get secret -n redis redis >/dev/null 2>&1; then \
+		REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
+		[ -n "$$REDIS_PASSWORD" ] || { echo "✗ Secret redis/redis есть, но ключ redis-password пуст. Восстановите вручную."; exit 1; }; \
+	else \
+		kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
 		echo "Redis password secret not found (redis/redis). Creating one for first install..."; \
 		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
 		REDIS_PASSWORD=$$(openssl rand -hex 16); \
 		kubectl create namespace redis --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl delete secret redis -n redis --ignore-not-found >/dev/null; \
 		kubectl create secret generic redis -n redis --from-literal=redis-password="$$REDIS_PASSWORD" >/dev/null; \
 	fi; \
-	RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' 2>/dev/null | base64 -d || true); \
-	RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' 2>/dev/null | base64 -d || true); \
-	if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
-		echo "RabbitMQ secret not found or incomplete (rabbitmq/rabbitmq). Creating one for first install..."; \
+	if kubectl get secret -n rabbitmq rabbitmq >/dev/null 2>&1; then \
+		RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' | base64 -d); \
+		RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' | base64 -d); \
+		if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
+			echo "✗ Secret rabbitmq/rabbitmq есть, но rabbitmq-password или rabbitmq-erlang-cookie пуст. Восстановите вручную."; exit 1; \
+		fi; \
+	else \
+		kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
+		echo "RabbitMQ secret not found (rabbitmq/rabbitmq). Creating one for first install..."; \
 		command -v openssl >/dev/null 2>&1 || { echo "✗ openssl не найден (нужен для генерации пароля)"; exit 1; }; \
 		RABBITMQ_PASSWORD=$$(openssl rand -hex 16); \
 		RABBITMQ_COOKIE=$$(openssl rand -hex 32); \
 		kubectl create namespace rabbitmq --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
-		kubectl delete secret rabbitmq -n rabbitmq --ignore-not-found >/dev/null; \
 		kubectl create secret generic rabbitmq -n rabbitmq \
 			--from-literal=rabbitmq-password="$$RABBITMQ_PASSWORD" \
 			--from-literal=rabbitmq-erlang-cookie="$$RABBITMQ_COOKIE" \
@@ -971,16 +932,24 @@ up:
 	fi
 
 diff:
-	@REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d || true); \
-	if [ -z "$$REDIS_PASSWORD" ]; then \
-		echo "✗ Redis password secret not found (redis/redis). Run: make up ENV=$(ENV)"; \
-		exit 1; \
+	@# `diff:` не создаёт Secret (это делает `up:`); только читает.
+	# Раньше `|| true` маскировал kubectl-ошибки → пустой пароль → silent fail
+	# в helmfile (или валидация helmfile.yaml.gotmpl, но без ясной диагностики).
+	if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then \
+		echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; \
 	fi; \
-	RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' 2>/dev/null | base64 -d || true); \
-	RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' 2>/dev/null | base64 -d || true); \
+	if ! kubectl get secret -n redis redis >/dev/null 2>&1; then \
+		echo "✗ Secret redis/redis не найден. Запустите: make up ENV=$(ENV)"; exit 1; \
+	fi; \
+	REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
+	[ -n "$$REDIS_PASSWORD" ] || { echo "✗ Secret redis/redis есть, но redis-password пуст"; exit 1; }; \
+	if ! kubectl get secret -n rabbitmq rabbitmq >/dev/null 2>&1; then \
+		echo "✗ Secret rabbitmq/rabbitmq не найден. Запустите: make up ENV=$(ENV) ENABLED_SERVICES=rabbitmq"; exit 1; \
+	fi; \
+	RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' | base64 -d); \
+	RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' | base64 -d); \
 	if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
-		echo "✗ RabbitMQ secret not found or incomplete (rabbitmq/rabbitmq). Run: make up ENV=$(ENV) ENABLED_SERVICES=rabbitmq"; \
-		exit 1; \
+		echo "✗ Secret rabbitmq/rabbitmq есть, но rabbitmq-password или rabbitmq-erlang-cookie пуст"; exit 1; \
 	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default diff
 
@@ -991,48 +960,16 @@ down:
 ## Service shortcuts (up/diff/down for individual services)
 ## =========================
 
-postgres-up:
-	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=postgres
-postgres-diff:
-	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=postgres
-postgres-down:
-	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=postgres
+# Per-service shortcuts через static-pattern: 18 wrapper'ов для $(SERVICES)
+# (имя префикса = ENABLED_SERVICES). Раньше — 21 однотипный wrapper.
+$(addsuffix -up,$(SERVICES)):
+	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=$(@:-up=)
+$(addsuffix -diff,$(SERVICES)):
+	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=$(@:-diff=)
+$(addsuffix -down,$(SERVICES)):
+	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=$(@:-down=)
 
-redis-up:
-	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=redis
-redis-diff:
-	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=redis
-redis-down:
-	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=redis
-
-kafka-up:
-	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=kafka
-kafka-diff:
-	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=kafka
-kafka-down:
-	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=kafka
-
-minio-up:
-	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=minio
-minio-diff:
-	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=minio
-minio-down:
-	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=minio
-
-clickhouse-up:
-	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=clickhouse
-clickhouse-diff:
-	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=clickhouse
-clickhouse-down:
-	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=clickhouse
-
-rabbitmq-up:
-	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=rabbitmq
-rabbitmq-diff:
-	@$(MAKE) diff ENV="$(ENV)" ENABLED_SERVICES=rabbitmq
-rabbitmq-down:
-	@$(MAKE) down ENV="$(ENV)" ENABLED_SERVICES=rabbitmq
-
+# monitoring-* — алиас для netdata (имя префикса ≠ имени сервиса).
 monitoring-up:
 	@$(MAKE) up ENV="$(ENV)" ENABLED_SERVICES=netdata
 monitoring-diff:
@@ -1204,7 +1141,7 @@ microk8s-setup:
 		'echo "✓ microk8s настроен и готов к работе"' \
 		> "$$SCRIPT"; \
 	$(SCP) "$$SCRIPT" "$(REMOTE):/tmp/microk8s-setup.sh" >/dev/null 2>&1; \
-	$(SSH) -t $(REMOTE) "bash /tmp/microk8s-setup.sh; rm -f /tmp/microk8s-setup.sh"; \
+	$(SSH) -t $(REMOTE) 'rc=0; bash /tmp/microk8s-setup.sh || rc=$$?; rm -f /tmp/microk8s-setup.sh; exit $$rc'; \
 	rm -f "$$SCRIPT"
 
 microk8s-uninstall:
@@ -1252,7 +1189,7 @@ microk8s-uninstall:
 		'echo "✓ microk8s uninstall completed"' \
 		> "$$SCRIPT"; \
 	$(SCP) "$$SCRIPT" "$(REMOTE):/tmp/microk8s-uninstall.sh" >/dev/null 2>&1; \
-	$(SSH) -t $(REMOTE) "REMOVE_DOCKER=$(REMOVE_DOCKER) bash /tmp/microk8s-uninstall.sh; rm -f /tmp/microk8s-uninstall.sh"; \
+	$(SSH) -t $(REMOTE) 'rc=0; REMOVE_DOCKER=$(REMOVE_DOCKER) bash /tmp/microk8s-uninstall.sh || rc=$$?; rm -f /tmp/microk8s-uninstall.sh; exit $$rc'; \
 	rm -f "$$SCRIPT"
 
 ssh:
