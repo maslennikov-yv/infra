@@ -11,9 +11,8 @@
 | Среды `ENV=local` / `ENV=prod` и новые окружения | [README — основные команды](../../README.md#основные-команды) (`make env-new`, `ENABLED_SERVICES` / `EXCLUDE_SERVICES`) |
 | Состав стека helmfile | `ENABLED_SERVICES` / `EXCLUDE_SERVICES`, [README — основные команды](../../README.md#основные-команды) |
 | Реестр и секреты приложений | [apps/registry.yaml](../../apps/registry.yaml), `apps/conf/<app>/`, [PostgreSQL для приложений](../../README.md#postgresql-для-приложений) |
-| Проброс `apps/src` в чарт приложения (helm, local) | [app-local-sources-helm.md](../runbooks/app-local-sources-helm.md), `make apps-local-src-helm-sets ENV=local APP=…` |
-| Интерактивное меню | [docs/infra-control/README.md](../infra-control/README.md), [menu-tree.md](../infra-control/menu-tree.md) |
-| Параметры вне TUI (Helm `values-*`, чарты) | [menu-tree.md](../infra-control/menu-tree.md) (в **Конфигурировании** нет объекта «Сервис») |
+| Интерактивное меню | `npm ci && node scripts/infra-lab.mjs` |
+| Параметры вне TUI (Helm `values-*`, чарты) | каталоги чартов и `values-*.yaml` (в **Конфигурировании** нет объекта «Сервис») |
 | Диагностика и Netdata | [README — мониторинг](../../README.md#мониторинг-netdata), `make status` в каталоге сервиса |
 
 ```mermaid
@@ -42,7 +41,7 @@ flowchart LR
 
 ## infra-lab: общие замечания
 
-Запуск: `npm ci && node scripts/infra-lab.mjs` ([спецификация](../infra-control/README.md)).
+Запуск: `npm ci && node scripts/infra-lab.mjs`.
 
 - **Смена активного `ENV` (local / prod и т.д.):** **Конфигурирование → Сессия** — промпт «Окружение (ENV) для сессии меню» ([session-env-picker.mjs](../../scripts/lib/session-env-picker.mjs)). Тот же выбор ENV выполняется на входе в конфигуратор приложений.
 - **Глобальный Helm `up` / `diff` / `down`:** после выбора действия задаются вопросы: распространить на весь набор или **ограничить список** (`ENABLED_SERVICES`), затем при необходимости **исключения** (`EXCLUDE_SERVICES`) — логика `helmGlobal()` в [run.mjs](../../scripts/infra-control/run.mjs). Для **`up`** дополнительно: не запускать `apps-apply` (`SKIP_APPS_APPLY=1`), при падении одного шага продолжать остальные (`APPS_APPLY_CONTINUE_ON_ERROR=1`).
@@ -58,7 +57,7 @@ flowchart LR
 
 1. Один раз: образы — [Быстрый старт](../../README.md#быстрый-старт) (`images-save` / `images-push` по `ENV`).
 2. Зафиксировать список сервисов в `environments/<ENV>.mk` через `ENABLED_SERVICES` или `EXCLUDE_SERVICES` (см. [окружения](../../README.md#окружения-localprodstaging)).
-3. Развёртывание: `make up ENV=…`; перед изменениями — `make diff ENV=…`. Альтернатива: **infra-lab → Управление → Среда → Helm** ([menu-tree](../infra-control/menu-tree.md)).
+3. Развёртывание: `make up ENV=…`; перед изменениями — `make diff ENV=…`. Альтернатива: **infra-lab → Управление → Среда → Helm**.
 
 **Итог:** одна кодовая база, разные `values-<ENV>.yaml` и разный набор релизов.
 
@@ -95,7 +94,7 @@ flowchart LR
 
 5. Применение в кластер: **Управление → Приложение → Применить учётки и конфиги приложений в кластер** (`apps-apply` + промпты подмножества сервисов).
 
-6. Деплой приложения из своего репозитория на local с hostPath каталога `apps/src/<app>`: шаблон values и Helm в [app-local-sources-helm.md](../runbooks/app-local-sources-helm.md); строки `--set`: **Конфигурирование → Приложение → Вывести helm --set для local hostPath** или `make apps-local-src-helm-sets ENV=local APP=<app>`.
+6. Деплой приложения из своего репозитория на local с hostPath каталога `apps/src/<app>`: строки `--set` для Helm — **Конфигурирование → Приложение → Вывести helm --set для local hostPath** или `make apps-local-src-helm-sets ENV=local APP=<app>`.
 
 7. Учётки по движкам: **Управление → Приложение → Логины приложений в БД и брокерах** → PostgreSQL / Redis / Kafka / MinIO / ClickHouse / RabbitMQ → нужное действие (`pg-app-create`, …).
 
@@ -181,7 +180,7 @@ flowchart LR
 
 3. Helm только для Netdata: **Управление → Сервис → Helm… → Один компонент** → **Netdata (мониторинг)** → нужное действие.
 
-4. Включить Netdata **в общем** `up`: мультивыбор в [глобальном Helm](#infra-lab-общие-замечания) с отметкой Netdata. Настройка ingress и `values` — в git, не в TUI (см. [menu-tree.md](../infra-control/menu-tree.md)).
+4. Включить Netdata **в общем** `up`: мультивыбор в [глобальном Helm](#infra-lab-общие-замечания) с отметкой Netdata. Настройка ingress и `values` — в git, не в TUI.
 
 ---
 
@@ -189,10 +188,10 @@ flowchart LR
 
 **Цель:** новый человек не помнит все `APP`, `ENV`, `ENABLED_SERVICES`.
 
-- `npm ci && node scripts/infra-lab.mjs` — задачи × объекты по [menu-tree.md](../infra-control/menu-tree.md); опасные операции с дополнительным подтверждением.
+- `npm ci && node scripts/infra-lab.mjs` — задачи × объекты в TUI; опасные операции с дополнительным подтверждением.
 
 **Итог:** те же именованные цели репозитория, меньше ручных опечаток.
 
 ### Через infra-lab
 
-Использовать дерево **Бутстрап / Конфигурирование / Управление** × **Сессия / Среда / Сервис / Приложение** ([menu-tree.md](../infra-control/menu-tree.md)). На первом уровне доступны **Справка** (контекст раздела и расшифровка целей) и **Выход**. Практические цепочки по кейсам — в подразделах «Через infra-lab» сценариев 1–6 выше. Helm-`values` и сами чарты по-прежнему правятся в репозитории, не через TUI (см. ту же [menu-tree.md](../infra-control/menu-tree.md)).
+Использовать дерево **Бутстрап / Конфигурирование / Управление** × **Сессия / Среда / Сервис / Приложение**. На первом уровне доступны **Справка** (контекст раздела и расшифровка целей) и **Выход**. Практические цепочки по кейсам — в подразделах «Через infra-lab» сценариев 1–6 выше. Helm-`values` и сами чарты по-прежнему правятся в репозитории, не через TUI.

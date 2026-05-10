@@ -3,7 +3,7 @@
 Документ описывает **полное восстановление** окружения на новом сервере при условии, что у вас есть:
 
 - Доступ к **git-репозиторию** этой инфраструктуры.
-- **`env-backup`-архив** (`environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz`) — содержит платформенные Secrets, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/`. Создан через `make env-backup` (см. Этап 3 в [config-driven-audit.md](./config-driven-audit.md)).
+- **`env-backup`-архив** (`environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz`) — содержит платформенные Secrets, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/`. Создан через `make env-backup`.
 - **Бэкапы данных** для сервисов, чьё состояние нужно восстановить (Postgres dump, Redis RDB, Kafka meta, MinIO meta, ClickHouse schemas, RabbitMQ definitions). См. `<service>/BACKUP.md`.
 - (Опционально) **tar-файлы образов** (`<service>/images/*.tar`) — если `bitnamilegacy` к моменту восстановления может оказаться недоступен.
 
@@ -265,8 +265,6 @@ make doctor ENV=<env>
 
 ## Связанные документы
 
-- [config-driven-audit.md](./config-driven-audit.md) — текущее состояние config-driven подхода и план закрытия гепов.
 - [onboarding-admin.md](../onboarding-admin.md) — как новый админ получает файлы вне git.
 - `<service>/BACKUP.md` — детали backup/restore по сервисам (postgres, redis, kafka, minio, clickhouse, rabbitmq).
 - `usage-scenarios.md` (этот же каталог) — обычные сценарии эксплуатации.
-- `app-local-sources-helm.md` (этот же каталог) — локальный код приложения через hostPath (только `ENV=local`).

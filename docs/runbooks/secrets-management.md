@@ -232,7 +232,6 @@ make apps-merge-print | yq ".apps[] | select(.name == \"<APP>\")"   # прове
 
 - [docs/onboarding-admin.md](../onboarding-admin.md) — раздел про безопасные каналы передачи (sops+age — recommended, если настроен).
 - [docs/runbooks/disaster-recovery.md](./disaster-recovery.md) — порядок восстановления; sops-decrypted secrets интегрируются автоматически.
-- [docs/runbooks/config-driven-audit.md](./config-driven-audit.md) — geп H6 «Менеджер секретов» (закрывается этим документом и Этапом 8).
 - [apps/conf/_example/.sops.yaml.example](../../apps/conf/_example/.sops.yaml.example) — образец `.sops.yaml`.
 - Sops upstream: https://github.com/getsops/sops
 - Age upstream: https://github.com/FiloSottile/age

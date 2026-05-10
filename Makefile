@@ -23,7 +23,7 @@
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
-	infra-control-parity-check infra-lab \
+	infra-lab \
 	tools-check doctor
 
 # Используется bash (не dash) — recipe полагаются на process substitution `<(...)`
@@ -90,9 +90,6 @@ RESET := \033[0m
 
 infra-lab:
 	@node "$(REPO_ROOT)/scripts/infra-lab.mjs"
-
-infra-control-parity-check:
-	@node "$(REPO_ROOT)/docs/infra-control/parity-check.mjs"
 
 # tools-check: проверить минимальные версии тулинга (kubectl, helm, helmfile, yq, jq, ...).
 tools-check:
@@ -183,7 +180,6 @@ help:
 	@echo "  make tools-check         - проверка минимальных версий тулинга (kubectl, helm, helmfile, yq, jq, ...)"
 	@echo "  make doctor $(YELLOW)ENV=$(ENV)$(RESET)              - полная диагностика: tools + кластер + helm vs helmfile + rollouts + per-app verify"
 	@echo "  make infra-lab          - интерактивное меню (npm install → node scripts/infra-lab.mjs)"
-	@echo "  make infra-control-parity-check — сверить цели Makefile с docs/infra-control/targets.json"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Images:$(RESET)"
 	@echo "  make images-save $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)SERVICE=redis$(RESET)] - Скачать/сохранить tar во всех сервисах (или только SERVICE)"

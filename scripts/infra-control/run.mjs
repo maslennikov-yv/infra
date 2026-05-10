@@ -41,7 +41,6 @@ import {
 
 /** @typedef {{ env: string }} Session */
 
-/** Согласовано с `docs/infra-control/_generate-targets-manifest.py` (menuPath). */
 const NAV = {
   TASK: {
     BOOTSTRAP: "Бутстрап",

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Инфраструктура данных в Kubernetes (microk8s): локальные Helm-чарты для PostgreSQL, Redis, Kafka, RabbitMQ, MinIO, ClickHouse и Netdata, оркестрируемые через `helmfile` и корневой `Makefile`. Образы тянутся из `docker.io/bitnamilegacy/*`, сохраняются в tar и публикуются в локальный registry microk8s (`localhost:32000`) — это даёт офлайн-сборку и независимость от закрытия старых тегов в Bitnami.
 
-Подробности эксплуатации — в `README.md` и README внутри каталогов сервисов; сценарии работы — `docs/runbooks/usage-scenarios.md`. Расширенные сценарии: `docs/runbooks/disaster-recovery.md` (восстановление на новом сервере), `docs/onboarding-admin.md` (онбординг нового админа), `docs/runbooks/secrets-management.md` (опциональный sops+age для `apps/conf/<APP>/secrets.enc.yaml` в git; краткий cheat-sheet — `docs/runbooks/sops-quickstart.md`), `docs/runbooks/config-driven-audit.md` (план закрытия гепов воспроизводимости), `<service>/BACKUP.md` (backup/restore по сервисам).
+Подробности эксплуатации — в `README.md` и README внутри каталогов сервисов; сценарии работы — `docs/runbooks/usage-scenarios.md`. Расширенные сценарии: `docs/runbooks/disaster-recovery.md` (восстановление на новом сервере), `docs/onboarding-admin.md` (онбординг нового админа), `docs/runbooks/secrets-management.md` (опциональный sops+age для `apps/conf/<APP>/secrets.enc.yaml` в git; краткий cheat-sheet — `docs/runbooks/sops-quickstart.md`), `<service>/BACKUP.md` (backup/restore по сервисам).
 
 ## Архитектура
 
@@ -97,10 +97,10 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 - `make`, Helm 3, `helmfile`, `kubectl`, Docker.
 - `mikefarah/yq` v4 — для merge `apps/registry.yaml` + `apps/conf/`. Либо `YQ=...`, либо `./.tools/yq-mikefarah`.
-- Node.js 18+ и `npm install` в корне (зависимость `@clack/prompts`) — для `make infra-lab` и `make infra-control-parity-check`.
+- Node.js 18+ и `npm install` в корне (зависимость `@clack/prompts`) — для `make infra-lab`.
 - `jq` — для `top-totals` и `k8s-port-expose-patch`.
 
-## Инженерные правила (адаптировано из `.cursor/rules/general-engineering.mdc`)
+## Инженерные правила
 
 - **KISS / YAGNI.** Один сервис — отдельный каталог; общие сценарии — корневой `Makefile` и `helmfile.yaml.gotmpl`. Не плодить абстракции «на будущее».
 - **Правки строго по задаче.** Не рефакторить соседние сервисы и не менять стиль без нужды. Если задача про `postgres/` — не трогать `kafka/`, `redis/` и т.п.
@@ -125,9 +125,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 ## Спец-сценарии (skills из `.cursor/skills/`)
 
-- **Код-ревью** (`.cursor/skills/code-review/SKILL.md`). Любые формулировки «посмотри код», «проверь PR», «всё ли ок с X», «можно ли мержить», «аудит» и т.п. — это запрос на ревью. Применять структурированный чеклист C.L.E.A.R., правила `general-engineering.mdc`, README сервисов; выбрать режим **A** (полный скан), **B** (PR/ветка) или **C** (один модуль/сервис) — приоритет у B, если указаны и ветка, и область. Итог: **чеклист + список issues с приоритетами Critical / Suggestion / Nice to have**, **на русском** (имена ресурсов и пути — как в репо).
 - **microk8s ingress TCP / hostPort** (`.cursor/skills/k8s-port-expose-microk8s/SKILL.md`). Открытие/закрытие TCP-портов на ноде через `nginx-ingress-microk8s-controller` (DaemonSet `hostPort`) + ConfigMap `nginx-ingress-tcp-microk8s-conf` (`HOST_PORT: "ns/svc:port"`). Открытие нового порта: сначала `LAYER=hostport OP=add`, затем `LAYER=tcp` с `BACKEND`. Удаление — обратный порядок. `DRY_RUN=client|server` для прогона без записи. Для каталога целевого состояния — `make k8s-port-expose-apply ENV=...` (только доводит до состояния списка, **не удаляет** лишнее).
-- **Локальный код приложения в поды через hostPath** (`.cursor/skills/k8s-app-local-src-hostpath/SKILL.md`, только `ENV=local`). Предпочтительно — Helm с условным `app.volumes` (`make apps-local-src-helm-sets ENV=local APP=<name>` выводит готовую `--set` строку, путь = абсолютный `apps/src/<APP>`). Fallback — `make app-local-src-hostpath-mount ENV=local APP=<name> APP_LOCAL_K8S_WORKLOAD=<kind>/<name>` (JSON Patch, `DirectoryOrCreate`, может дрейфнуть при следующем `helm upgrade`).
 
 ## Язык
 

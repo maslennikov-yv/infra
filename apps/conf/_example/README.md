@@ -21,9 +21,8 @@
 
 ## Дальше
 
-1. Проброс исходников в **чарт приложения** (hostPath на local): образец [helm-app-volumes-values.yaml](helm-app-volumes-values.yaml) и шаги в [docs/runbooks/app-local-sources-helm.md](../../docs/runbooks/app-local-sources-helm.md).
-2. Заполните пустые поля в `secrets.yaml` (или используйте конфигуратор infra-lab для паролей).
-3. При необходимости выставьте **`enabled: true`** в `apps/registry.yaml` (среди `enabled: true` имена **`name`** должны быть уникальны).
-4. Проверка: **`make apps-merge-print`**, затем **`make apps-apply ENV=...`**.
+1. Заполните пустые поля в `secrets.yaml` (или используйте конфигуратор infra-lab для паролей).
+2. При необходимости выставьте **`enabled: true`** в `apps/registry.yaml` (среди `enabled: true` имена **`name`** должны быть уникальны).
+3. Проверка: **`make apps-merge-print`**, затем **`make apps-apply ENV=...`**.
 
 Подробнее: корневой [README.md](../../../README.md) и [docs/pg-app.md](../../../docs/pg-app.md).

@@ -60,14 +60,12 @@ infra/
 
 ## Сценарии эксплуатации
 
-Типичные потоки: разные наборы сервисов на local и prod, подключение приложений и учёток, изменение состава стека, ротация секретов, проверка здоровья кластера, работа через TUI [`node scripts/infra-lab.mjs`](docs/infra-control/README.md) — см. **[docs/runbooks/usage-scenarios.md](docs/runbooks/usage-scenarios.md)**.
+Типичные потоки: разные наборы сервисов на local и prod, подключение приложений и учёток, изменение состава стека, ротация секретов, проверка здоровья кластера, работа через TUI `node scripts/infra-lab.mjs` — см. **[docs/runbooks/usage-scenarios.md](docs/runbooks/usage-scenarios.md)**.
 
 Расширенные сценарии:
 - **[Disaster recovery](docs/runbooks/disaster-recovery.md)** — восстановление кластера на новом сервере из git + env-backup-архива + бэкапов данных. Полный пошаговый runbook.
 - **[Онбординг администратора](docs/onboarding-admin.md)** — какие файлы вне git нужны новому админу, безопасные каналы передачи, чек-лист проверки доступа.
 - **[Шифрование секретов через sops+age](docs/runbooks/secrets-management.md)** — опциональный workflow: `apps/conf/<APP>/secrets.enc.yaml` в git, расшифровка автоматически в `apps-merge-config.sh`. Краткая шпаргалка по командам — [sops-quickstart.md](docs/runbooks/sops-quickstart.md).
-- **[Аудит config-driven подхода](docs/runbooks/config-driven-audit.md)** — текущее состояние воспроизводимости и план закрытия гепов (8 этапов).
-- **[Локальный код приложения через hostPath](docs/runbooks/app-local-sources-helm.md)** — для `ENV=local` (отладка приложения с монтированием `apps/src/<APP>` в pod).
 - **`<service>/BACKUP.md`** — backup/restore детали для каждого сервиса.
 
 ## Быстрый старт

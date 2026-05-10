@@ -179,7 +179,7 @@ make kubeconfig-fetch ENV=<env>
 2. Новый админ получает `env-backup.pass` отдельным каналом (одним разом).
 3. При онбординге: `gpg -d /storage/prod-latest.tar.gz.gpg | tar -xzf - -C /tmp/` + `make env-restore SKIP_K8S=1`.
 
-Этот workflow можно автоматизировать через **sops + age** — см. Этап 8 в [config-driven-audit.md](./runbooks/config-driven-audit.md).
+Этот workflow можно автоматизировать через **sops + age** — см. [secrets-management.md](./runbooks/secrets-management.md).
 
 ---
 
@@ -211,6 +211,5 @@ make kubeconfig-fetch ENV=<env>
 
 - [docs/runbooks/disaster-recovery.md](./runbooks/disaster-recovery.md) — восстановление кластера на новом сервере.
 - [docs/runbooks/usage-scenarios.md](./runbooks/usage-scenarios.md) — обычные сценарии эксплуатации.
-- [docs/runbooks/config-driven-audit.md](./runbooks/config-driven-audit.md) — план закрытия гепов config-driven подхода.
 - `<service>/BACKUP.md` — backup/restore детали.
 - `README.md` — общая документация репозитория.
