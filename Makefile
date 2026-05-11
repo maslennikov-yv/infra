@@ -24,7 +24,7 @@
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
-	infra-lab \
+	infra \
 	tools-check doctor
 
 # Используется bash (не dash) — recipe полагаются на process substitution `<(...)`
@@ -89,8 +89,8 @@ YELLOW := \033[0;33m
 BOLD := \033[1m
 RESET := \033[0m
 
-infra-lab:
-	@node "$(REPO_ROOT)/scripts/infra-lab.mjs"
+infra:
+	@node "$(REPO_ROOT)/scripts/infra.mjs"
 
 # tools-check: проверить минимальные версии тулинга (kubectl, helm, helmfile, yq, jq, ...).
 tools-check:
@@ -172,7 +172,7 @@ help:
 	@echo "$(BOLD)$(GREEN)infra$(RESET)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)С чего начать:$(RESET)"
-	@echo "  Точка входа — $(YELLOW)Бутстрап$(RESET) (TUI: $(YELLOW)make infra-lab$(RESET)): для удалённой среды настройте SSH ($(YELLOW)environments/<ENV>.mk$(RESET), $(YELLOW)make ssh ENV=...$(RESET)) и получите kubeconfig ($(YELLOW)make kubeconfig-fetch ...$(RESET)); для работы только с локальным кластером на этой машине достаточно $(YELLOW)make kubeconfig-microk8s-local ENV=...$(RESET) (без SSH)."
+	@echo "  Точка входа — $(YELLOW)Бутстрап$(RESET) (TUI: $(YELLOW)make infra$(RESET)): для удалённой среды настройте SSH ($(YELLOW)environments/<ENV>.mk$(RESET), $(YELLOW)make ssh ENV=...$(RESET)) и получите kubeconfig ($(YELLOW)make kubeconfig-fetch ...$(RESET)); для работы только с локальным кластером на этой машине достаточно $(YELLOW)make kubeconfig-microk8s-local ENV=...$(RESET) (без SSH)."
 	@echo ""
 	@echo "$(BOLD)$(GREEN)ENV:$(RESET)"
 	@echo "  make <target> $(YELLOW)ENV=local|prod|staging$(RESET) ..."
@@ -180,7 +180,7 @@ help:
 	@echo "  make top-totals $(YELLOW)ENV=$(ENV)$(RESET)          - CPU/память: занято и доступно (allocatable; Metrics API; jq)"
 	@echo "  make tools-check         - проверка минимальных версий тулинга (kubectl, helm, helmfile, yq, jq, ...)"
 	@echo "  make doctor $(YELLOW)ENV=$(ENV)$(RESET)              - полная диагностика: tools + кластер + helm vs helmfile + rollouts + per-app verify"
-	@echo "  make infra-lab          - интерактивное меню (npm install → node scripts/infra-lab.mjs)"
+	@echo "  make infra              - интерактивное меню (npm install → node scripts/infra.mjs)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Images:$(RESET)"
 	@echo "  make images-save $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)SERVICE=redis$(RESET)] - Скачать/сохранить tar во всех сервисах (или только SERVICE)"

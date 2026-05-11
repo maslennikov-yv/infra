@@ -17,11 +17,11 @@
 
 - Команда: **`make apps-conf-template APP=myapp`** — копирует `*.yaml` / `*.yml` отсюда в `apps/conf/myapp/` и по умолчанию добавляет в [`apps/registry.yaml`](../../registry.yaml) запись `enabled: false`, `app_ns: myapp`.
 - Только файлы, без правки registry: **`make apps-conf-template APP=myapp SKIP_REGISTRY=1`**
-- Интерактивно: **`node scripts/infra-lab.mjs`** → Конфигуратор → «Новое приложение: шаблон».
+- Интерактивно: **`make infra`** → **Сценарии → Подключить приложение** (шаг 2 — apps-conf-template, шаги 3-4 — секреты и конфигуратор).
 
 ## Дальше
 
-1. Заполните пустые поля в `secrets.yaml` (или используйте конфигуратор infra-lab для паролей).
+1. Заполните пустые поля в `secrets.yaml` (или используйте конфигуратор `node scripts/configure-infra.mjs` для генерации паролей).
 2. При необходимости выставьте **`enabled: true`** в `apps/registry.yaml` (среди `enabled: true` имена **`name`** должны быть уникальны).
 3. Проверка: **`make apps-merge-print`**, затем **`make apps-apply ENV=...`**.
 

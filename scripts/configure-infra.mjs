@@ -31,10 +31,38 @@ import {
   APPS_SRC_CLONE,
 } from "./lib/repo.mjs";
 import { DATA_SERVICES } from "./lib/data-services.mjs";
-import { HELP_VALUE, MENU_HELP } from "./infra-control/menu-hints.mjs";
 import {
   pickSessionEnvInteractive,
 } from "./lib/session-env-picker.mjs";
+
+const HELP_VALUE = Symbol("help");
+
+const MENU_HELP = {
+  configureEnvSelect: {
+    title: "Справка: конфигуратор — окружение",
+    body:
+      "ENV задаёт профиль environments/<ENV>.yaml и kubeconfig для этой сессии.\n" +
+      "Переопределения SSH/registry — environments/<ENV>.mk (локально, не в git).",
+  },
+  configureMode: {
+    title: "Справка: режим конфигуратора",
+    body:
+      "• Секреты — запись в apps/conf/<APP>/secrets.yaml для merge и последующего apps-apply.\n" +
+      "• Новое приложение — шаблон каталога apps/conf и опция добавления в apps/registry.yaml.\n" +
+      "• По запросу — правка полей приложения прямо в apps/registry.yaml: enabled, app_ns, redis_db.",
+  },
+  configureAppPick: {
+    title: "Справка: выбор приложения",
+    body:
+      "Имя из поля name в apps/registry.yaml. Для enabled:false merge можно не подхватывать до включения в registry.",
+  },
+  configureBackends: {
+    title: "Справка: выбор бэкендов секретов",
+    body:
+      "Отметьте data-сервисы, для которых записать пароли в apps/conf/<APP>/secrets.yaml (для MinIO — ещё access_key и secret_key).\n" +
+      "Записанные значения участвуют в merge и попадают в кластер при apps-apply.",
+  },
+};
 
 const hex = (n) => randomBytes(n).toString("hex");
 

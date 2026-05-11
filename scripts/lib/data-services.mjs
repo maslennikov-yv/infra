@@ -14,5 +14,5 @@ export function loadDataServices() {
     .filter((l) => l.length > 0 && !l.startsWith("#"));
 }
 
-/** Кэш для импорта из infra-lab / configure-infra */
+/** Кэш для импорта из infra TUI / configure-infra */
 export const DATA_SERVICES = loadDataServices();

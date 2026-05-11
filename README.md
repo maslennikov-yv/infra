@@ -34,7 +34,7 @@ infra/
 │       # На каждый сервис: Helm chart, images/*.tar, values-<ENV>.yaml, Makefile.
 ├── monitoring/netdata/   # Netdata (опционально через ENABLED_SERVICES).
 ├── apps/                 # registry.yaml; секреты в apps/conf/<app>/ (не в git).
-├── scripts/              # Merge/apply конфигов приложений + утилиты + TUI infra-lab.
+├── scripts/              # Merge/apply конфигов приложений + утилиты + TUI infra.
 ├── docs/                 # runbooks (DR, secrets, usage-scenarios), pg-app.md, onboarding-admin.md.
 ├── helmfile.yaml.gotmpl  # Развёртывание всего стека из корня.
 ├── environments/         # <ENV>.mk (локальные SSH/REGISTRY) + <ENV>.yaml (реестр сервисов).
@@ -45,7 +45,7 @@ infra/
 
 ## Сценарии эксплуатации
 
-Типичные потоки: разные наборы сервисов на local и prod, подключение приложений и учёток, изменение состава стека, ротация секретов, проверка здоровья кластера, работа через TUI `node scripts/infra-lab.mjs` — см. **[docs/runbooks/usage-scenarios.md](docs/runbooks/usage-scenarios.md)**.
+Типичные потоки: разные наборы сервисов на local и prod, подключение приложений и учёток, изменение состава стека, ротация секретов, проверка здоровья кластера, работа через TUI `node scripts/infra.mjs` — см. **[docs/runbooks/usage-scenarios.md](docs/runbooks/usage-scenarios.md)**.
 
 Расширенные сценарии:
 - **[Учётки приложений](docs/pg-app.md)** — изоляция по `APP`: per-сервис цели `*-app-create` / `*-app-show-creds` / `*-app-drop` для PostgreSQL, Redis, Kafka, MinIO, ClickHouse, RabbitMQ; чеклисты по каждому движку.
@@ -101,7 +101,17 @@ make doctor ENV=local                      # тулинг + кластер + hel
 make status ENV=local                      # ноды, поды, helm list -A
 ```
 
-Альтернативно — интерактивное меню `make infra-lab` (тот же набор операций через TUI).
+Альтернативно — интерактивное меню. Варианты запуска (любой):
+
+```bash
+make infra                # без подготовки
+npm run infra             # после npm install
+./scripts/infra.mjs       # shebang, один раз chmod +x уже сделан
+npx infra                 # после npm link (см. ниже)
+infra                     # глобально после npm link
+```
+
+Для глобального `infra` достаточно один раз выполнить в корне репо: `npm install && npm link`. Symlink ведёт на файл в репо, поэтому `git pull` подхватывается без переустановки. Отвязать: `npm unlink -g infra-control`.
 
 ## Основные команды
 
@@ -264,7 +274,7 @@ make check-registry         # Проверить доступность registry
 - kubectl
 - Файл kubeconfig по пути **`k8s/config/<ENV>`** (переменная **`KUBECONFIG`** в корневом `Makefile`; без файла команды с `kubectl` завершатся ошибкой). Плейсхолдер: **`make env-new ENV=<env>`**, загрузка с ноды: **`make kubeconfig-fetch ...`**
 - Для учёток приложений (**`apps/registry.yaml`**, merge, `make apps-apply`) — [**yq** mikefarah v4](https://github.com/mikefarah/yq) или **`./.tools/yq-mikefarah`**
-- Для **infra-lab** (`node scripts/infra-lab.mjs`) — Node.js **18+** и **`npm install`** в корне репозитория (зависимость `@clack/prompts`)
+- Для **infra** TUI (`make infra` / `npm run infra` / `infra` после `npm link`) — Node.js **18+** и **`npm install`** в корне репозитория (зависимость `@clack/prompts`)
 
 ## Рекомендации по железу
 

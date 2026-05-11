@@ -50,7 +50,7 @@ terraform.tfvars
 *.bak
 *.cache
 
-# Node (infra-lab / @clack/prompts)
+# Node (infra TUI / @clack/prompts)
 node_modules/
 
 # Python (scripts/lib/*.py — кэш импорта)

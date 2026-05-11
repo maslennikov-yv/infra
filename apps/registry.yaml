@@ -3,7 +3,7 @@
 # Чувствительные поля (пароли, ключи) задавайте в `apps/conf/<name>/` — см. `apps/conf/_example/`.
 #
 # Опционально: `repo_url` — Git URL приложения; `repo_branch` — ветка для `git clone -b`.
-# Локальный клон (не в git infra): `make apps-src-clone APP=<name>` или конфигуратор (infra-lab).
+# Локальный клон (не в git infra): `make apps-src-clone APP=<name>` или wizard `make infra` → «Подключить приложение».
 apps:
   - name: myapp
     enabled: false

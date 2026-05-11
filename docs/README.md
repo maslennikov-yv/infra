@@ -23,7 +23,7 @@
 
 1. `make doctor ENV=…` — комплексная диагностика (тулинг + кластер + helm vs helmfile + rollouts + per-app verify).
 2. Per-сервис: `<service>/TROUBLESHOOTING.md` (есть для PostgreSQL — типовые проблемы Pending/ImagePullBackOff/CrashLoopBackOff/PVC).
-3. Логи и статус — `make <svc>-logs`, `make <svc>-status` (или TUI: `make infra-lab` → Управление → Сервис → Диагностика).
+3. Логи и статус — `make <svc>-logs`, `make <svc>-status` (или TUI: `make infra` → «Состояние и логи»).
 
 ### «Сервер потерян — поднимаем заново»
 

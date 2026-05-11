@@ -89,7 +89,7 @@ make k8s-port-expose-patch ENV=... LAYER=tcp HOST_PORT=1883 BACKEND=ns/svc:1883
 make k8s-port-expose-apply ENV=...               # из k8s-port-expose/ports-<env>.yaml; не удаляет лишнее, только доводит до состояния списка
 
 # TUI и помощники
-make infra-lab                                    # node scripts/infra-lab.mjs (нужен npm install в корне)
+make infra                                        # action-first TUI (альтернативы: npm run infra, ./scripts/infra.mjs, infra после npm link)
 make help                                         # подробная справка по корневому Makefile
 ```
 
@@ -99,7 +99,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 - `make`, Helm 3, `helmfile`, `kubectl`, Docker.
 - `mikefarah/yq` v4 — для merge `apps/registry.yaml` + `apps/conf/`. Либо `YQ=...`, либо `./.tools/yq-mikefarah`.
-- Node.js 18+ и `npm install` в корне (зависимость `@clack/prompts`) — для `make infra-lab`.
+- Node.js 18+ и `npm install` в корне (зависимость `@clack/prompts`) — для `make infra`.
 - `jq` — для `top-totals` и `k8s-port-expose-patch`.
 
 ## Инженерные правила

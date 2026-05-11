@@ -6,6 +6,13 @@
   "engines": {
     "node": ">=18"
   },
+  "bin": {
+    "infra": "./scripts/infra.mjs"
+  },
+  "scripts": {
+    "infra": "node scripts/infra.mjs",
+    "test": "node --test --test-reporter=spec --experimental-test-module-mocks scripts/infra-control/__tests__/"
+  },
   "dependencies": {
     "@clack/core": "^0.3.5",
     "@clack/prompts": "^0.7.0"
