@@ -263,7 +263,7 @@ make check-registry         # Проверить доступность registry
 - **Просмотр merge:** `make apps-merge-print`.
 - **Per-сервис цели** (создание/просмотр/удаление учётки, проверка подключения, особенности по сервису — Kafka SASL+ACL, MinIO профили бакетов, Redis ACL+REDIS_DB и т.д.) — **полная справка в [docs/pg-app.md](docs/pg-app.md)**. Per-service подробности (особенно MinIO: presigned URL, CORS, профили доступа) — в `<service>/README.md`.
 
-Бэкап и восстановление stateful-сервисов — `<service>/BACKUP.md` (или `make backup-all ENV=…` разом).
+Бэкап и восстановление stateful-сервисов — `<service>/BACKUP.md` (или `make backup-all ENV=…` разом). Регулярная **проверка** восстановимости бэкапов (разворачивает свежий бэкап источника на DST_ENV и сравнивает structural fingerprint) — `make backup-verify SRC_ENV=… DST_ENV=… APP=… CLEAN=1`, см. [docs/runbooks/backup-verify.md](docs/runbooks/backup-verify.md).
 
 ## Требования
 

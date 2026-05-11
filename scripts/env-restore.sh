@@ -20,6 +20,12 @@
 #   CONFIRM=1   — пропустить интерактивное подтверждение.
 #   SKIP_APPS_CONF=1   — НЕ восстанавливать apps/conf/ (только k8s ресурсы).
 #   SKIP_K8S=1         — НЕ применять Secrets/ConfigMaps (только apps/conf/).
+#   OVERWRITE_APPS_CONF=1 — перетереть существующие apps/conf/<APP>/ из архива
+#                          (по умолчанию НЕ перетираются, чтобы не убить локальные creds).
+#                          Используется backup-verify: на verify-стенде нужны именно prod creds.
+#   ALLOW_SRC_EQUALS_DST=1 — отключить sanity-check «архив этого env применяется в тот же
+#                          кластер, где env-backup был снят» (по умолчанию запрещено,
+#                          чтобы не зальить prod снимком из prod при опечатке KUBECONFIG).
 #
 # Stdout: progress + summary. Exit 0 при успехе.
 
@@ -32,6 +38,8 @@ YQ_BIN="${YQ:-yq}"
 CONFIRM="${CONFIRM:-0}"
 SKIP_APPS_CONF="${SKIP_APPS_CONF:-0}"
 SKIP_K8S="${SKIP_K8S:-0}"
+OVERWRITE_APPS_CONF="${OVERWRITE_APPS_CONF:-0}"
+ALLOW_SRC_EQUALS_DST="${ALLOW_SRC_EQUALS_DST:-0}"
 
 err() { echo "$@" >&2; }
 
@@ -62,6 +70,42 @@ case "${#roots[@]}" in
 esac
 ENV_NAME=$(basename "$ARCHIVE_ROOT")
 echo "Окружение из архива: $ENV_NAME"
+
+# Sanity-check «архив этого env применяется в тот же кластер, где env-backup был снят».
+# Сравниваем server URL kubeconfig из архива (k8s/config/$ENV_NAME) с активным KUBECONFIG.
+# Если оба указывают на одинаковый kube-API → восстановление prod-снимка в prod-кластер,
+# что почти всегда — ошибка оператора (опечатка KUBECONFIG или ENV).
+#
+# Если k8s/config/$ENV_NAME отсутствует на admin (типично для backup-verify: prod kubeconfig
+# не лежит на admin), мы НЕ можем проверить URL. По умолчанию это FAIL — иначе sanity-check
+# тихо обходится и любой prod-snapshot можно случайно залить куда угодно. Обход:
+#   - ALLOW_SRC_KUBECONFIG_MISSING=1 — пропустить sanity-check без kubeconfig источника (для verify).
+#   - ALLOW_SRC_EQUALS_DST=1 — намеренный DR-restore того же env (cluster тот же).
+if [ "$SKIP_K8S" != "1" ] && [ "$ALLOW_SRC_EQUALS_DST" != "1" ]; then
+  SRC_KUBECONFIG="$REPO_ROOT/k8s/config/$ENV_NAME"
+  if [ -f "$SRC_KUBECONFIG" ] && [ -f "$KUBECONFIG_FILE" ]; then
+    SRC_URL=$(kubectl --kubeconfig "$SRC_KUBECONFIG" config view -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
+    DST_URL=$(kubectl --kubeconfig "$KUBECONFIG_FILE" config view -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
+    if [ -n "$SRC_URL" ] && [ -n "$DST_URL" ] && [ "$SRC_URL" = "$DST_URL" ]; then
+      err ""
+      err "✗ Sanity-check fail: kubeconfig источника (k8s/config/$ENV_NAME) и целевой KUBECONFIG"
+      err "  указывают на ОДИН кластер ($DST_URL)."
+      err "  Это значит, что снимок env=$ENV_NAME применяется в тот же кластер, где он снят —"
+      err "  обычно опечатка KUBECONFIG/ENV. Если это намеренный DR-restore в свой же кластер,"
+      err "  передайте ALLOW_SRC_EQUALS_DST=1."
+      exit 1
+    fi
+  elif [ ! -f "$SRC_KUBECONFIG" ] && [ "${ALLOW_SRC_KUBECONFIG_MISSING:-0}" != "1" ]; then
+    err ""
+    err "✗ Sanity-check невозможен: k8s/config/$ENV_NAME отсутствует на admin-машине,"
+    err "  поэтому server URL источника не сверить с целевым KUBECONFIG=$KUBECONFIG_FILE."
+    err ""
+    err "  Если уверены, что DST ≠ SRC (типичный случай для backup-verify: prod-снимок"
+    err "  в local-кластер) — передайте ALLOW_SRC_KUBECONFIG_MISSING=1."
+    err "  Альтернатива: положите prod kubeconfig в k8s/config/$ENV_NAME (read-only)."
+    exit 1
+  fi
+fi
 
 # Pre-flight summary
 echo ""
@@ -102,7 +146,11 @@ if [ ${#APPS_CONF_NEW[@]} -gt 0 ]; then
   printf "    %s\n" "${APPS_CONF_NEW[@]}"
 fi
 if [ ${#APPS_CONF_EXIST[@]} -gt 0 ]; then
-  echo "  apps/conf/ — уже есть локально, НЕ перезаписываются:"
+  if [ "$OVERWRITE_APPS_CONF" = "1" ]; then
+    echo "  apps/conf/ — уже есть локально, БУДУТ ПЕРЕЗАПИСАНЫ (OVERWRITE_APPS_CONF=1):"
+  else
+    echo "  apps/conf/ — уже есть локально, НЕ перезаписываются (OVERWRITE_APPS_CONF=1 чтобы перезаписать):"
+  fi
   printf "    %s\n" "${APPS_CONF_EXIST[@]}"
 fi
 
@@ -178,18 +226,39 @@ if [ "$SKIP_K8S" != "1" ]; then
   done
 fi
 
-# Restore apps/conf/<APP>/ (только новые)
+# Restore apps/conf/<APP>/ (новые всегда; существующие — только при OVERWRITE_APPS_CONF=1).
+# Существующие apps/conf по умолчанию не перетираются, чтобы локальные креды и edited-secrets
+# не убились молча; OVERWRITE_APPS_CONF=1 используется backup-verify, где целевой стенд
+# должен работать на тех же creds, что и источник.
 RESTORED_APPS_CONF=0
-if [ "$SKIP_APPS_CONF" != "1" ] && [ ${#APPS_CONF_NEW[@]} -gt 0 ]; then
-  echo ""
-  echo "=== apps/conf/ ==="
-  install -d -m 700 "$REPO_ROOT/apps/conf"
-  for app in "${APPS_CONF_NEW[@]}"; do
-    cp -r "$ARCHIVE_ROOT/apps/conf/$app" "$REPO_ROOT/apps/conf/$app"
-    chmod -R go-rwx "$REPO_ROOT/apps/conf/$app"
-    echo "  ✓ restored apps/conf/$app"
-    RESTORED_APPS_CONF=$((RESTORED_APPS_CONF+1))
-  done
+OVERWRITTEN_APPS_CONF=0
+if [ "$SKIP_APPS_CONF" != "1" ]; then
+  TO_PROCESS=()
+  for app in "${APPS_CONF_NEW[@]}"; do TO_PROCESS+=("new:$app"); done
+  if [ "$OVERWRITE_APPS_CONF" = "1" ]; then
+    for app in "${APPS_CONF_EXIST[@]}"; do TO_PROCESS+=("overwrite:$app"); done
+  fi
+  if [ ${#TO_PROCESS[@]} -gt 0 ]; then
+    echo ""
+    echo "=== apps/conf/ ==="
+    install -d -m 700 "$REPO_ROOT/apps/conf"
+    for entry in "${TO_PROCESS[@]}"; do
+      mode="${entry%%:*}"
+      app="${entry#*:}"
+      if [ "$mode" = "overwrite" ]; then
+        rm -rf "$REPO_ROOT/apps/conf/$app"
+      fi
+      cp -r "$ARCHIVE_ROOT/apps/conf/$app" "$REPO_ROOT/apps/conf/$app"
+      chmod -R go-rwx "$REPO_ROOT/apps/conf/$app"
+      if [ "$mode" = "overwrite" ]; then
+        echo "  ✓ overwritten apps/conf/$app"
+        OVERWRITTEN_APPS_CONF=$((OVERWRITTEN_APPS_CONF+1))
+      else
+        echo "  ✓ restored apps/conf/$app"
+        RESTORED_APPS_CONF=$((RESTORED_APPS_CONF+1))
+      fi
+    done
+  fi
 fi
 
 # Restore apps/registry.yaml (только если отсутствует)
@@ -202,7 +271,11 @@ echo ""
 echo "Summary:"
 echo "  namespaces processed: $APPLIED_NS"
 echo "  k8s manifests applied: $APPLIED_FILES (failed: $FAILED_FILES)"
-echo "  apps/conf/ restored:  $RESTORED_APPS_CONF (existing kept: ${#APPS_CONF_EXIST[@]})"
+if [ "$OVERWRITE_APPS_CONF" = "1" ]; then
+  echo "  apps/conf/ restored:  $RESTORED_APPS_CONF new + $OVERWRITTEN_APPS_CONF overwritten"
+else
+  echo "  apps/conf/ restored:  $RESTORED_APPS_CONF (existing kept: ${#APPS_CONF_EXIST[@]}; OVERWRITE_APPS_CONF=1 чтобы перезаписать)"
+fi
 if [ "$REGISTRY_ACTION" = "diff" ]; then
   echo "  ⚠ apps/registry.yaml локальный отличается от бэкапа. Сравните вручную:"
   echo "      diff $REPO_ROOT/apps/registry.yaml $ARCHIVE_ROOT/apps/registry.yaml"

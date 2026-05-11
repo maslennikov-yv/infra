@@ -599,7 +599,7 @@ BACKUP_DIR ?= backups
 backup-meta:
 	@mkdir -p $(BACKUP_DIR)
 	@set -eo pipefail; \
-	TS=$$(date +%Y%m%d-%H%M%S); \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	OUT="$(BACKUP_DIR)/minio-meta-$$TS.tar.gz"; \
 	echo "Создание meta-бэкапа MinIO в $$OUT..."; \
 	ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
@@ -687,7 +687,7 @@ restore-meta:
 		read -p "Продолжить? (y/N): " confirm; \
 		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
 	fi
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	TMP=$$(mktemp -d); trap 'rm -rf "$$TMP"' EXIT INT TERM; \
 	tar -xzf "$(BACKUP_FILE)" -C "$$TMP"; \
 	: "1) Восстанавливаем policies"; \

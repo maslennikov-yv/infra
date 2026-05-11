@@ -407,7 +407,7 @@ BACKUP_DIR ?= backups
 backup:
 	@mkdir -p $(BACKUP_DIR)
 	@set -eo pipefail; \
-	TS=$$(date +%Y%m%d-%H%M%S); \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	OUT="$(BACKUP_DIR)/clickhouse-backup-$$TS.tar.gz"; \
 	echo "Создание schema-бэкапа ClickHouse в $$OUT..."; \
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
@@ -483,7 +483,7 @@ restore:
 		read -p "Продолжить? (y/N): " confirm; \
 		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
 	fi
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password"; exit 1; fi; \
 	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \

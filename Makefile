@@ -16,13 +16,14 @@
 	kafka-bootstrap kafka-reset kafka-status kafka-logs kafka-shell kafka-up kafka-diff kafka-down \
 	minio-status minio-logs minio-shell minio-up minio-diff minio-down \
 	minio-app-append \
-	env-new env-backup env-restore kubeconfig-fetch kubeconfig-microk8s-local kubeconfig-info microk8s-setup microk8s-uninstall ssh \
+	env-new env-backup env-restore env-label-backfill kubeconfig-fetch kubeconfig-microk8s-local kubeconfig-info microk8s-setup microk8s-uninstall ssh \
 	k8s-port-expose-show k8s-port-expose-patch k8s-port-expose-apply k8s-port-expose-diff \
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
 	monitoring-secrets-init monitoring-show-creds monitoring-regen-password \
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all \
+	backup-verify-preflight backup-fingerprint backup-fingerprint-diff backup-verify-fetch backup-verify-localize backup-verify \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
 	infra \
 	tools-check doctor
@@ -100,6 +101,8 @@ tools-check:
 # Завершается с exit 0 если все шаги OK; иначе exit 1 (но проходит все проверки до конца).
 doctor:
 	@FAIL=0; \
+	DOCTOR_LOG_DIR="/tmp/doctor-$$(date +%Y%m%d-%H%M%S)-$$$$"; \
+	mkdir -p "$$DOCTOR_LOG_DIR"; \
 	echo "=== 1/5 Тулинг ==="; \
 	if ! YQ="$(YQ)" "$(REPO_ROOT)/scripts/check-tools.sh"; then FAIL=$$((FAIL+1)); fi; \
 	echo ""; echo "=== 2/5 Кластер (kubectl cluster-info) ==="; \
@@ -149,10 +152,11 @@ doctor:
 				secret="$$app-$$svc"; \
 				if ! kubectl --kubeconfig "$(KUBECONFIG)" -n "$$ns" get secret "$$secret" >/dev/null 2>&1; then continue; fi; \
 				case "$$svc" in postgres) tgt=pg-app-verify ;; *) tgt=$${svc}-app-verify ;; esac; \
-				if $(MAKE) "$$tgt" APP="$$app" APP_NS="$$ns" ENV="$(ENV)" >/tmp/doctor-verify.log 2>&1; then \
+				LOG_FILE="$$DOCTOR_LOG_DIR/$$app-$$svc.log"; \
+				if $(MAKE) "$$tgt" APP="$$app" APP_NS="$$ns" ENV="$(ENV)" >"$$LOG_FILE" 2>&1; then \
 					echo "    ✓ $$svc"; \
 				else \
-					echo "    ✗ $$svc (см. /tmp/doctor-verify.log)"; \
+					echo "    ✗ $$svc (см. $$LOG_FILE)"; \
 					FAIL=$$((FAIL+1)); \
 				fi; \
 			done; \
@@ -162,6 +166,7 @@ doctor:
 		echo "  ⚠ apps/registry.yaml или yq недоступны — пропускаем"; \
 	fi; \
 	echo ""; \
+	echo "Логи verify-шагов: $$DOCTOR_LOG_DIR/"; \
 	if [ "$$FAIL" -gt 0 ]; then \
 		echo "✗ doctor: проблем найдено $$FAIL"; exit 1; \
 	else \
@@ -281,6 +286,14 @@ help:
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Backup / Restore (definitions; данные таблиц/топиков/бакетов — см. <service>/BACKUP.md):$(RESET)"
 	@echo "  make backup-all $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=...$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=...$(RESET)] [$(YELLOW)BACKUP_ALL_CONTINUE_ON_ERROR=0$(RESET)]"
+	@echo ""
+	@echo "$(BOLD)$(GREEN)Backup verification (отдельные шаги; orchestrator — make backup-verify в PR3):$(RESET)"
+	@echo "  make backup-verify-preflight $(YELLOW)SRC_ENV=prod DST_ENV=local APP=myapp$(RESET) [$(YELLOW)BACKUP_FILES=\"f1 f2 ...\"$(RESET)] [$(YELLOW)FORCE=1$(RESET)] - 13 hard-checks (см. scripts/backup-verify-preflight.sh)"
+	@echo "  make backup-fingerprint $(YELLOW)APP=myapp ENV=$(ENV) ROLE=source$(RESET) [$(YELLOW)VERIFY_REPORT_DIR=...$(RESET)] - structural snapshot под admin-кредами (Postgres tables/schema hash + counts; Redis ACL; Kafka topics+ACL; MinIO users/policies/bucket-config; CH databases+tables+schema; RMQ filtered definitions). Шифрование age если BACKUP_AGE_RECIPIENT задан."
+	@echo "  make backup-fingerprint-diff $(YELLOW)SRC_FINGERPRINT=path DST_FINGERPRINT=path$(RESET) - structural strict + informational soft; pass/fail verdict в diff.md/diff.json"
+	@echo "  make backup-verify-fetch $(YELLOW)SRC_ENV=prod APP=myapp$(RESET) [$(YELLOW)TARGET_DIR=...$(RESET)] [$(YELLOW)REMOTE_REPO_ROOT=/opt/infra$(RESET)] - scp свежих *-backup* и env-backup из SRC на admin-машину; integrity (gunzip/tar/age dry-run)"
+	@echo "  make backup-verify-localize $(YELLOW)DST_ENV=local APP=myapp$(RESET) [$(YELLOW)LOCALIZE_DRY_RUN=1$(RESET)] - patch MINIO_PUBLIC_ENDPOINT в restored Secret + apps/conf на in-cluster URL DST (защита от записи в prod через presigned URL)"
+	@echo "  make backup-verify $(YELLOW)SRC_ENV=prod DST_ENV=local APP=myapp$(RESET) [$(YELLOW)CLEAN=1$(RESET)] [$(YELLOW)CLEAN_AFTER=1$(RESET)] [$(YELLOW)STOP_ON_FAIL=0$(RESET)] [$(YELLOW)FORCE=1$(RESET)] [$(YELLOW)SKIP_STEPS=...$(RESET)] [$(YELLOW)SRC_FINGERPRINT=path$(RESET)] [$(YELLOW)BACKUP_AGE_KEY_FILE=...$(RESET)] [$(YELLOW)PROD_ENVS=\"prod production\"$(RESET)] [$(YELLOW)MIN_DISK_FREE_MB=5120$(RESET)] [$(YELLOW)TIMEOUT_PVC_DELETE=180$(RESET)] - orchestrator всего пайплайна (preflight → fetch → env-restore → localize → up → *-restore → apps-apply → doctor → fingerprint-dst → diff → summary). При FAIL — всегда CLEAN=1 при повторе. Все артефакты в $(YELLOW)verify-reports/<TS>-<APP>/$(RESET)"
 	@echo "  make redis-backup / redis-restore-acl $(YELLOW)BACKUP_FILE=...$(RESET)         (RDB снимок + ACL)"
 	@echo "  make kafka-backup-meta / kafka-restore-meta-topics $(YELLOW)BACKUP_FILE=...$(RESET)  (topics + ACL + SCRAM users list)"
 	@echo "  make minio-backup-meta / minio-restore-meta $(YELLOW)BACKUP_FILE=...$(RESET)    (users + policies + buckets + tracking secrets)"
@@ -308,7 +321,8 @@ help:
 	@echo "$(BOLD)$(GREEN)Environment skeleton:$(RESET)"
 	@echo "  make env-new $(YELLOW)ENV=staging$(RESET)        - создать рыбу окружения (mk/yaml/kubeconfig/values)"
 	@echo "  make env-backup $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)CONFIRM=1$(RESET)]  - бэкап Secrets/ConfigMaps + apps/registry.yaml + apps/conf/ (платформенные ns + ns приложений из apps/registry.yaml)"
-	@echo "  make env-restore $(YELLOW)BACKUP_FILE=... ENV=$(ENV)$(RESET) [$(YELLOW)CONFIRM=1$(RESET)] [$(YELLOW)SKIP_APPS_CONF=1$(RESET)] [$(YELLOW)SKIP_K8S=1$(RESET)] - применить tar.gz обратно (Secrets/CM + apps/conf если каталога нет)"
+	@echo "  make env-restore $(YELLOW)BACKUP_FILE=... ENV=$(ENV)$(RESET) [$(YELLOW)CONFIRM=1$(RESET)] [$(YELLOW)SKIP_APPS_CONF=1$(RESET)] [$(YELLOW)SKIP_K8S=1$(RESET)] [$(YELLOW)OVERWRITE_APPS_CONF=1$(RESET)] [$(YELLOW)ALLOW_SRC_EQUALS_DST=1$(RESET)] - применить tar.gz обратно (Secrets/CM + apps/conf если каталога нет)"
+	@echo "  make env-label-backfill $(YELLOW)ENV=$(ENV)$(RESET)  - проставить label infra-env=<ENV> на platform-ns + app-ns (idemp.; для уже работающих env)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Monitoring (Netdata):$(RESET)"
 	@echo "  make monitoring-up $(YELLOW)ENV=$(ENV)$(RESET)          - развернуть Netdata (эквивалент: make up ENABLED_SERVICES=netdata)"
@@ -863,6 +877,11 @@ up:
 	# Теперь: явный if-Secret-exists, отдельный cluster-info check, без delete.
 	# Каждый блок секрет-init обёрнут в `svc_active <svc>` — при ENABLED_SERVICES/
 	# EXCLUDE_SERVICES не создаём namespace и Secret для исключённых сервисов.
+	#
+	# set -e: без него фейл helmfile apply маскируется последующим labeling/apps-apply.
+	# Make вычисляет rc recipe по последней команде; при объединении через `;`
+	# helmfile fail тихо пропускается, а labeling всегда успешен (`|| true`).
+	set -e; \
 	svc_active() { \
 		local svc="$$1"; \
 		if [ -n "$(ENABLED_SERVICES)" ]; then \
@@ -945,6 +964,17 @@ up:
 		$(MAKE) -C monitoring/netdata secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
 	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
+	: "Простановка label infra-env=<ENV> на platform-ns. Используется backup-verify"; \
+	: "preflight'ом для защиты от случайной перезаписи чужого кластера. Идемпотентно;"; \
+	: "ошибки игнорируются (ns может ещё не существовать при первом apply)."; \
+	for svc in $(SERVICES); do \
+		if svc_active "$$svc"; then \
+			kubectl label ns "$$svc" "infra-env=$(ENV)" --overwrite >/dev/null 2>&1 || true; \
+		fi; \
+	done; \
+	if svc_active netdata; then \
+		kubectl label ns monitoring "infra-env=$(ENV)" --overwrite >/dev/null 2>&1 || true; \
+	fi; \
 	if [ "$(SKIP_APPS_APPLY)" != "1" ]; then \
 		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(REPO_ROOT)" ENV="$(ENV)" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" APPS_APPLY_CONTINUE_ON_ERROR="$(APPS_APPLY_CONTINUE_ON_ERROR)" "$(REPO_ROOT)/scripts/apps-apply.sh"; \
 	fi
@@ -1315,7 +1345,8 @@ env-backup:
 	fi
 	@umask 077; \
 	install -d -m 700 environments/backups; \
-	TS=$$(date +%Y%m%d-%H%M%S); \
+	: "PID в timestamp для concurrent safety: два env-backup в одну секунду не перетрутся."; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	ARCHIVE="environments/backups/$(ENV)-$${TS}.tar.gz"; \
 	TMP_DIR=$$(mktemp -d); \
 	OUT_DIR="$$TMP_DIR/$(ENV)"; \
@@ -1363,8 +1394,47 @@ env-backup:
 	@# Опциональное шифрование (если задан BACKUP_AGE_RECIPIENT). См. docs/runbooks/backups-encryption.md.
 	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" environments/backups "$(ENV)-*.tar.gz"
 
+# env-label-backfill: проставить label infra-env=<ENV> на все platform-ns (из environments/<ENV>.yaml)
+# и app-ns (enabled: true из apps/registry.yaml). Идемпотентно. Нужно один раз для уже работающих
+# окружений, где label ещё не проставлен (новые make up / apps-apply делают это автоматически).
+# Используется backup-verify preflight'ом для защиты от ошибочного применения снимка в чужой кластер.
+env-label-backfill:
+	@if [ -z "$(ENV)" ]; then echo "✗ ENV не задан"; exit 1; fi
+	@command -v kubectl >/dev/null 2>&1 || { echo "✗ kubectl не найден"; exit 1; }
+	@if [ ! -f "$(KUBECONFIG)" ]; then \
+		echo "✗ Файл kubeconfig не найден: $(KUBECONFIG)"; exit 1; \
+	fi
+	@if [ ! -f "environments/$(ENV).yaml" ]; then \
+		echo "✗ Файл environments/$(ENV).yaml не найден (нужен список platform-ns)"; exit 1; \
+	fi
+	@PLATFORM_NS=$$(awk '/^[A-Za-z0-9_-]+:/{svc=$$1} /namespace:/{print $$2}' "environments/$(ENV).yaml" | sort -u); \
+	APP_NS=""; \
+	if [ -f "$(APPS_REGISTRY)" ] && command -v "$(YQ)" >/dev/null 2>&1; then \
+		APP_NS=$$("$(YQ)" -r '.apps[] | select(.enabled == true) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null | sort -u); \
+	fi; \
+	NAMESPACES=$$(printf "%s\n%s\n" "$$PLATFORM_NS" "$$APP_NS" | awk 'NF' | sort -u); \
+	if [ -z "$$NAMESPACES" ]; then \
+		echo "⚠ Не найдено ни одного namespace в environments/$(ENV).yaml + apps/registry.yaml"; \
+		exit 0; \
+	fi; \
+	LABELED=0; SKIPPED=0; \
+	for ns in $$NAMESPACES; do \
+		if kubectl --kubeconfig "$(KUBECONFIG)" get ns "$$ns" >/dev/null 2>&1; then \
+			kubectl --kubeconfig "$(KUBECONFIG)" label ns "$$ns" "infra-env=$(ENV)" --overwrite >/dev/null && \
+				echo "  ✓ ns=$$ns infra-env=$(ENV)"; \
+			LABELED=$$((LABELED+1)); \
+		else \
+			echo "  ↷ ns=$$ns не существует — пропуск"; \
+			SKIPPED=$$((SKIPPED+1)); \
+		fi; \
+	done; \
+	echo ""; \
+	echo "✓ env-label-backfill: labeled=$$LABELED, skipped=$$SKIPPED"
+
 # env-restore: применяет tar.gz обратно. Подробности и флаги — в scripts/env-restore.sh.
-# Существующие apps/conf/<APP>/ НЕ перезатираются; локальный apps/registry.yaml не перезаписывается, если отличается.
+# Существующие apps/conf/<APP>/ НЕ перезатираются (OVERWRITE_APPS_CONF=1 чтобы перетереть);
+# локальный apps/registry.yaml не перезаписывается, если отличается. По умолчанию запрещено
+# восстановление в тот же кластер, где env-backup снят (sanity-check; ALLOW_SRC_EQUALS_DST=1 для DR).
 env-restore:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
 		echo "✗ Укажите BACKUP_FILE: make env-restore BACKUP_FILE=environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz[.age] ENV=$(ENV)"; \
@@ -1375,6 +1445,8 @@ env-restore:
 	@PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$(BACKUP_FILE)") || exit 1; \
 	BACKUP_FILE="$$PLAIN" KUBECONFIG="$(KUBECONFIG)" REPO_ROOT="$(REPO_ROOT)" YQ="$(YQ)" \
 		CONFIRM="$(CONFIRM)" SKIP_APPS_CONF="$(SKIP_APPS_CONF)" SKIP_K8S="$(SKIP_K8S)" \
+		OVERWRITE_APPS_CONF="$(OVERWRITE_APPS_CONF)" ALLOW_SRC_EQUALS_DST="$(ALLOW_SRC_EQUALS_DST)" \
+		ALLOW_SRC_KUBECONFIG_MISSING="$(ALLOW_SRC_KUBECONFIG_MISSING)" \
 		"$(REPO_ROOT)/scripts/env-restore.sh"; \
 	rc=$$?; \
 	if [ "$$PLAIN" != "$(BACKUP_FILE)" ]; then rm -f -- "$$PLAIN"; fi; \
@@ -1459,7 +1531,7 @@ define _restore_with_decrypt
 	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
 	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
 	REL_PLAIN=$$(echo "$$PLAIN" | sed "s|^$(1)/||"); \
-	$(MAKE) -C "$(1)" "$(2)" ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$REL_PLAIN" SKIP_CONFIRM="$(SKIP_CONFIRM)"; \
+	$(MAKE) -C "$(1)" "$(2)" ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$REL_PLAIN" SKIP_CONFIRM="$(SKIP_CONFIRM)" PG_ON_ERROR_STOP="$(PG_ON_ERROR_STOP)"; \
 	rc=$$?; \
 	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
 	exit $$rc
@@ -1527,3 +1599,84 @@ backup-all:
 	else \
 		echo "✓ backup-all: все шаги успешны"; \
 	fi
+
+## =========================
+## Backup-verify (PR2 scripts)
+## =========================
+# Тонкие обёртки над scripts/backup-verify-*.sh. Полный orchestrator (`make backup-verify`)
+# будет добавлен в PR3 — он последовательно вызывает preflight → fetch → env-restore →
+# up → *-restore → apps-apply → doctor → fingerprint → fingerprint-diff → localize.
+# До PR3 каждый шаг можно вызвать вручную для отладки.
+
+backup-verify-preflight:
+	@SRC_ENV="$(SRC_ENV)" DST_ENV="$(DST_ENV)" APP="$(APP)" \
+		REPO_ROOT="$(REPO_ROOT)" KUBECONFIG="$(KUBECONFIG)" YQ="$(YQ)" \
+		APPS_REGISTRY="$(APPS_REGISTRY)" \
+		BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" \
+		BACKUP_FILES="$(BACKUP_FILES)" \
+		TIMESTAMP_DRIFT_HOURS="$(TIMESTAMP_DRIFT_HOURS)" \
+		MIN_DISK_FREE_MB="$(MIN_DISK_FREE_MB)" \
+		PROD_ENVS="$(PROD_ENVS)" FORCE="$(FORCE)" \
+		VERIFY_REPORT_DIR="$(VERIFY_REPORT_DIR)" \
+		"$(REPO_ROOT)/scripts/backup-verify-preflight.sh"
+
+backup-fingerprint:
+	@APP="$(APP)" ENV="$(ENV)" ROLE="$(ROLE)" \
+		REPO_ROOT="$(REPO_ROOT)" KUBECONFIG="$(KUBECONFIG)" YQ="$(YQ)" \
+		APPS_REGISTRY="$(APPS_REGISTRY)" \
+		APPS_MERGED_FILE="$(APPS_MERGED_FILE)" \
+		OUT_FILE="$(OUT_FILE)" VERIFY_REPORT_DIR="$(VERIFY_REPORT_DIR)" \
+		BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" \
+		"$(REPO_ROOT)/scripts/backup-fingerprint.sh"
+
+backup-fingerprint-diff:
+	@SRC_FINGERPRINT="$(SRC_FINGERPRINT)" DST_FINGERPRINT="$(DST_FINGERPRINT)" \
+		REPO_ROOT="$(REPO_ROOT)" \
+		BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" \
+		OUT_REPORT_MD="$(OUT_REPORT_MD)" OUT_DIFF_JSON="$(OUT_DIFF_JSON)" \
+		"$(REPO_ROOT)/scripts/backup-fingerprint-diff.sh"
+
+backup-verify-fetch:
+	@SRC_ENV="$(SRC_ENV)" APP="$(APP)" \
+		REPO_ROOT="$(REPO_ROOT)" \
+		TARGET_DIR="$(TARGET_DIR)" \
+		INCLUDE_FINGERPRINT="$(INCLUDE_FINGERPRINT)" \
+		BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" \
+		REMOTE_REPO_ROOT="$(REMOTE_REPO_ROOT)" \
+		SKIP_MISSING="$(SKIP_MISSING)" \
+		REQUIRED_BACKUPS="$(REQUIRED_BACKUPS)" \
+		SSH_HOST="$(SSH_HOST)" SSH_USER="$(SSH_USER)" SSH_KEY="$(SSH_KEY)" SSH_PORT="$(SSH_PORT)" \
+		"$(REPO_ROOT)/scripts/backup-verify-fetch.sh"
+
+backup-verify-localize:
+	@DST_ENV="$(DST_ENV)" APP="$(APP)" \
+		REPO_ROOT="$(REPO_ROOT)" KUBECONFIG="$(KUBECONFIG)" YQ="$(YQ)" \
+		APPS_REGISTRY="$(APPS_REGISTRY)" \
+		IN_CLUSTER_MINIO_URL="$(IN_CLUSTER_MINIO_URL)" \
+		PROD_ENVS="$(PROD_ENVS)" \
+		LOCALIZE_DRY_RUN="$(LOCALIZE_DRY_RUN)" \
+		"$(REPO_ROOT)/scripts/backup-verify-localize.sh"
+
+# backup-verify: orchestrator всего пайплайна — preflight + fetch + env-restore +
+# localize + up + per-service restore + apps-apply + doctor + fingerprint + diff +
+# summary. Управляется флагами CLEAN, CLEAN_AFTER, STOP_ON_FAIL, FORCE, SKIP_STEPS.
+# Артефакты: verify-reports/<TS>-<APP>/  (.gitignored).
+# Подробнее: scripts/backup-verify.sh + docs/runbooks/backup-verify.md (PR4).
+backup-verify:
+	@SRC_ENV="$(SRC_ENV)" DST_ENV="$(DST_ENV)" APP="$(APP)" \
+		REPO_ROOT="$(REPO_ROOT)" KUBECONFIG="$(KUBECONFIG)" YQ="$(YQ)" \
+		APPS_REGISTRY="$(APPS_REGISTRY)" \
+		STOP_ON_FAIL="$(STOP_ON_FAIL)" \
+		CLEAN="$(CLEAN)" CLEAN_AFTER="$(CLEAN_AFTER)" \
+		SRC_FINGERPRINT="$(SRC_FINGERPRINT)" \
+		BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" \
+		BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" \
+		FORCE="$(FORCE)" \
+		PROD_ENVS="$(PROD_ENVS)" \
+		MIN_DISK_FREE_MB="$(MIN_DISK_FREE_MB)" \
+		TIMESTAMP_DRIFT_HOURS="$(TIMESTAMP_DRIFT_HOURS)" \
+		REQUIRED_BACKUPS="$(REQUIRED_BACKUPS)" \
+		ALLOW_SRC_KUBECONFIG_MISSING="$(ALLOW_SRC_KUBECONFIG_MISSING)" \
+		TIMEOUT_PVC_DELETE="$(TIMEOUT_PVC_DELETE)" \
+		SKIP_STEPS="$(SKIP_STEPS)" \
+		"$(REPO_ROOT)/scripts/backup-verify.sh"

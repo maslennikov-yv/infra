@@ -447,7 +447,7 @@ BACKUP_DIR ?= backups
 backup:
 	@mkdir -p $(BACKUP_DIR)
 	@set -eo pipefail; \
-	TS=$$(date +%Y%m%d-%H%M%S); \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	OUT="$(BACKUP_DIR)/redis-backup-$$TS.tar.gz"; \
 	echo "Создание бэкапа Redis в $$OUT..."; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \

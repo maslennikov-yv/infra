@@ -88,5 +88,12 @@ apps/src/**
 k8s-port-expose/ports-*.yaml
 !k8s-port-expose/ports.example.yaml
 
+# backup-verify reports (фингерпринты, diff, restore-логи на admin-машине).
+# Содержат структурные снимки prod (имена БД/таблиц/топиков/bucket'ов/queues) — секретно.
+verify-reports/
+
+# Backups, которые localize.sh оставляет рядом с apps/conf — не коммитим.
+apps/conf/*/*.localize.bak
+
 # Examples (reference implementations, not part of infrastructure)
 examples/

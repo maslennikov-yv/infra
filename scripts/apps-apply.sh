@@ -195,6 +195,19 @@ while IFS= read -r app; do
 
 done < <("$YQBIN" -r '.apps[].name' "$merged")
 
+# Простановка label infra-env=<ENV> на app-namespaces (только для enabled: true).
+# Используется backup-verify preflight'ом для защиты от случайного выстрела по чужому кластеру.
+# Идемпотентно; ошибки игнорируются (ns может ещё не существовать, если creds не созданы).
+# В DRY_RUN режиме пропускается.
+if [[ "$DRY_RUN" != "1" ]] && command -v kubectl >/dev/null 2>&1; then
+	while IFS= read -r app; do
+		[[ -n "${app:-}" ]] || continue
+		ns=$(app_ns_for "$app")
+		[[ -n "$ns" ]] || continue
+		kubectl label ns "$ns" "infra-env=${ENV}" --overwrite >/dev/null 2>&1 || true
+	done < <("$YQBIN" -r '.apps[] | select(.enabled == true) | .name' "$merged")
+fi
+
 # === Проход 2: drift detection / drop для enabled: false приложений ===
 DRIFT_COUNT=0
 DROPPED_COUNT=0

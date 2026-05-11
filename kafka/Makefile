@@ -935,7 +935,7 @@ BACKUP_DIR ?= backups
 backup-meta:
 	@mkdir -p $(BACKUP_DIR)
 	@set -eo pipefail; \
-	TS=$$(date +%Y%m%d-%H%M%S); \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	OUT="$(BACKUP_DIR)/kafka-meta-$$TS.tar.gz"; \
 	echo "Создание meta-бэкапа Kafka в $$OUT..."; \
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
@@ -1018,7 +1018,7 @@ restore-meta-topics:
 		read -p "Продолжить? (y/N): " confirm; \
 		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
 	fi
-	@TS=$$(date +%Y%m%d-%H%M%S); \
+	@TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
 	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета"; exit 1; fi; \
 	HELPER=kafka-restore-$$TS; \

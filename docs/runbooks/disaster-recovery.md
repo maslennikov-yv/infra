@@ -263,8 +263,23 @@ make doctor ENV=<env>
 
 ---
 
+## Регулярная верификация бэкапов
+
+Этот runbook описывает восстановление **после инцидента**. Чтобы убедиться, что бэкапы действительно восстановимы **до** инцидента (а не «бэкап есть, но битый»), запускайте регулярную автоматическую проверку:
+
+```bash
+make backup-verify SRC_ENV=prod DST_ENV=local APP=<app> CLEAN=1
+```
+
+Это разворачивает свежий бэкап источника в чистый DST_ENV, прогоняет тот же восстановительный flow что описан в этом runbook'е, и сравнивает structural fingerprint источника и цели. Подробности, чек-лист первого запуска и troubleshooting — [`backup-verify.md`](backup-verify.md).
+
+**Важно**: backup-verify покрывает только **structural** соответствие (схема, ACL, topics, bucket-configs, vhosts). Данные для Redis/Kafka/MinIO/ClickHouse/RabbitMQ **не входят** в `*-backup-meta`, поэтому DST после verify имеет правильные definitions, но пустые данные. PostgreSQL — единственный сервис с полным data-backup через `pg_dumpall`. См. disclaimer в [`backup-verify.md`](backup-verify.md), раздел «Что покрывает и чего НЕ покрывает».
+
+---
+
 ## Связанные документы
 
 - [onboarding-admin.md](../onboarding-admin.md) — как новый админ получает файлы вне git.
+- [`backup-verify.md`](backup-verify.md) — **регулярная проверка** восстановимости бэкапов (а не реактивный disaster recovery).
 - `<service>/BACKUP.md` — детали backup/restore по сервисам (postgres, redis, kafka, minio, clickhouse, rabbitmq).
 - `usage-scenarios.md` (этот же каталог) — обычные сценарии эксплуатации.

@@ -398,7 +398,7 @@ BACKUP_DIR ?= backups
 backup-defs:
 	@mkdir -p $(BACKUP_DIR)
 	@set -eo pipefail; \
-	TS=$$(date +%Y%m%d-%H%M%S); \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
 	OUT="$(BACKUP_DIR)/rabbitmq-defs-$$TS.json.gz"; \
 	echo "Экспорт definitions RabbitMQ в $$OUT..."; \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
