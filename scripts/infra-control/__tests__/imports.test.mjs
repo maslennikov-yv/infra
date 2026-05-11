@@ -17,7 +17,7 @@ const MODULES = [
   "../actions/backup.mjs",
   "../wizards/connect-app.mjs",
   "../wizards/disconnect-app.mjs",
-  "../wizards/bootstrap-env.mjs",
+  "../wizards/configure-services.mjs",
   "../settings/environment.mjs",
   "../settings/tcp.mjs",
   "../settings/charts.mjs",
@@ -62,7 +62,7 @@ describe("структура ACTIONS из main.mjs", () => {
     const { ACTIONS } = await import("../main.mjs");
     const required = [
       "apply", "diff", "status", "accts",
-      "wiz_connect", "wiz_disconnect", "wiz_bootstrap",
+      "wiz_connect", "wiz_services", "wiz_disconnect",
       "backup",
       "set_env", "set_tcp", "set_charts",
       "session", "exit",

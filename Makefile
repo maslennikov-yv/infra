@@ -177,7 +177,7 @@ help:
 	@echo "$(BOLD)$(GREEN)infra$(RESET)"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)С чего начать:$(RESET)"
-	@echo "  Точка входа — $(YELLOW)Бутстрап$(RESET) (TUI: $(YELLOW)make infra$(RESET)): для удалённой среды настройте SSH ($(YELLOW)environments/<ENV>.mk$(RESET), $(YELLOW)make ssh ENV=...$(RESET)) и получите kubeconfig ($(YELLOW)make kubeconfig-fetch ...$(RESET)); для работы только с локальным кластером на этой машине достаточно $(YELLOW)make kubeconfig-microk8s-local ENV=...$(RESET) (без SSH)."
+	@echo "  Точка входа — TUI ($(YELLOW)make infra$(RESET)) → $(YELLOW)Окружение и образы$(RESET): создать рыбу ENV (env-new), затем для удалённой среды — SSH ($(YELLOW)environments/<ENV>.mk$(RESET), $(YELLOW)make ssh ENV=...$(RESET)) и kubeconfig ($(YELLOW)make kubeconfig-fetch ...$(RESET)); для локального кластера достаточно $(YELLOW)make kubeconfig-microk8s-local ENV=...$(RESET) (без SSH). Полный чеклист — docs/runbooks/usage-scenarios.md (Сценарий 1)."
 	@echo ""
 	@echo "$(BOLD)$(GREEN)ENV:$(RESET)"
 	@echo "  make <target> $(YELLOW)ENV=local|prod|staging$(RESET) ..."

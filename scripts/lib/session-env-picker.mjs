@@ -15,6 +15,20 @@ export function formatSessionEnvOptionLabel(name) {
   return name;
 }
 
+/**
+ * Валидатор имени ENV: латиница/цифры/`-`/`_`, начинать с буквы.
+ * Используется пунктом env-new в TUI и тестами валидаторов.
+ * @param {unknown} v
+ * @returns {string|undefined}
+ */
+export function validateEnvName(v) {
+  const t = String(v ?? "").trim();
+  if (!t) return "ENV обязателен";
+  if (!/^[a-z][a-z0-9_-]*$/.test(t))
+    return "Только латиница/цифры/-/_, начинать с буквы";
+  return undefined;
+}
+
 export function listEnvironmentNames() {
   try {
     const names = readdirSync(ENVIRONMENTS_DIR).filter((f) =>

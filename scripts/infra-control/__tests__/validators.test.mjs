@@ -5,7 +5,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { validateAppName } from "../wizards/connect-app.mjs";
-import { validateEnvName } from "../wizards/bootstrap-env.mjs";
+import { validateEnvName } from "../../lib/session-env-picker.mjs";
 import { validatePortNumber, validateBackendAddr } from "../settings/tcp.mjs";
 
 describe("validateAppName", () => {

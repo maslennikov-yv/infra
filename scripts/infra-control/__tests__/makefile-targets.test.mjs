@@ -87,10 +87,10 @@ const STATIC_TARGETS = [
   // wizards/connect-app.mjs
   "apps-conf-template", "apps-src-clone", "app-local-src-hostpath-mount",
   // wizards/disconnect-app.mjs (apps-apply уже есть)
-  // wizards/bootstrap-env.mjs
+  // wizards/configure-services.mjs (diff уже есть)
+  // settings/environment.mjs
   "env-new", "microk8s-setup", "kubeconfig-fetch", "kubeconfig-microk8s-local",
   "images-save", "images-push", "images-push-remote",
-  // settings/environment.mjs
   "kubeconfig-info", "ssh", "microk8s-uninstall", "kafka-bootstrap", "down",
   // settings/tcp.mjs
   "k8s-port-expose-show", "k8s-port-expose-diff",

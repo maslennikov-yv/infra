@@ -1,7 +1,7 @@
 // infra TUI — action-first главное меню.
 // Группы: «Каждый день» / «Сценарии» / «Бэкапы» / «Настройка» / «Сессия».
 // Контекст ENV+APP — см. context.mjs (APP кэшируется per-ENV между запусками).
-// Покрытие 8 сценариев из docs/runbooks/usage-scenarios.md — 1:1.
+// Покрытие 7 сценариев из docs/runbooks/usage-scenarios.md — 1:1.
 
 import { intro, outro, select, text, note, log } from "./io.mjs";
 
@@ -24,7 +24,7 @@ import { actionAccounts } from "./actions/accounts.mjs";
 
 import { wizardConnectApp } from "./wizards/connect-app.mjs";
 import { wizardDisconnectApp } from "./wizards/disconnect-app.mjs";
-import { wizardBootstrapEnv } from "./wizards/bootstrap-env.mjs";
+import { wizardConfigureServices } from "./wizards/configure-services.mjs";
 
 import { actionBackup } from "./actions/backup.mjs";
 import { settingsEnvironment } from "./settings/environment.mjs";
@@ -56,7 +56,7 @@ async function pickEnvFlow(session) {
   const envs = listEnvironmentNames();
   if (!envs.length) {
     note(
-      "Нет окружений (environments/*.yaml). Создайте через старое меню (Бутстрап → Среда → «Создать рыбу окружения»), пока этап 3 не дописан.",
+      "Нет окружений (environments/*.yaml). Создайте через «Окружение и образы → Создать рыбу окружения (env-new)».",
       "ENV",
     );
     return;
@@ -121,8 +121,8 @@ export const ACTIONS = [
   { value: "accts",   label: "Учётки и топики",          hint: "по APP: pg/redis/kafka/minio/clickhouse/rabbitmq + Kafka topics" },
   // Сценарии-мастера
   { value: "wiz_connect",    label: "Сценарий: подключить приложение",   hint: "template → configure → merge → apps-apply" },
+  { value: "wiz_services",   label: "Сценарий: конфигурирование сервисов", hint: "весь набор / только указанные / кроме указанных + запись в <env>.mk + diff" },
   { value: "wiz_disconnect", label: "Сценарий: отключить приложение",    hint: "registry: enabled=false + опционально *-app-drop" },
-  { value: "wiz_bootstrap",  label: "Сценарий: бутстрап нового ENV",     hint: "env-new → kubeconfig → images → up → doctor" },
   // Бэкапы
   { value: "backup",         label: "Бэкапы",                            hint: "сделать (полный/выборочный/секреты) или восстановить (svc/env)" },
   // Настройка
@@ -166,9 +166,9 @@ export async function runInfraV2() {
     if (choice === "status") { await actionStatus(session);   continue; }
     if (choice === "accts")  { await actionAccounts(session); continue; }
 
-    if (choice === "wiz_connect")    { await wizardConnectApp(session);    continue; }
-    if (choice === "wiz_disconnect") { await wizardDisconnectApp(session); continue; }
-    if (choice === "wiz_bootstrap")  { await wizardBootstrapEnv(session);  continue; }
+    if (choice === "wiz_connect")    { await wizardConnectApp(session);       continue; }
+    if (choice === "wiz_services")   { await wizardConfigureServices(session); continue; }
+    if (choice === "wiz_disconnect") { await wizardDisconnectApp(session);    continue; }
 
     if (choice === "backup")     { await actionBackup(session);        continue; }
     if (choice === "set_env")    { await settingsEnvironment(session); continue; }
