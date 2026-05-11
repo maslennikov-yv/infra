@@ -421,6 +421,91 @@ app-drop:
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" minio || true; \
 	if [ $$DO_RB -eq 1 ]; then echo "✓ Учётка MinIO для $(APP) удалена; bucket из tracking Secret удалены (mc rb --force)"; else echo "✓ Учётка MinIO для $(APP) удалена; bucket не удалялись"; fi
 
+# Usage: make app-backup APP=myapp ENV=local [BUCKET=myapp]
+# Создаёт apps/backups/$(ENV)/$(APP)/minio/$(APP)-bucket-<TS>.tar.gz с содержимым bucket'а
+# через mc mirror внутри helper-pod'а. Versioning/lifecycle/policy НЕ входят (см. minio-backup-meta).
+app-backup:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-backup APP=myapp ENV=$(ENV))"; exit 1; fi
+	@set -eo pipefail; \
+	BUCKET=$${BUCKET:-$(APP)}; \
+	OUT_DIR="$(INFRA_ROOT)/apps/backups/$(ENV)/$(APP)/minio"; \
+	install -d -m 700 "$$OUT_DIR"; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	OUT="$$OUT_DIR/$(APP)-bucket-$$TS.tar.gz"; \
+	echo "Создание бэкапа bucket $$BUCKET в $$OUT..."; \
+	ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
+	ROOT_PASSWORD=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ROOT_USER" ] || [ -z "$$ROOT_PASSWORD" ]; then echo "✗ Не удалось получить root creds из секрета $(RELEASE)"; exit 1; fi; \
+	MINIO_ENDPOINT="http://$(RELEASE).$(NAMESPACE).svc.cluster.local:9000"; \
+	HELPER=minio-app-backup-$$TS; \
+	echo "  Старт helper-pod $$HELPER..."; \
+	kubectl run "$$HELPER" --restart=Never --image=$(MINIO_CLIENT_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(MINIO_CLIENT_IMAGE_LOCAL)","command":["sleep","1800"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+			ROOT_USER="$$ROOT_USER" ROOT_PASSWORD="$$ROOT_PASSWORD" \
+			MINIO_ENDPOINT="$$MINIO_ENDPOINT" BUCKET="$$BUCKET" \
+			sh -ec ' \
+		set -e; \
+		mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+		mc stat "minio/$$BUCKET" >/dev/null 2>&1 || { echo "✗ Bucket $$BUCKET не существует" >&2; exit 1; }; \
+		mkdir -p /tmp/dump; \
+		: "mc mirror копирует только current-versions; для версионированного bucket"; \
+		: "это даёт текущий snapshot, не историю версий (см. minio/BACKUP.md)."; \
+		mc mirror --quiet --overwrite "minio/$$BUCKET" /tmp/dump/ >/dev/null; \
+		tar -czf /tmp/app-bucket.tar.gz -C /tmp/dump .; \
+	'; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- cat /tmp/app-bucket.tar.gz > "$$OUT"; \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не скопирован"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
+	echo "✓ Бэкап bucket $$BUCKET создан: $$OUT ($$SIZE)"; \
+	echo "=> $$OUT"
+
+# Usage: make app-restore APP=myapp ENV=local BACKUP_FILE=<path> [BUCKET=myapp] [SKIP_CONFIRM=1]
+# Восстанавливает содержимое bucket'а через mc mirror. Сам bucket + user/policy
+# должны существовать (создать через make minio-app-create). ⚠ Объекты с теми же именами перезаписываются.
+app-restore:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан"; exit 1; fi
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите BACKUP_FILE=apps/backups/$(ENV)/$(APP)/minio/$(APP)-bucket-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@BUCKET=$${BUCKET:-$(APP)}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Содержимое bucket $$BUCKET будет дополнено/перезаписано данными из $(BACKUP_FILE)."; \
+		echo "  Объекты с одинаковыми ключами перезаписываются. Объекты, отсутствующие в архиве, НЕ удаляются."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@set -eo pipefail; \
+	BUCKET=$${BUCKET:-$(APP)}; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
+	ROOT_PASSWORD=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ROOT_USER" ] || [ -z "$$ROOT_PASSWORD" ]; then echo "✗ Не удалось получить root creds"; exit 1; fi; \
+	MINIO_ENDPOINT="http://$(RELEASE).$(NAMESPACE).svc.cluster.local:9000"; \
+	HELPER=minio-app-restore-$$TS; \
+	kubectl run "$$HELPER" --restart=Never --image=$(MINIO_CLIENT_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(MINIO_CLIENT_IMAGE_LOCAL)","command":["sleep","1800"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	kubectl cp "$(BACKUP_FILE)" "$(NAMESPACE)/$$HELPER:/tmp/backup.tar.gz" >/dev/null; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+			ROOT_USER="$$ROOT_USER" ROOT_PASSWORD="$$ROOT_PASSWORD" \
+			MINIO_ENDPOINT="$$MINIO_ENDPOINT" BUCKET="$$BUCKET" \
+			sh -ec ' \
+		set -e; \
+		mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+		mc stat "minio/$$BUCKET" >/dev/null 2>&1 || { echo "✗ Bucket $$BUCKET не существует; сначала make minio-app-create APP=$(APP)" >&2; exit 1; }; \
+		mkdir -p /tmp/restore && tar -xzf /tmp/backup.tar.gz -C /tmp/restore; \
+		mc mirror --quiet --overwrite /tmp/restore/ "minio/$$BUCKET" >/dev/null; \
+	'; \
+	echo "✓ Содержимое bucket $$BUCKET восстановлено из $(BACKUP_FILE)"
+
 images-verify:
 	@echo "Проверка доступности тегов в docker.io/bitnamilegacy..."
 	@command -v docker >/dev/null 2>&1 || { echo "✗ docker не установлен"; exit 1; }
@@ -590,7 +675,7 @@ images-clean-files:
 ## =========================
 ## Backup / Restore (meta: IAM users + policies + buckets + tracking secrets)
 ## =========================
-BACKUP_DIR ?= backups
+BACKUP_DIR ?= backups/$(ENV)
 
 # Запускает helper-pod на minio-client image, собирает users/policies/buckets через mc admin,
 # на хосте дополнительно собирает tracking secrets minio-app-<APP> из namespace $(NAMESPACE).

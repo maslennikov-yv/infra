@@ -3,7 +3,7 @@
 Документ описывает **полное восстановление** окружения на новом сервере при условии, что у вас есть:
 
 - Доступ к **git-репозиторию** этой инфраструктуры.
-- **`env-backup`-архив** (`environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz`) — содержит платформенные Secrets, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/`. Создан через `make env-backup`.
+- **`env-backup`-архив** (`environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz`) — содержит платформенные Secrets, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/`. Создан через `make env-backup`.
 - **Бэкапы данных** для сервисов, чьё состояние нужно восстановить (Postgres dump, Redis RDB, Kafka meta, MinIO meta, ClickHouse schemas, RabbitMQ definitions). См. `<service>/BACKUP.md`.
 - (Опционально) **tar-файлы образов** (`<service>/images/*.tar`) — если `bitnamilegacy` к моменту восстановления может оказаться недоступен.
 
@@ -20,7 +20,7 @@
 | `apps/conf/<APP>/*.yaml` (пароли приложений) | env-backup-архив | да |
 | Платформенные Secrets (`redis/redis`, `rabbitmq/rabbitmq`, `kafka/kafka-kraft`, `postgres-postgresql`, `minio/minio`, `clickhouse/clickhouse`) | env-backup-архив | да |
 | Application Secrets (`<APP>-postgres`, `<APP>-redis`, ...) | env-backup-архив (после Этапа 3) | да |
-| Бэкапы данных | `<service>/backups/*` или внешнее хранилище | нет |
+| Бэкапы данных | `<service>/backups/<env>/*` или внешнее хранилище | нет |
 | tar-файлы образов | `<service>/images/*.tar` | нет |
 
 **Без env-backup и `apps/conf/`** восстановление возможно, но придётся заново сгенерировать пароли приложений и обновить кэширующих клиентов — стек поднимется с **новыми кредами**, а не идентичным.
@@ -41,14 +41,14 @@ make tools-check
 
 **Получить от существующего админа** (по защищённому каналу — см. [onboarding-admin.md](../onboarding-admin.md)):
 - `environments/<env>.mk` — переменные окружения (SSH_HOST, SSH_KEY, REGISTRY, KUBECONFIG).
-- env-backup-архив (`<env>-YYYYMMDD-HHMMSS.tar.gz`).
+- env-backup-архив (`environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz`).
 - (Опционально) tar-образы и postgres-бэкапы, если они не поедут отдельно.
 
 ```bash
 # Сохранить полученные файлы:
-mkdir -p environments/backups k8s/config
+mkdir -p environments/backups/<env> k8s/config
 cp /received/<env>.mk environments/<env>.mk
-cp /received/<env>-YYYYMMDD-HHMMSS.tar.gz environments/backups/
+cp /received/YYYYMMDD-HHMMSS.tar.gz environments/backups/<env>/
 ```
 
 ---
@@ -103,7 +103,7 @@ make images-push ENV=<env>
 
 ```bash
 make env-restore \
-  BACKUP_FILE=environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz \
+  BACKUP_FILE=environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz \
   ENV=<env> \
   CONFIRM=1
 ```
@@ -140,18 +140,18 @@ make status ENV=<env>
 
 ## Шаг 6. Восстановить данные
 
-Данные сервисов (объёмные) **не входят** в env-backup. Восстанавливаются отдельно из `<service>/backups/`:
+Данные сервисов (объёмные) **не входят** в env-backup. Восстанавливаются отдельно из `<service>/backups/<env>/`:
 
 ### PostgreSQL
 ```bash
-make postgres-restore BACKUP_FILE=postgres/backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=<env>
+make postgres-restore BACKUP_FILE=postgres/backups/<env>/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=<env>
 ```
 См. [postgres/BACKUP.md](../../postgres/BACKUP.md).
 
 ### Redis
 ```bash
 # ACL применятся автоматически:
-make redis-restore-acl BACKUP_FILE=redis/backups/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
+make redis-restore-acl BACKUP_FILE=redis/backups/<env>/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
 # Данные RDB — отдельная процедура (scale 0 + замена в PVC):
 # см. redis/BACKUP.md, раздел «Восстановление данных (RDB)».
 ```
@@ -159,7 +159,7 @@ make redis-restore-acl BACKUP_FILE=redis/backups/redis-backup-YYYYMMDD-HHMMSS.ta
 ### Kafka
 ```bash
 # Топики:
-make kafka-restore-meta-topics BACKUP_FILE=kafka/backups/kafka-meta-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
+make kafka-restore-meta-topics BACKUP_FILE=kafka/backups/<env>/kafka-meta-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
 # ACL и SCRAM-пользователи — через apps-apply:
 make apps-apply ENV=<env> ENABLED_SERVICES=kafka
 # Данные сообщений (если важно) — через MirrorMaker; см. kafka/BACKUP.md.
@@ -169,7 +169,7 @@ make apps-apply ENV=<env> ENABLED_SERVICES=kafka
 ### MinIO
 ```bash
 # Policies + tracking secrets:
-make minio-restore-meta BACKUP_FILE=minio/backups/minio-meta-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
+make minio-restore-meta BACKUP_FILE=minio/backups/<env>/minio-meta-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
 # IAM users — через apps-apply (secret_keys из apps/conf/):
 make apps-apply ENV=<env> ENABLED_SERVICES=minio
 # Содержимое бакетов — отдельно (mc mirror или snapshot PV); см. minio/BACKUP.md.
@@ -178,7 +178,7 @@ make apps-apply ENV=<env> ENABLED_SERVICES=minio
 ### ClickHouse
 ```bash
 # Schemas + users:
-make clickhouse-restore BACKUP_FILE=clickhouse/backups/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
+make clickhouse-restore BACKUP_FILE=clickhouse/backups/<env>/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
 # После — apps-apply пересоздаёт пользователей с актуальными паролями:
 make apps-apply ENV=<env> ENABLED_SERVICES=clickhouse
 # Данные таблиц — отдельная процедура; см. clickhouse/BACKUP.md.
@@ -187,7 +187,7 @@ make apps-apply ENV=<env> ENABLED_SERVICES=clickhouse
 ### RabbitMQ
 ```bash
 # Definitions (vhosts/users/queues/bindings):
-make rabbitmq-restore-defs BACKUP_FILE=rabbitmq/backups/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz ENV=<env>
+make rabbitmq-restore-defs BACKUP_FILE=rabbitmq/backups/<env>/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz ENV=<env>
 # Сообщения в очередях — не восстанавливаются (durable persistence + federation; см. rabbitmq/BACKUP.md).
 ```
 
@@ -250,6 +250,37 @@ make doctor ENV=<env>
 - Сделать свежий `make env-backup` на источнике.
 - Сделать свежие `make <svc>-backup*` для всех stateful сервисов.
 - `make postgres-backup ENV=<env>` отдельно.
+
+### Д. Восстановление одного приложения из per-app бэкапов
+
+Если потеряны данные одного приложения (`APP=myapp`) — например, разработчик случайно удалил БД или bucket'у — есть точечный путь через `apps/backups/<ENV>/<APP>/`:
+
+```bash
+# Условие: бэкап есть в apps/backups/<env>/<app>/<svc>/<app>-<scope>-<TS>.<ext>
+ls apps/backups/<env>/myapp/
+
+# 1. Если учётка приложения утеряна (Secret <APP>-<svc> в кластере), сначала пересоздать её:
+make apps-apply ENV=<env>                            # либо точечно: make pg-app-create APP=myapp ENV=<env>
+
+# 2. Восстановить per-сервис (можно по одному):
+make pg-app-restore        APP=myapp ENV=<env> BACKUP_FILE=apps/backups/<env>/myapp/postgres/myapp-db-<TS>.sql.gz
+make clickhouse-app-restore APP=myapp ENV=<env> BACKUP_FILE=apps/backups/<env>/myapp/clickhouse/myapp-db-<TS>.tar.gz
+make minio-app-restore     APP=myapp ENV=<env> BACKUP_FILE=apps/backups/<env>/myapp/minio/myapp-bucket-<TS>.tar.gz
+make kafka-app-restore     APP=myapp ENV=<env> BACKUP_FILE=apps/backups/<env>/myapp/kafka/myapp-topics-<TS>.tar.gz
+make rabbitmq-app-restore  APP=myapp ENV=<env> BACKUP_FILE=apps/backups/<env>/myapp/rabbitmq/myapp-defs-<TS>.json.gz
+
+# 3. Smoke-проверка:
+make doctor ENV=<env>
+```
+
+Что важно:
+- **pg-app-restore**: применяет dump `pg_dump -d <APP_DB>` в существующую БД через `psql -v ON_ERROR_STOP=1`. Без `--clean` в дампе — при конфликте имён таблиц упадёт. Чистая ситуация — пустая БД (или дроп вручную перед restore: `make pg-app-drop APP=… && make pg-app-create APP=…`).
+- **clickhouse-app-restore — destructive**: `DROP DATABASE … SYNC` + пересоздание из dump (Native data таблиц). Существующие данные БД безвозвратно теряются.
+- **minio-app-restore**: upsert через `mc mirror` (объекты с одинаковыми ключами перезаписываются, лишние не удаляются).
+- **rabbitmq-app-restore**: idempotent merge через `rabbitmqctl import_definitions` (новое добавится, существующее не пересоздаётся).
+- **Содержимое топиков Kafka не в бэкапе** — `kafka-app-restore` пересоздаёт только definitions (--if-not-exists).
+- **Redis** в per-app не входит (нет per-app единицы данных).
+- Регулярный workflow: `make app-backup APP=myapp ENV=<env>` создаёт бэкапы для всех сервисов APP сразу (на основе merged конфига).
 
 ---
 

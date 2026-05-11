@@ -226,6 +226,119 @@ app-drop:
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" clickhouse || true; \
 	echo "✓ БД $$DB, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
+# Usage: make app-backup APP=myapp ENV=local [DB=myapp]
+# Создаёт apps/backups/$(ENV)/$(APP)/clickhouse/$(APP)-db-<TS>.tar.gz: схемы + данные
+# всех таблиц БД <DB> (default: <APP>) в Native-формате. Views/MaterializedViews пропускаются.
+app-backup:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-backup APP=myapp ENV=$(ENV))"; exit 1; fi
+	@set -eo pipefail; \
+	DB=$${DB:-$(APP)}; \
+	OUT_DIR="$(INFRA_ROOT)/apps/backups/$(ENV)/$(APP)/clickhouse"; \
+	install -d -m 700 "$$OUT_DIR"; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	OUT="$$OUT_DIR/$(APP)-db-$$TS.tar.gz"; \
+	echo "Создание бэкапа БД ClickHouse $$DB в $$OUT..."; \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password из секрета $(RELEASE)"; exit 1; fi; \
+	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
+	HELPER=clickhouse-app-backup-$$TS; \
+	echo "  Старт helper-pod $$HELPER..."; \
+	kubectl run "$$HELPER" --restart=Never --image=$(CLICKHOUSE_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(CLICKHOUSE_IMAGE_LOCAL)","command":["sleep","1800"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	echo "  Сбор schemas + data для БД $$DB..."; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+			CLICKHOUSE_HOST="$$CH_HOST" CLICKHOUSE_PORT=9000 \
+			CLICKHOUSE_USER=admin CLICKHOUSE_PASSWORD="$$ADMIN_PASSWORD" \
+			DB="$$DB" \
+			bash -ec ' \
+		set -eo pipefail; \
+		EXISTS=$$(clickhouse-client --query "SELECT count() FROM system.databases WHERE name = '"'"'$$DB'"'"'"); \
+		[ "$$EXISTS" = "1" ] || { echo "Database $$DB does not exist on server" >&2; exit 1; }; \
+		mkdir -p /tmp/dump/schemas /tmp/dump/data; \
+		cd /tmp/dump; \
+		: "CREATE DATABASE для восстановления"; \
+		clickhouse-client --query "SHOW CREATE DATABASE \"$$DB\"" | sed -e "s/$$/;/" > db-create.sql; \
+		: "Список таблиц (без View/MaterializedView/LiveView/WindowView)"; \
+		clickhouse-client --query "SELECT name FROM system.tables WHERE database = '"'"'$$DB'"'"' AND engine NOT IN ('"'"'View'"'"','"'"'MaterializedView'"'"','"'"'LiveView'"'"','"'"'WindowView'"'"')" > tables.list; \
+		while IFS= read -r tbl; do \
+			[ -z "$$tbl" ] && continue; \
+			echo "    -> $$tbl (schema)"; \
+			clickhouse-client --query "SHOW CREATE TABLE \"$$DB\".\"$$tbl\"" | sed -e "s/$$/;/" > "schemas/$$tbl.sql"; \
+			echo "    -> $$tbl (data, Native)"; \
+			clickhouse-client --query "SELECT * FROM \"$$DB\".\"$$tbl\" FORMAT Native" > "data/$$tbl.native"; \
+		done < tables.list; \
+		{ echo "ClickHouse per-app backup"; \
+			echo "DB=$$DB"; \
+			date; \
+			clickhouse-client --query "SELECT version()"; } > info.txt 2>&1 || true; \
+		tar -czf /tmp/app-backup.tar.gz -C /tmp/dump .; \
+	'; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- cat /tmp/app-backup.tar.gz > "$$OUT"; \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не скопирован"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
+	echo "✓ Бэкап БД $$DB создан: $$OUT ($$SIZE)"; \
+	echo "=> $$OUT"
+
+# Usage: make app-restore APP=myapp ENV=local BACKUP_FILE=<path> [DB=myapp] [SKIP_CONFIRM=1]
+# Восстанавливает БД приложения из архива app-backup. ⚠ DROP DATABASE + CREATE заново.
+# Native format: версии ClickHouse SRC и DST должны совпадать по мажору (см. clickhouse/BACKUP.md).
+app-restore:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан"; exit 1; fi
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите BACKUP_FILE=apps/backups/$(ENV)/$(APP)/clickhouse/$(APP)-db-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@DB=$${DB:-$(APP)}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ ВНИМАНИЕ: Будет DROP DATABASE \"$$DB\" и пересоздана из $(BACKUP_FILE)."; \
+		echo "  Существующие данные БД $$DB безвозвратно потеряны."; \
+		read -p "Вы уверены? (yes/no): " confirm && [ "$$confirm" = "yes" ] || { echo "Отменено"; exit 1; }; \
+	fi
+	@set -eo pipefail; \
+	DB=$${DB:-$(APP)}; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin-password"; exit 1; fi; \
+	CH_HOST="$(RELEASE).$(NAMESPACE).svc.cluster.local"; \
+	HELPER=clickhouse-app-restore-$$TS; \
+	kubectl run "$$HELPER" --restart=Never --image=$(CLICKHOUSE_IMAGE_LOCAL) --namespace=$(NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(CLICKHOUSE_IMAGE_LOCAL)","command":["sleep","1800"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	kubectl cp "$(BACKUP_FILE)" "$(NAMESPACE)/$$HELPER:/tmp/backup.tar.gz" >/dev/null; \
+	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+			CLICKHOUSE_HOST="$$CH_HOST" CLICKHOUSE_PORT=9000 \
+			CLICKHOUSE_USER=admin CLICKHOUSE_PASSWORD="$$ADMIN_PASSWORD" \
+			DB="$$DB" \
+			bash -ec ' \
+		set -eo pipefail; \
+		mkdir -p /tmp/dump && tar -xzf /tmp/backup.tar.gz -C /tmp/dump; \
+		cd /tmp/dump; \
+		[ -f tables.list ] || { echo "✗ tables.list отсутствует — это не valid app-backup ClickHouse"; exit 1; }; \
+		echo "  DROP DATABASE \"$$DB\" + CREATE..."; \
+		clickhouse-client --query "DROP DATABASE IF EXISTS \"$$DB\" SYNC"; \
+		clickhouse-client --multiquery < db-create.sql; \
+		echo "  Применение schemas..."; \
+		while IFS= read -r tbl; do \
+			[ -z "$$tbl" ] && continue; \
+			echo "    schema: $$tbl"; \
+			clickhouse-client --multiquery < "schemas/$$tbl.sql"; \
+		done < tables.list; \
+		echo "  Импорт данных (Native)..."; \
+		while IFS= read -r tbl; do \
+			[ -z "$$tbl" ] && continue; \
+			[ -s "data/$$tbl.native" ] || { echo "    data: $$tbl (пустая, skip)"; continue; }; \
+			echo "    data: $$tbl"; \
+			clickhouse-client --query "INSERT INTO \"$$DB\".\"$$tbl\" FORMAT Native" < "data/$$tbl.native"; \
+		done < tables.list; \
+	'; \
+	echo "✓ БД $$DB восстановлена из $(BACKUP_FILE)"
+
 images-verify:
 	@# Проверяем именно SRC-теги ($$(CLICKHOUSE_SRC_TAG) и т.п.) — то, что реально
 	@# pull-ится. Сейчас они равны *_TAG (Bitnami ещё не выпилил mutable-теги для
@@ -399,7 +512,7 @@ images-clean-files:
 ## =========================
 ## Backup / Restore (schemas + users + grants)
 ## =========================
-BACKUP_DIR ?= backups
+BACKUP_DIR ?= backups/$(ENV)
 
 # Schema-only backup: для каждой пользовательской БД сохраняет CREATE DATABASE + CREATE TABLE
 # для всех таблиц. Дополнительно — CREATE USER + GRANT для каждого non-default пользователя.

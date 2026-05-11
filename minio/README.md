@@ -155,9 +155,9 @@ buckets с настройками (versioning + ILM + anonymous policy), trackin
 используется `mc mirror` или snapshot PV (см. BACKUP.md).
 
 ```bash
-make backup-meta              ENV=local        # backups/minio-meta-*.tar.gz
+make backup-meta              ENV=local        # backups/local/minio-meta-*.tar.gz
 make list-backups
-make restore-meta             BACKUP_FILE=backups/minio-meta-…tar.gz ENV=local
+make restore-meta             BACKUP_FILE=backups/local/minio-meta-…tar.gz ENV=local
 ```
 
 `restore-meta` восстанавливает policies + tracking-secrets. **IAM-users

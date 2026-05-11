@@ -4,7 +4,7 @@
 
 ## Что попадает в meta-бэкап
 
-`make minio-backup-meta ENV=...` (или `make backup-meta` из `minio/`) создаёт **`minio/backups/minio-meta-YYYYMMDD-HHMMSS.tar.gz`** с:
+`make minio-backup-meta ENV=...` (или `make backup-meta` из `minio/`) создаёт **`minio/backups/<ENV>/minio-meta-YYYYMMDD-HHMMSS.tar.gz`** с:
 
 - **`info.json`** — `mc admin info` (версия, режим, сервисы).
 - **`users.json`** — `mc admin user list` (только access keys; secret keys не экспортируются).
@@ -46,7 +46,7 @@ make list-backups        # из minio/
 2. На хосте применяет `kubectl apply -f tracking-secrets/<NAME>.yaml` для каждого `minio-app-<APP>`.
 
 ```bash
-make minio-restore-meta BACKUP_FILE=minio/backups/minio-meta-20260508-143022.tar.gz ENV=local
+make minio-restore-meta BACKUP_FILE=backups/local/minio-meta-20260508-143022.tar.gz ENV=local
 
 # Без интерактивного подтверждения
 make minio-restore-meta BACKUP_FILE=... SKIP_CONFIRM=1 ENV=local
@@ -117,7 +117,7 @@ mc cp --recursive minio/<bucket> /var/backups/minio/<bucket>/
 
 Ротация:
 ```bash
-find minio/backups -name 'minio-meta-*.tar.gz' -mtime +14 -delete
+find minio/backups/prod -name 'minio-meta-*.tar.gz' -mtime +14 -delete
 ```
 
 ## Известные ограничения

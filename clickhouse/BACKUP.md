@@ -4,7 +4,7 @@
 
 ## Что попадает в schema-бэкап
 
-`make clickhouse-backup ENV=...` (или `make backup` из `clickhouse/`) создаёт **`clickhouse/backups/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz`** с:
+`make clickhouse-backup ENV=...` (или `make backup` из `clickhouse/`) создаёт **`clickhouse/backups/<ENV>/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz`** с:
 
 - **`databases.list`** — список пользовательских БД (исключая `system`, `INFORMATION_SCHEMA`, `default`).
 - **`schemas/<db>.sql`** — `CREATE DATABASE IF NOT EXISTS` + `CREATE TABLE IF NOT EXISTS` для всех таблиц БД (Views/MaterializedViews пропускаются — они зависят от source-таблиц и пересоздаются вручную).
@@ -39,7 +39,7 @@ make list-backups        # из clickhouse/
 2. Перед каждым `CREATE USER` добавляет `DROP USER IF EXISTS`, затем создаёт заново — поэтому restore идемпотентен и для пользователей.
 
 ```bash
-make clickhouse-restore BACKUP_FILE=clickhouse/backups/clickhouse-backup-20260508-143022.tar.gz ENV=local
+make clickhouse-restore BACKUP_FILE=backups/local/clickhouse-backup-20260508-143022.tar.gz ENV=local
 
 # Без интерактивного подтверждения
 make clickhouse-restore BACKUP_FILE=... SKIP_CONFIRM=1 ENV=local
@@ -125,7 +125,7 @@ SYSTEM START MERGES;
 
 Ротация:
 ```bash
-find clickhouse/backups -name 'clickhouse-backup-*.tar.gz' -mtime +14 -delete
+find clickhouse/backups/prod -name 'clickhouse-backup-*.tar.gz' -mtime +14 -delete
 ```
 
 ## Известные ограничения

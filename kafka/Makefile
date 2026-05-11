@@ -319,6 +319,121 @@ app-drop:
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" kafka || true; \
 	echo "✓ Пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены (топики с префиксом $(APP). сохранены)"
 
+# Usage: make app-backup APP=myapp ENV=local
+# Создаёт apps/backups/$(ENV)/$(APP)/kafka/$(APP)-topics-<TS>.tar.gz: definitions топиков
+# с префиксом <APP>. (--list/--describe/--configs) + consumer groups <APP>.* + recreate-topics.sh.
+# СОДЕРЖИМОЕ ТОПИКОВ НЕ БЭКАПИТСЯ — для durable копирования используется MirrorMaker (вне скоупа).
+app-backup:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-backup APP=myapp ENV=$(ENV))"; exit 1; fi
+	@set -eo pipefail; \
+	APP_PREFIX="$(APP)."; \
+	OUT_DIR="$(INFRA_ROOT)/apps/backups/$(ENV)/$(APP)/kafka"; \
+	install -d -m 700 "$$OUT_DIR"; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	OUT="$$OUT_DIR/$(APP)-topics-$$TS.tar.gz"; \
+	echo "Создание meta-бэкапа топиков с префиксом $$APP_PREFIX в $$OUT..."; \
+	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password из секрета $(HELM_RELEASE_NAME)-user-passwords"; exit 1; fi; \
+	HELPER=kafka-app-backup-$$TS; \
+	echo "  Старт helper-pod $$HELPER..."; \
+	kubectl run "$$HELPER" --restart=Never --image=$(KAFKA_IMAGE_LOCAL) --namespace=$(KAFKA_NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(KAFKA_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(KAFKA_NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(KAFKA_NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	BS='$(KAFKA_BOOTSTRAP_SERVER)'; \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+		| kubectl exec -i "$$HELPER" -n $(KAFKA_NAMESPACE) -- sh -c 'cat > /tmp/admin.properties && chmod 600 /tmp/admin.properties'; \
+	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- env BS="$$BS" APP_PREFIX="$$APP_PREFIX" APP="$(APP)" bash -ec ' \
+		set -eo pipefail; \
+		mkdir -p /tmp/meta && cd /tmp/meta; \
+		: "Список топиков с префиксом."; \
+		kafka-topics.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list \
+			| awk -v p="$$APP_PREFIX" "index(\$$0, p) == 1 {print}" > topics.list; \
+		: "Если ни одного топика нет — это валидный empty backup, но всё равно создаём архив."; \
+		: > topics-describe.txt; \
+		: > topics-configs.txt; \
+		while IFS= read -r t; do \
+			[ -z "$$t" ] && continue; \
+			kafka-topics.sh  --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --topic "$$t"          >> topics-describe.txt; \
+			kafka-configs.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --describe --entity-type topics --entity-name "$$t" >> topics-configs.txt; \
+		done < topics.list; \
+		: "Consumer groups с префиксом приложения (offsets восстанавливаются клиентами штатно, не из бэкапа)."; \
+		kafka-consumer-groups.sh --bootstrap-server "$$BS" --command-config /tmp/admin.properties --list 2>/dev/null \
+			| awk -v p="$$APP_PREFIX" "index(\$$0, p) == 1 {print}" > consumer-groups.list || true; \
+		: "recreate-topics.sh — bash, который пересоздаёт топики (--if-not-exists)."; \
+		: > recreate-topics.sh; \
+		echo "#!/usr/bin/env bash" >> recreate-topics.sh; \
+		echo "# Авто-генерация при kafka app-backup APP=$$APP" >> recreate-topics.sh; \
+		echo "# BS=kafka.kafka.svc.cluster.local:9092 bash recreate-topics.sh" >> recreate-topics.sh; \
+		echo "set -e; BS=\"\$${BS:-kafka.kafka.svc.cluster.local:9092}\"" >> recreate-topics.sh; \
+		grep -E "^Topic: " topics-describe.txt | while IFS= read -r line; do \
+			name=$$(echo "$$line"   | sed -nE "s/^Topic:[[:space:]]+([^[:space:]]+).*/\\1/p"); \
+			parts=$$(echo "$$line"  | sed -nE "s/.*PartitionCount:[[:space:]]+([0-9]+).*/\\1/p"); \
+			repl=$$(echo "$$line"   | sed -nE "s/.*ReplicationFactor:[[:space:]]+([0-9]+).*/\\1/p"); \
+			cfgs=$$(echo "$$line"   | sed -nE "s/.*Configs:[[:space:]]*(.*)$$/\\1/p"); \
+			[ -z "$$name" ] || [ -z "$$parts" ] || [ -z "$$repl" ] && continue; \
+			cmd="kafka-topics.sh --bootstrap-server \"\$$BS\" --command-config /tmp/admin.properties --create --if-not-exists --topic $$name --partitions $$parts --replication-factor $$repl"; \
+			if [ -n "$$cfgs" ]; then \
+				while IFS= read -r kv; do \
+					kv_trim=$$(echo "$$kv" | xargs); \
+					[ -n "$$kv_trim" ] && cmd="$$cmd --config $$kv_trim"; \
+				done < <(echo "$$cfgs" | perl -pe "s/,(?=[a-zA-Z._]+=)/\\n/g"); \
+			fi; \
+			echo "$$cmd" >> recreate-topics.sh; \
+		done; \
+		chmod +x recreate-topics.sh; \
+		{ echo "Kafka per-app backup"; \
+			echo "APP=$$APP"; \
+			echo "APP_PREFIX=$$APP_PREFIX"; \
+			echo "topics: $$(wc -l < topics.list | tr -d \" \")"; \
+			echo "consumer-groups: $$(wc -l < consumer-groups.list | tr -d \" \")"; \
+			date; } > info.txt; \
+		tar -czf /tmp/kafka-app.tar.gz -C /tmp/meta .; \
+		rm -f /tmp/admin.properties; \
+	'; \
+	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- cat /tmp/kafka-app.tar.gz > "$$OUT"; \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не скопирован"; exit 1; }; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
+	echo "✓ Meta-бэкап топиков $$APP_PREFIX* создан: $$OUT ($$SIZE)"; \
+	echo "=> $$OUT"
+
+# Usage: make app-restore APP=myapp ENV=local BACKUP_FILE=<path> [SKIP_CONFIRM=1]
+# Пересоздаёт топики из recreate-topics.sh (--if-not-exists). Существующие не трогаются.
+app-restore:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан"; exit 1; fi
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите BACKUP_FILE=apps/backups/$(ENV)/$(APP)/kafka/$(APP)-topics-YYYYMMDD-HHMMSS.tar.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будут пересозданы топики $(APP).* из $(BACKUP_FILE) (--if-not-exists)."; \
+		echo "  Существующие топики не трогаются, данные сохраняются."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@set -eo pipefail; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	ADMIN_PASSWORD=$$(kubectl get secret $(HELM_RELEASE_NAME)-user-passwords --namespace $(KAFKA_NAMESPACE) -o jsonpath='{.data.client-passwords}' 2>/dev/null | base64 -d | cut -d, -f1); \
+	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось получить admin password"; exit 1; fi; \
+	HELPER=kafka-app-restore-$$TS; \
+	kubectl run "$$HELPER" --restart=Never --image=$(KAFKA_IMAGE_LOCAL) --namespace=$(KAFKA_NAMESPACE) \
+		--overrides='{"spec":{"containers":[{"name":"'$$HELPER'","image":"$(KAFKA_IMAGE_LOCAL)","command":["sleep","600"]}]}}' \
+		>/dev/null; \
+	trap 'kubectl delete pod "$$HELPER" -n $(KAFKA_NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
+	kubectl wait --namespace $(KAFKA_NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
+	printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-256\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="user1" password="%s";\n' "$$ADMIN_PASSWORD" \
+		| kubectl exec -i "$$HELPER" -n $(KAFKA_NAMESPACE) -- sh -c 'cat > /tmp/admin.properties && chmod 600 /tmp/admin.properties'; \
+	kubectl cp "$(BACKUP_FILE)" "$(KAFKA_NAMESPACE)/$$HELPER:/tmp/app-topics.tar.gz" >/dev/null; \
+	kubectl exec "$$HELPER" -n $(KAFKA_NAMESPACE) -- bash -ec ' \
+		mkdir -p /tmp/meta && cd /tmp/meta; \
+		tar -xzf /tmp/app-topics.tar.gz; \
+		[ -f recreate-topics.sh ] || { echo "✗ recreate-topics.sh отсутствует в архиве"; exit 1; }; \
+		BS="'"$(KAFKA_BOOTSTRAP_SERVER)"'" bash recreate-topics.sh; \
+	'; \
+	echo "✓ Топики $(APP).* пересозданы из $(BACKUP_FILE)"
+
 # Usage: make app-show-creds APP=myapp [APP_NS=myapp]
 app-show-creds:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi
@@ -927,7 +1042,7 @@ test-clean:
 ## =========================
 ## Backup / Restore (definitions: topics + configs + ACL + SCRAM users list)
 ## =========================
-BACKUP_DIR ?= backups
+BACKUP_DIR ?= backups/$(ENV)
 
 # Запускает helper-pod на образе kafka, через kafka-*.sh выгружает все topic / config / ACL / SCRAM definitions,
 # собирает recreate-topics.sh для последующего быстрого восстановления и упаковывает всё в tar.gz.

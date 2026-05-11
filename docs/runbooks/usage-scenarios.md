@@ -89,8 +89,8 @@
 
 1. По графику (cron / systemd timer / CI) для каждого `ENV`:
    - **Полный** (всё разом): `make backup-all ENV=…` + `make env-backup ENV=…`. TUI: **Бэкапы → Сделать бэкап: полный** (с предложением сразу запустить env-backup).
-   - **Все стейтфул-сервисы только:** `make backup-all ENV=…` — последовательно `postgres-backup`, `redis-backup`, `kafka-backup-meta`, `minio-backup-meta`, `clickhouse-backup`, `rabbitmq-backup-defs` (учитывает `ENABLED_SERVICES`/`EXCLUDE_SERVICES`). Артефакты — в `<service>/backups/` (gitignored). Подробности — `<service>/BACKUP.md`. TUI: **Бэкапы → Сделать бэкап: выборочно** (или «полный» без env-шага).
-   - **Платформенные Secrets и `apps/conf/`:** `make env-backup ENV=…` — `environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz`. Без него восстановление с нуля невозможно. TUI: **Бэкапы → Сделать бэкап: только секреты**.
+   - **Все стейтфул-сервисы только:** `make backup-all ENV=…` — последовательно `postgres-backup`, `redis-backup`, `kafka-backup-meta`, `minio-backup-meta`, `clickhouse-backup`, `rabbitmq-backup-defs` (учитывает `ENABLED_SERVICES`/`EXCLUDE_SERVICES`). Артефакты — в `<service>/backups/<env>/` (gitignored). Подробности — `<service>/BACKUP.md`. TUI: **Бэкапы → Сделать бэкап: выборочно** (или «полный» без env-шага).
+   - **Платформенные Secrets и `apps/conf/`:** `make env-backup ENV=…` — `environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz`. Без него восстановление с нуля невозможно. TUI: **Бэкапы → Сделать бэкап: только секреты**.
 2. Хранить артефакты **вне той же ноды** (rsync/rclone в S3, отдельный сервер, при необходимости шифрование — см. [secrets-management.md](./secrets-management.md), [onboarding-admin.md](../onboarding-admin.md)).
 3. Ротация — оператор задаёт RPO/RTO, чистит старые архивы.
 4. **Smoke-тест восстановления** в local/staging: `make <svc>-restore BACKUP_FILE=… ENV=…` (для каждого сервиса — соответствующий `<service>/BACKUP.md`). TUI: **Бэкапы → Восстановить сервис из архива** — выбор сервиса, ввод `BACKUP_FILE`, двойное подтверждение. Без smoke-теста «бэкап есть» ≠ «бэкап применим».

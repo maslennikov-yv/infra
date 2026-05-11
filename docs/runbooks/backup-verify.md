@@ -48,7 +48,7 @@ admin-machine                                   SRC_ENV (prod node)
 ─────────────                                   ────────────────────
                        1. preflight
 make backup-verify ───→ ssh scp ←─────────────  *-backup-* files
-SRC_ENV=prod                                    environments/backups/<src>-*.tar.gz
+SRC_ENV=prod                                    environments/backups/<src>/*.tar.gz
 DST_ENV=local                                   verify-reports/.../fingerprint-source-*.json
 APP=myapp                ↓
                        2. fetch → verify-reports/<TS>-<APP>/incoming/
@@ -87,7 +87,7 @@ make env-backup   ENV=$SRC_ENV CONFIRM=1
 make backup-fingerprint APP=<app> ENV=$SRC_ENV ROLE=source
 ```
 
-После двух шагов в `<svc>/backups/`, `environments/backups/` и `verify-reports/<TS>-<app>/` лежат свежие файлы.
+После двух шагов в `<svc>/backups/<SRC_ENV>/`, `environments/backups/<SRC_ENV>/` и `verify-reports/<TS>-<app>/` лежат свежие файлы.
 
 > **Time-skew**: `backup-fingerprint ROLE=source` снимает snapshot ПОСЛЕ `backup-all`, чтобы фингерпринт отражал состояние, которое **должно** воспроизвестись. Если ваш APP активно пишет, разрыв между bкапом и фингерпринтом может приводить к ложным diff'ам для `informational` (data-metrics). Для `structural` это не критично — schema, ACL, topics стабильны.
 
@@ -194,8 +194,8 @@ make backup-verify-fetch SRC_ENV=prod APP=myapp
 ```
 
 scp по SSH из `environments/<SRC>.mk` (или local-cp если SSH_HOST пуст) свежих файлов:
-- `environments/backups/<SRC>-*.tar.gz[.age]`
-- `<svc>/backups/<svc>-{backup,meta,defs}-*.{tar.gz,sql.gz,json.gz}[.age]`
+- `environments/backups/<SRC>/*.tar.gz[.age]`
+- `<svc>/backups/<SRC>/<svc>-{backup,meta,defs}-*.{tar.gz,sql.gz,json.gz}[.age]`
 - `verify-reports/.../fingerprint-source-<SRC>-*.json[.age]` (если `INCLUDE_FINGERPRINT=1`, default)
 
 Кладёт в `verify-reports/<TS>-<APP>/incoming/`. Сразу после scp — integrity check каждого. Печатает `BACKUP_FILES=...` для downstream.
@@ -327,7 +327,7 @@ Output: `diff.md` (markdown с per-service таблицей + JSON-блоки р
 
 - [ ] `make env-label-backfill ENV=$DST_ENV` — однократно проставить `infra-env=$DST_ENV` на существующие ns (новые ns получают label автоматически в PR1.3).
 - [ ] `environments/$SRC_ENV.mk` — SSH_HOST, SSH_USER, SSH_KEY, SSH_PORT заполнены.
-- [ ] На SRC_ENV есть свежие бэкапы: `ssh $SRC ls -lh /opt/infra/postgres/backups/ /opt/infra/environments/backups/ ...`.
+- [ ] На SRC_ENV есть свежие бэкапы: `ssh $SRC ls -lh /opt/infra/postgres/backups/$SRC_ENV/ /opt/infra/environments/backups/$SRC_ENV/ ...`.
 - [ ] На SRC_ENV снят source-fingerprint после backup-all: `ssh $SRC ls -lh /opt/infra/verify-reports/*/fingerprint-source-*`.
 - [ ] `apps/conf/` либо пуст, либо вы готовы к workspace swap.
 - [ ] `apps/registry.yaml` имеет `<APP>` с `enabled: true` (на admin-машине).
@@ -508,7 +508,7 @@ make backup-verify SRC_ENV=... DST_ENV=... APP=... CLEAN=1
 |---|---|---|
 | **Data-mirror layer** | Восстановление объёмных данных для verify | `mc mirror` (MinIO), MirrorMaker2 (Kafka), scripted RDB restore (Redis), `clickhouse-backup` tool, для RabbitMQ federation |
 | **Эфемерные namespace внутри local** | Параллельные verify разных APP без CLEAN | Suffix namespace'ов: `postgres-verify-<TS>`, `redis-verify-<TS>`, ... + values-overlay |
-| **Параллельные verify** | Быстрее verify N приложений | flock на `<svc>/backups/` (уже есть PID в timestamp — PR1.6); запуск orchestrator'ов в фоне |
+| **Параллельные verify** | Быстрее verify N приложений | flock на `<svc>/backups/<ENV>/` (уже есть PID в timestamp — PR1.6); запуск orchestrator'ов в фоне |
 | **Slack/email алёртинг** | Уведомление при FAIL | hook в `summary.json` → `curl <slack-webhook>` |
 | **Multi-DST_ENV** | Verify в нескольких целевых средах одновременно | Внешний orchestrator (cron + matrix) |
 | **GitOps verify** | Запуск из CI на каждый PR | Kind-cluster + mock backups + scenario tests |

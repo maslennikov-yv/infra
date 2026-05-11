@@ -14,7 +14,7 @@ make postgres-backup ENV=stage
 make backup ENV=stage
 ```
 
-Бэкап будет сохранен в `postgres/backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz`
+Бэкап будет сохранен в `postgres/backups/stage/postgres-backup-YYYYMMDD-HHMMSS.sql.gz` (подкаталог — текущий `ENV`).
 
 ### Бэкап конкретной базы данных
 
@@ -24,7 +24,7 @@ make backup ENV=stage
 make backup-single DB_NAME=app_db ENV=stage
 ```
 
-Бэкап будет сохранен в `postgres/backups/app_db-backup-YYYYMMDD-HHMMSS.sql.gz`
+Бэкап будет сохранен в `postgres/backups/stage/app_db-backup-YYYYMMDD-HHMMSS.sql.gz`
 
 ### Настройка директории для бэкапов
 
@@ -39,7 +39,7 @@ BACKUP_DIR=/custom/path make backup
 Бэкапы архивируются с помощью gzip для экономии места. При просмотре используется потоковая декомпрессия - файл не распаковывается полностью, что позволяет просматривать даже очень большие бэкапы:
 
 ```bash
-make view-backup BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+make view-backup BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz
 ```
 
 Использует `less` для просмотра. Навигация:
@@ -53,13 +53,13 @@ make view-backup BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
 Показать первые N строк бэкапа (по умолчанию 50):
 
 ```bash
-make view-backup-head BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+make view-backup-head BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz
 ```
 
 С указанием количества строк:
 
 ```bash
-LINES=100 make view-backup-head BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+LINES=100 make view-backup-head BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz
 ```
 
 ### Поиск в бэкапе (с потоковой декомпрессией)
@@ -67,19 +67,19 @@ LINES=100 make view-backup-head BACKUP_FILE=backups/postgres-backup-20231103-143
 Поиск с регулярными выражениями без полной распаковки файла:
 
 ```bash
-make view-backup-search BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz SEARCH='CREATE TABLE'
+make view-backup-search BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz SEARCH='CREATE TABLE'
 ```
 
 Примеры поиска:
 ```bash
 # Поиск создания таблиц
-make view-backup-search BACKUP_FILE=backups/...sql.gz SEARCH='CREATE TABLE'
+make view-backup-search BACKUP_FILE=backups/stage/...sql.gz SEARCH='CREATE TABLE'
 
 # Поиск INSERT
-make view-backup-search BACKUP_FILE=backups/...sql.gz SEARCH='INSERT INTO'
+make view-backup-search BACKUP_FILE=backups/stage/...sql.gz SEARCH='INSERT INTO'
 
 # Поиск конкретной таблицы
-make view-backup-search BACKUP_FILE=backups/...sql.gz SEARCH='users'
+make view-backup-search BACKUP_FILE=backups/stage/...sql.gz SEARCH='users'
 ```
 
 ### Список всех бэкапов
@@ -100,10 +100,10 @@ make list-backups
 
 ```bash
 # Из корня репозитория (BACKUP_FILE относительно postgres/)
-make postgres-restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz ENV=stage
+make postgres-restore BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz ENV=stage
 
 # Или из postgres/
-make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz ENV=stage
+make restore BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz ENV=stage
 ```
 
 Команда запросит подтверждение перед восстановлением.
@@ -113,7 +113,7 @@ make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz ENV=stag
 Восстанавливает только указанную базу данных:
 
 ```bash
-make restore-single BACKUP_FILE=backups/app_db-backup-20231103-143022.sql.gz DB_NAME=app_db ENV=stage
+make restore-single BACKUP_FILE=backups/stage/app_db-backup-20231103-143022.sql.gz DB_NAME=app_db ENV=stage
 ```
 
 ### Восстановление из неархивированного SQL файла
@@ -161,7 +161,7 @@ pg_dumpall/pg_dump → gzip → файл.sql.gz
 
 ```bash
 make backup
-# Результат: backups/postgres-backup-20231103-143022.sql.gz
+# Результат: backups/<ENV>/postgres-backup-20231103-143022.sql.gz
 ```
 
 ### Проверка содержимого перед восстановлением
@@ -171,13 +171,13 @@ make backup
 make list-backups
 
 # 2. Просмотреть начало бэкапа
-make view-backup-head BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+make view-backup-head BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz
 
 # 3. Поиск нужных объектов
-make view-backup-search BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz SEARCH='CREATE TABLE my_table'
+make view-backup-search BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz SEARCH='CREATE TABLE my_table'
 
 # 4. Полный просмотр (если нужно)
-make view-backup BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+make view-backup BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz
 ```
 
 ### Восстановление после сбоя
@@ -190,7 +190,7 @@ make status
 make list-backups
 
 # 3. Восстановить из последнего бэкапа
-make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
+make restore BACKUP_FILE=backups/stage/postgres-backup-20231103-143022.sql.gz
 ```
 
 ### Бэкап перед обновлением
@@ -200,7 +200,7 @@ make restore BACKUP_FILE=backups/postgres-backup-20231103-143022.sql.gz
 make backup
 
 # Сохранить имя файла для возможного отката
-export BACKUP_FILE=backups/postgres-backup-$(date +%Y%m%d-%H%M%S).sql.gz
+export BACKUP_FILE=backups/$(ENV)/postgres-backup-$(date +%Y%m%d-%H%M%S).sql.gz
 make backup
 
 # После обновления, если нужно откатиться
@@ -221,7 +221,7 @@ make restore BACKUP_FILE=$BACKUP_FILE
 
 `make postgres-backup` под капотом делает `make -C postgres backup ENV=...`
 с правильным `KUBECONFIG` из `environments/<env>.mk`. Файл бэкапа попадёт
-в `infra/postgres/backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz` (если не
+в `infra/postgres/backups/<env>/postgres-backup-YYYYMMDD-HHMMSS.sql.gz` (если не
 переопределено `BACKUP_DIR`).
 
 ### Скрипт для ротации бэкапов
@@ -231,7 +231,7 @@ make restore BACKUP_FILE=$BACKUP_FILE
 
 ```bash
 #!/bin/bash
-find /path/to/infra/postgres/backups/ -name "*.sql.gz" -mtime +30 -delete
+find /path/to/infra/postgres/backups/<env>/ -name "*.sql.gz" -mtime +30 -delete
 ```
 
 ## Безопасность
@@ -267,7 +267,7 @@ kubectl get secret postgres-postgresql -n postgres
 
 1. Проверьте что бэкап не поврежден:
 ```bash
-gunzip -t backups/postgres-backup-20231103-143022.sql.gz
+gunzip -t backups/<env>/postgres-backup-20231103-143022.sql.gz
 ```
 
 2. Проверьте логи PostgreSQL:
@@ -278,6 +278,6 @@ make logs
 3. Проверьте размер бэкапа и доступное место:
 ```bash
 df -h
-ls -lh backups/
+ls -lh backups/<env>/
 ```
 

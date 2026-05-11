@@ -5,7 +5,7 @@
 	postgres-verify redis-verify minio-verify clickhouse-verify \
 	check-updates postgres-check-updates redis-check-updates kafka-check-updates \
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
-	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop redis-app-create redis-app-show-creds redis-app-verify redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop minio-app-create minio-app-show-creds minio-app-verify minio-app-drop clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop \
+	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
 	apps-merge-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
 	apps-conf-encrypt apps-conf-decrypt apps-conf-edit \
@@ -22,7 +22,7 @@
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
 	monitoring-secrets-init monitoring-show-creds monitoring-regen-password \
 	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
-	backup-all \
+	backup-all app-backup \
 	backup-verify-preflight backup-fingerprint backup-fingerprint-diff backup-verify-fetch backup-verify-localize backup-verify \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
 	infra \
@@ -286,6 +286,15 @@ help:
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Backup / Restore (definitions; данные таблиц/топиков/бакетов — см. <service>/BACKUP.md):$(RESET)"
 	@echo "  make backup-all $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=...$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=...$(RESET)] [$(YELLOW)BACKUP_ALL_CONTINUE_ON_ERROR=0$(RESET)]"
+	@echo ""
+	@echo "$(BOLD)$(GREEN)Per-app backup (apps/backups/<ENV>/<APP>/<service>/):$(RESET)"
+	@echo "  make app-backup $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)APP_BACKUP_CONTINUE_ON_ERROR=1$(RESET)] - все сервисы APP (по merged конфигу; redis не входит)"
+	@echo "  make pg-app-backup        $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)APP_DB=app_myapp$(RESET)] - pg_dump одной БД приложения"
+	@echo "  make clickhouse-app-backup $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)DB=myapp$(RESET)]       - schemas + Native data всех таблиц"
+	@echo "  make minio-app-backup     $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)BUCKET=myapp$(RESET)]    - mc mirror bucket'а целиком (включая данные)"
+	@echo "  make kafka-app-backup     $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)                                   - definitions топиков <APP>.* + consumer-groups (без данных)"
+	@echo "  make rabbitmq-app-backup  $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)APP_VHOST=myapp$(RESET)] - vhost-specific definitions (без сообщений)"
+	@echo "  make <svc>-app-restore    $(YELLOW)APP=myapp ENV=$(ENV) BACKUP_FILE=apps/backups/$(ENV)/myapp/<svc>/...$(RESET) [$(YELLOW)SKIP_CONFIRM=1$(RESET)]"
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Backup verification (отдельные шаги; orchestrator — make backup-verify в PR3):$(RESET)"
 	@echo "  make backup-verify-preflight $(YELLOW)SRC_ENV=prod DST_ENV=local APP=myapp$(RESET) [$(YELLOW)BACKUP_FILES=\"f1 f2 ...\"$(RESET)] [$(YELLOW)FORCE=1$(RESET)] - 13 hard-checks (см. scripts/backup-verify-preflight.sh)"
@@ -580,6 +589,24 @@ pg-app-drop:
 		$(if $(strip $(POSTGRES_ADMIN_PASSWORD)),POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)")
 pg-app-verify:
 	@$(MAKE) -C postgres app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+pg-app-backup:
+	@$(MAKE) -C postgres app-backup APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		$(if $(strip $(POSTGRES_ADMIN_PASSWORD)),POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)") \
+		$(if $(strip $(APP_DB)),APP_DB="$(APP_DB)")
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "apps/backups/$(ENV)/$(APP)/postgres" "$(APP)-db-*.sql.gz"
+pg-app-restore:
+	@# BACKUP_FILE — путь относительно $(REPO_ROOT). Если .age — расшифровываем рядом и удаляем после restore.
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/postgres/$(APP)-db-…sql.gz"; exit 1; fi; \
+	FULL="$(REPO_ROOT)/$(BACKUP_FILE)"; \
+	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
+	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
+	$(MAKE) -C postgres app-restore APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$PLAIN" \
+		SKIP_CONFIRM="$(SKIP_CONFIRM)" \
+		$(if $(strip $(POSTGRES_ADMIN_PASSWORD)),POSTGRES_ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)") \
+		$(if $(strip $(APP_DB)),APP_DB="$(APP_DB)"); \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
 
 # Не передаём REDIS_AUTH_* с пустым значением — иначе затираются дефолты redis/Makefile (?=).
 redis-app-create:
@@ -610,6 +637,19 @@ kafka-app-verify:
 
 kafka-app-drop:
 	@$(MAKE) -C kafka app-drop APP="$(APP)" APP_NS="$(APP_NS)" APP_USER="$(APP_USER)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+kafka-app-backup:
+	@$(MAKE) -C kafka app-backup APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "apps/backups/$(ENV)/$(APP)/kafka" "$(APP)-topics-*.tar.gz"
+kafka-app-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/kafka/$(APP)-topics-…tar.gz"; exit 1; fi; \
+	FULL="$(REPO_ROOT)/$(BACKUP_FILE)"; \
+	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
+	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
+	$(MAKE) -C kafka app-restore APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$PLAIN" \
+		SKIP_CONFIRM="$(SKIP_CONFIRM)"; \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
 
 rabbitmq-app-create:
 	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
@@ -624,6 +664,64 @@ rabbitmq-app-drop:
 	@$(MAKE) -C rabbitmq app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
 		APP_VHOST="$(APP_VHOST)" APP_USER="$(APP_USER)" APP_SECRET_NAME="$(APP_SECRET_NAME)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
 
+rabbitmq-app-backup:
+	@$(MAKE) -C rabbitmq app-backup APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		$(if $(strip $(APP_VHOST)),APP_VHOST="$(APP_VHOST)")
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "apps/backups/$(ENV)/$(APP)/rabbitmq" "$(APP)-defs-*.json.gz"
+rabbitmq-app-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/rabbitmq/$(APP)-defs-…json.gz"; exit 1; fi; \
+	FULL="$(REPO_ROOT)/$(BACKUP_FILE)"; \
+	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
+	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
+	$(MAKE) -C rabbitmq app-restore APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$PLAIN" \
+		SKIP_CONFIRM="$(SKIP_CONFIRM)" $(if $(strip $(APP_VHOST)),APP_VHOST="$(APP_VHOST)"); \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
+
+# Диспатчер: бэкап всех сервисов, для которых у APP есть конфиг в merged.
+# Redis намеренно не входит (нет per-app единицы данных, только Secret/ACL).
+# Поведение по умолчанию — fail-fast; APP_BACKUP_CONTINUE_ON_ERROR=1 переходит к следующему сервису при ошибке (exit code != 0 в конце).
+APP_BACKUP_CONTINUE_ON_ERROR ?= 0
+app-backup:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-backup APP=myapp ENV=$(ENV))"; exit 1; fi
+	@if [ ! -f "$(APPS_REGISTRY)" ]; then echo "✗ Реестр $(APPS_REGISTRY) не найден"; exit 1; fi
+	@MERGED=$$(mktemp); \
+	trap 'rm -f $$MERGED' EXIT INT TERM; \
+	"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)" > $$MERGED || { echo "✗ apps-merge-config упал"; exit 1; }; \
+	APP_NM="$(APP)" enabled=$$("$(YQ)" -r '.apps[] | select(.name == strenv(APP_NM)) | .enabled' $$MERGED 2>/dev/null); \
+	if [ "$$enabled" != "true" ]; then \
+		echo "✗ APP=$(APP) не enabled: true в merged $(APPS_REGISTRY)"; exit 1; \
+	fi; \
+	OK=0; SKIPPED=0; FAILED=0; \
+	check_field() { "$(REPO_ROOT)/scripts/app-config-get.sh" "$$MERGED" "$(APP)" "$$1" 2>/dev/null; }; \
+	run_step() { \
+		svc=$$1; field=$$2; target=$$3; \
+		val=$$(check_field "$$field"); \
+		if [ -z "$$val" ] || [ "$$val" = "null" ]; then \
+			echo "  ↷ skip $$svc (нет $$field в merged для $(APP))"; \
+			SKIPPED=$$((SKIPPED+1)); return 0; \
+		fi; \
+		echo ""; echo "=== app-backup: $$svc ($(APP)) ==="; \
+		if APPS_MERGED_FILE="$$MERGED" $(MAKE) "$$target" APP="$(APP)" ENV="$(ENV)"; then \
+			OK=$$((OK+1)); return 0; \
+		fi; \
+		FAILED=$$((FAILED+1)); \
+		if [ "$(APP_BACKUP_CONTINUE_ON_ERROR)" != "1" ]; then \
+			echo "✗ $$svc/$$target упал (APP_BACKUP_CONTINUE_ON_ERROR=1 чтобы продолжить остальные)"; exit 1; \
+		fi; \
+		echo "  ⚠ $$svc/$$target упал, продолжаем"; \
+	}; \
+	run_step postgres   postgres.password   pg-app-backup; \
+	run_step clickhouse clickhouse.password clickhouse-app-backup; \
+	run_step minio      minio.secret_key    minio-app-backup; \
+	run_step kafka      kafka.password      kafka-app-backup; \
+	run_step rabbitmq   rabbitmq.password   rabbitmq-app-backup; \
+	echo ""; \
+	echo "Summary APP=$(APP) ENV=$(ENV): ok=$$OK skipped=$$SKIPPED failed=$$FAILED"; \
+	echo "  → apps/backups/$(ENV)/$(APP)/"; \
+	if [ $$FAILED -gt 0 ]; then exit 1; fi
+
 ## =========================
 ## Per-service diagnostics (status/logs/shell)
 ## =========================
@@ -633,7 +731,7 @@ rabbitmq-app-drop:
 # отдельные wrapper-ы (другая семантика).
 postgres-backup:
 	@$(MAKE) -C postgres backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" postgres/backups "postgres-backup-*.sql.gz"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" postgres/backups/$(ENV) "postgres-backup-*.sql.gz"
 postgres-restore:
 	$(call _restore_with_decrypt,postgres,restore)
 postgres-delete-pvcs:
@@ -646,7 +744,7 @@ postgres-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап ==="
 	@$(MAKE) postgres-backup ENV="$(ENV)"
-	@LATEST=$$(ls -t postgres/backups/postgres-backup-*.sql.gz 2>/dev/null | head -1); \
+	@LATEST=$$(ls -t postgres/backups/$(ENV)/postgres-backup-*.sql.gz 2>/dev/null | head -1); \
 		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Бэкап пустой или отсутствует ($$LATEST). Прерываю — данные могут быть в опасности."; exit 1; }
 	@echo ""
 	@echo "=== 2/3 Удаление release ==="
@@ -657,7 +755,7 @@ postgres-recreate-prep:
 	@echo ""
 	@echo "Дальше: отредактируйте postgres/values-$(ENV).yaml (primary.persistence.size), затем:"
 	@echo "  make postgres-up ENV=$(ENV)"
-	@echo "  make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=$(ENV)"
+	@echo "  make postgres-restore BACKUP_FILE=backups/$(ENV)/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=$(ENV)"
 	@echo "(путь BACKUP_FILE — относительно postgres/, см. postgres/list-backups)"
 
 # <svc>-recreate-prep для остальных сервисов: backup definitions → down → delete PVC → инструкции.
@@ -671,7 +769,7 @@ redis-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап Redis (RDB + ACL) ==="
 	@$(MAKE) redis-backup ENV="$(ENV)"
-	@LATEST=$$(ls -t redis/backups/redis-backup-*.tar.gz 2>/dev/null | head -1); \
+	@LATEST=$$(ls -t redis/backups/$(ENV)/redis-backup-*.tar.gz 2>/dev/null | head -1); \
 		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "=== 2/3 Удаление release ==="
@@ -684,7 +782,7 @@ redis-recreate-prep:
 	@echo "Дальше:"
 	@echo "  1. Отредактируйте redis/values-$(ENV).yaml (master.persistence.size)"
 	@echo "  2. make redis-up ENV=$(ENV)"
-	@echo "  3. make redis-restore-acl BACKUP_FILE=redis/backups/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  3. make redis-restore-acl BACKUP_FILE=backups/$(ENV)/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
 	@echo "  4. (Опц.) восстановление RDB-данных — см. redis/BACKUP.md"
 
 # ⚠ Kafka: pересоздание удаляет KRaft cluster-id (Secret kafka-kraft + meta.properties в PVC).
@@ -697,7 +795,7 @@ kafka-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап Kafka meta (topics + ACL + SCRAM list) ==="
 	@$(MAKE) kafka-backup-meta ENV="$(ENV)"
-	@LATEST=$$(ls -t kafka/backups/kafka-meta-*.tar.gz 2>/dev/null | head -1); \
+	@LATEST=$$(ls -t kafka/backups/$(ENV)/kafka-meta-*.tar.gz 2>/dev/null | head -1); \
 		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Meta-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "=== 2/3 Удаление release ==="
@@ -711,7 +809,7 @@ kafka-recreate-prep:
 	@echo "Дальше:"
 	@echo "  1. Отредактируйте kafka/values-$(ENV).yaml (controller.persistence.size / broker.persistence.size)"
 	@echo "  2. make kafka-bootstrap ENV=$(ENV)   (двухфазная установка с нуля — KRaft + ACL)"
-	@echo "  3. make kafka-restore-meta-topics BACKUP_FILE=kafka/backups/kafka-meta-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  3. make kafka-restore-meta-topics BACKUP_FILE=backups/$(ENV)/kafka-meta-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
 	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=kafka   (SCRAM-пользователи + ACL)"
 
 minio-recreate-prep:
@@ -722,7 +820,7 @@ minio-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап MinIO meta (users + policies + tracking secrets) ==="
 	@$(MAKE) minio-backup-meta ENV="$(ENV)"
-	@LATEST=$$(ls -t minio/backups/minio-meta-*.tar.gz 2>/dev/null | head -1); \
+	@LATEST=$$(ls -t minio/backups/$(ENV)/minio-meta-*.tar.gz 2>/dev/null | head -1); \
 		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Meta-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "⚠ Объекты бакетов НЕ бэкапятся make backup-meta. Если данные нужны — выполните 'mc mirror' до этого шага."
@@ -736,7 +834,7 @@ minio-recreate-prep:
 	@echo "Дальше:"
 	@echo "  1. Отредактируйте minio/values-$(ENV).yaml (persistence.size)"
 	@echo "  2. make minio-up ENV=$(ENV)"
-	@echo "  3. make minio-restore-meta BACKUP_FILE=minio/backups/minio-meta-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  3. make minio-restore-meta BACKUP_FILE=backups/$(ENV)/minio-meta-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
 	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=minio   (IAM users + Secret приложений)"
 	@echo "  5. (Опц.) восстановление объектов через mc mirror — см. minio/BACKUP.md"
 
@@ -748,7 +846,7 @@ clickhouse-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап ClickHouse (schemas + users + grants) ==="
 	@$(MAKE) clickhouse-backup ENV="$(ENV)"
-	@LATEST=$$(ls -t clickhouse/backups/clickhouse-backup-*.tar.gz 2>/dev/null | head -1); \
+	@LATEST=$$(ls -t clickhouse/backups/$(ENV)/clickhouse-backup-*.tar.gz 2>/dev/null | head -1); \
 		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Schema-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "⚠ Данные таблиц НЕ бэкапятся make backup. Если данные нужны — используйте BACKUP TO Disk() или SELECT INTO OUTFILE до этого шага."
@@ -762,7 +860,7 @@ clickhouse-recreate-prep:
 	@echo "Дальше:"
 	@echo "  1. Отредактируйте clickhouse/values-$(ENV).yaml (persistence.size)"
 	@echo "  2. make clickhouse-up ENV=$(ENV)"
-	@echo "  3. make clickhouse-restore BACKUP_FILE=clickhouse/backups/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
+	@echo "  3. make clickhouse-restore BACKUP_FILE=backups/$(ENV)/clickhouse-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
 	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=clickhouse   (пользователи приложений с актуальными паролями)"
 	@echo "  5. (Опц.) восстановление данных — см. clickhouse/BACKUP.md"
 
@@ -774,7 +872,7 @@ rabbitmq-recreate-prep:
 	fi
 	@echo "=== 1/3 Бэкап RabbitMQ definitions (vhosts + users + queues + bindings) ==="
 	@$(MAKE) rabbitmq-backup-defs ENV="$(ENV)"
-	@LATEST=$$(ls -t rabbitmq/backups/rabbitmq-defs-*.json.gz 2>/dev/null | head -1); \
+	@LATEST=$$(ls -t rabbitmq/backups/$(ENV)/rabbitmq-defs-*.json.gz 2>/dev/null | head -1); \
 		[ -n "$$LATEST" ] && [ -s "$$LATEST" ] || { echo "✗ Definitions-бэкап пустой или отсутствует ($$LATEST). Прерываю."; exit 1; }
 	@echo ""
 	@echo "⚠ Сообщения в очередях НЕ бэкапятся (для durability используйте federation/shovel + persistent queues)."
@@ -788,7 +886,7 @@ rabbitmq-recreate-prep:
 	@echo "Дальше:"
 	@echo "  1. Отредактируйте rabbitmq/values-$(ENV).yaml (persistence.size)"
 	@echo "  2. make rabbitmq-up ENV=$(ENV)"
-	@echo "  3. make rabbitmq-restore-defs BACKUP_FILE=rabbitmq/backups/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz ENV=$(ENV)"
+	@echo "  3. make rabbitmq-restore-defs BACKUP_FILE=backups/$(ENV)/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz ENV=$(ENV)"
 	@echo "  4. make apps-apply ENV=$(ENV) ENABLED_SERVICES=rabbitmq   (актуальные пароли пользователей приложений)"
 
 # status/logs/shell для всех сервисов из $(SERVICES) через static-pattern.
@@ -842,6 +940,21 @@ minio-app-drop:
 	@$(MAKE) -C minio app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
 		ACCESS_KEY="$(ACCESS_KEY)" APP_SECRET_NAME="$(APP_SECRET_NAME)" SKIP_CONFIRM="$(SKIP_CONFIRM)" MINIO_REMOVE_BUCKETS="$(MINIO_REMOVE_BUCKETS)"
 
+minio-app-backup:
+	@$(MAKE) -C minio app-backup APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		$(if $(strip $(BUCKET)),BUCKET="$(BUCKET)")
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "apps/backups/$(ENV)/$(APP)/minio" "$(APP)-bucket-*.tar.gz"
+minio-app-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/minio/$(APP)-bucket-…tar.gz"; exit 1; fi; \
+	FULL="$(REPO_ROOT)/$(BACKUP_FILE)"; \
+	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
+	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
+	$(MAKE) -C minio app-restore APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$PLAIN" \
+		SKIP_CONFIRM="$(SKIP_CONFIRM)" $(if $(strip $(BUCKET)),BUCKET="$(BUCKET)"); \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
+
 clickhouse-app-create:
 	@$(MAKE) -C clickhouse app-create \
 		APP="$(APP)" APP_NS="$(APP_NS)" DB="$(DB)" APP_USER="$(APP_USER)" \
@@ -860,6 +973,21 @@ clickhouse-app-drop:
 	@$(MAKE) -C clickhouse app-drop \
 		APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
 		DB="$(DB)" APP_USER="$(APP_USER)" APP_SECRET_NAME="$(APP_SECRET_NAME)" ADMIN_USER="$(ADMIN_USER)" SKIP_CONFIRM="$(SKIP_CONFIRM)"
+
+clickhouse-app-backup:
+	@$(MAKE) -C clickhouse app-backup APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
+		$(if $(strip $(DB)),DB="$(DB)")
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "apps/backups/$(ENV)/$(APP)/clickhouse" "$(APP)-db-*.tar.gz"
+clickhouse-app-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/clickhouse/$(APP)-db-…tar.gz"; exit 1; fi; \
+	FULL="$(REPO_ROOT)/$(BACKUP_FILE)"; \
+	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
+	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
+	$(MAKE) -C clickhouse app-restore APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" BACKUP_FILE="$$PLAIN" \
+		SKIP_CONFIRM="$(SKIP_CONFIRM)" $(if $(strip $(DB)),DB="$(DB)"); \
+	rc=$$?; \
+	if [ "$$PLAIN" != "$$FULL" ]; then rm -f -- "$$PLAIN"; fi; \
+	exit $$rc
 
 minio-app-append:
 	@$(MAKE) -C minio app-append \
@@ -1344,10 +1472,10 @@ env-backup:
 		fi; \
 	fi
 	@umask 077; \
-	install -d -m 700 environments/backups; \
+	install -d -m 700 environments/backups/$(ENV); \
 	: "PID в timestamp для concurrent safety: два env-backup в одну секунду не перетрутся."; \
 	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
-	ARCHIVE="environments/backups/$(ENV)-$${TS}.tar.gz"; \
+	ARCHIVE="environments/backups/$(ENV)/$${TS}.tar.gz"; \
 	TMP_DIR=$$(mktemp -d); \
 	OUT_DIR="$$TMP_DIR/$(ENV)"; \
 	mkdir -p "$$OUT_DIR"; \
@@ -1392,7 +1520,7 @@ env-backup:
 	rm -rf "$$TMP_DIR"; \
 	echo "✓ Saved: $$ARCHIVE"
 	@# Опциональное шифрование (если задан BACKUP_AGE_RECIPIENT). См. docs/runbooks/backups-encryption.md.
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" environments/backups "$(ENV)-*.tar.gz"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" environments/backups/$(ENV) "*.tar.gz"
 
 # env-label-backfill: проставить label infra-env=<ENV> на все platform-ns (из environments/<ENV>.yaml)
 # и app-ns (enabled: true из apps/registry.yaml). Идемпотентно. Нужно один раз для уже работающих
@@ -1437,7 +1565,7 @@ env-label-backfill:
 # восстановление в тот же кластер, где env-backup снят (sanity-check; ALLOW_SRC_EQUALS_DST=1 для DR).
 env-restore:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
-		echo "✗ Укажите BACKUP_FILE: make env-restore BACKUP_FILE=environments/backups/<env>-YYYYMMDD-HHMMSS.tar.gz[.age] ENV=$(ENV)"; \
+		echo "✗ Укажите BACKUP_FILE: make env-restore BACKUP_FILE=environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz[.age] ENV=$(ENV)"; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
@@ -1539,31 +1667,31 @@ endef
 
 redis-backup:
 	@$(MAKE) -C redis backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" redis/backups "redis-backup-*.tar.gz"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" redis/backups/$(ENV) "redis-backup-*.tar.gz"
 redis-restore-acl:
 	$(call _restore_with_decrypt,redis,restore-acl)
 
 kafka-backup-meta:
 	@$(MAKE) -C kafka backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" kafka/backups "kafka-meta-*.tar.gz"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" kafka/backups/$(ENV) "kafka-meta-*.tar.gz"
 kafka-restore-meta-topics:
 	$(call _restore_with_decrypt,kafka,restore-meta-topics)
 
 minio-backup-meta:
 	@$(MAKE) -C minio backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" minio/backups "minio-meta-*.tar.gz"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" minio/backups/$(ENV) "minio-meta-*.tar.gz"
 minio-restore-meta:
 	$(call _restore_with_decrypt,minio,restore-meta)
 
 clickhouse-backup:
 	@$(MAKE) -C clickhouse backup ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" clickhouse/backups "clickhouse-backup-*"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" clickhouse/backups/$(ENV) "clickhouse-backup-*"
 clickhouse-restore:
 	$(call _restore_with_decrypt,clickhouse,restore)
 
 rabbitmq-backup-defs:
 	@$(MAKE) -C rabbitmq backup-defs ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" rabbitmq/backups "rabbitmq-defs-*"
+	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" rabbitmq/backups/$(ENV) "rabbitmq-defs-*"
 rabbitmq-restore-defs:
 	$(call _restore_with_decrypt,rabbitmq,restore-defs)
 

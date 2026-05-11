@@ -105,7 +105,7 @@ make postgres-recreate-prep ENV=stage
 
 # 3. Развернуть и восстановить
 make postgres-up ENV=stage
-make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
+make postgres-restore BACKUP_FILE=backups/stage/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
 ```
 
 **Вручную:**
@@ -136,7 +136,7 @@ make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz
 5. **Развернуть заново** и при необходимости восстановить:
    ```bash
    make postgres-up ENV=stage
-   make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
+   make postgres-restore BACKUP_FILE=backups/stage/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
    ```
 
 **Альтернатива — только увеличить диск** (без пересоздания): если StorageClass поддерживает расширение (`allowVolumeExpansion: true`), можно увеличить размер без удаления PVC:

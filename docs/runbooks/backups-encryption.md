@@ -97,7 +97,7 @@ make backup-all ENV=prod BACKUP_AGE_RECIPIENT=age1xyz...
 Переопределить, если ключ лежит в другом месте:
 
 ```bash
-make postgres-restore BACKUP_FILE=backups/postgres-backup-…sql.gz.age \
+make postgres-restore BACKUP_FILE=backups/prod/postgres-backup-…sql.gz.age \
     BACKUP_AGE_KEY_FILE=/secure/keys/backups.txt ENV=prod
 ```
 
@@ -106,7 +106,7 @@ make postgres-restore BACKUP_FILE=backups/postgres-backup-…sql.gz.age \
 ```bash
 make postgres-backup ENV=prod
 # ...
-# ✓ Бэкап создан: backups/postgres-backup-20260115-120000.sql.gz (15M)
+# ✓ Бэкап создан: backups/prod/postgres-backup-20260115-120000.sql.gz (15M)
 # 🔒 backup-encrypt: postgres-backup-20260115-120000.sql.gz.age (age, recipient=age1xyz0123456789…)
 ```
 
@@ -124,10 +124,10 @@ make postgres-backup ENV=prod
 
 ```bash
 # С зашифрованным файлом — auto-decrypt
-make postgres-restore BACKUP_FILE=backups/postgres-backup-20260115.sql.gz.age ENV=prod
+make postgres-restore BACKUP_FILE=backups/prod/postgres-backup-20260115.sql.gz.age ENV=prod
 
 # С plain (старые бэкапы) — passthrough, всё работает как раньше
-make postgres-restore BACKUP_FILE=backups/postgres-backup-20260115.sql.gz ENV=prod
+make postgres-restore BACKUP_FILE=backups/prod/postgres-backup-20260115.sql.gz ENV=prod
 ```
 
 `scripts/backup-decrypt.sh`:
@@ -148,7 +148,7 @@ make postgres-restore BACKUP_FILE=backups/postgres-backup-20260115.sql.gz ENV=pr
 age-keygen -o ~/.config/age/backups-new.txt
 
 # 2. Расшифровать старые бэкапы и зашифровать новым ключом
-for f in postgres/backups/*.age; do
+for f in postgres/backups/*/*.age; do
     age -d -i ~/.config/age/backups.txt "$f" \
         | age -r "$(grep 'public key' ~/.config/age/backups-new.txt | awk '{print $4}')" \
               -o "${f%.age}.new.age"
@@ -171,15 +171,15 @@ mv ~/.config/age/backups-new.txt ~/.config/age/backups.txt
 ```bash
 # Без recipient — обычный flow
 make redis-backup ENV=prod
-ls redis/backups/   # должен быть .tar.gz, без .age
+ls redis/backups/prod/   # должен быть .tar.gz, без .age
 
 # С recipient
 export BACKUP_AGE_RECIPIENT=$(grep 'public key' ~/.config/age/backups.txt | awk '{print $4}')
 make redis-backup ENV=prod
-ls redis/backups/   # должен быть .tar.gz.age
+ls redis/backups/prod/   # должен быть .tar.gz.age
 
 # Restore с auto-decrypt
-LATEST=$(ls -t redis/backups/redis-backup-*.tar.gz.age | head -1)
+LATEST=$(ls -t redis/backups/prod/redis-backup-*.tar.gz.age | head -1)
 make redis-restore-acl BACKUP_FILE="${LATEST#redis/}" ENV=prod
 # Должно: backup-decrypt создаёт .decrypted, restore применяет, .decrypted удаляется
 ```
@@ -194,8 +194,8 @@ make redis-restore-acl BACKUP_FILE="${LATEST#redis/}" ENV=prod
 
 ```bash
 # Расшифровать вручную (с любого хоста, где есть age + ключ):
-age -d -i ~/.config/age/backups.txt -o postgres/backups/foo.sql.gz \
-    postgres/backups/foo.sql.gz.age
+age -d -i ~/.config/age/backups.txt -o postgres/backups/prod/foo.sql.gz \
+    postgres/backups/prod/foo.sql.gz.age
 # Дальше — обычный restore с plain-файлом.
 ```
 

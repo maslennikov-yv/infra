@@ -5,13 +5,13 @@
 # либо локальная файловая система (если SSH_HOST пуст — SRC на этой же машине).
 #
 # Список загружаемых артефактов (если присутствуют — пропускаются с пометкой):
-#   environments/backups/<SRC>-LATEST.tar.gz[.age]
-#   postgres/backups/postgres-backup-LATEST.sql.gz[.age]
-#   redis/backups/redis-backup-LATEST.tar.gz[.age]
-#   kafka/backups/kafka-meta-LATEST.tar.gz[.age]
-#   minio/backups/minio-meta-LATEST.tar.gz[.age]
-#   clickhouse/backups/clickhouse-backup-LATEST.tar.gz[.age]
-#   rabbitmq/backups/rabbitmq-defs-LATEST.json.gz[.age]
+#   environments/backups/<SRC>/LATEST.tar.gz[.age]
+#   postgres/backups/<SRC>/postgres-backup-LATEST.sql.gz[.age]
+#   redis/backups/<SRC>/redis-backup-LATEST.tar.gz[.age]
+#   kafka/backups/<SRC>/kafka-meta-LATEST.tar.gz[.age]
+#   minio/backups/<SRC>/minio-meta-LATEST.tar.gz[.age]
+#   clickhouse/backups/<SRC>/clickhouse-backup-LATEST.tar.gz[.age]
+#   rabbitmq/backups/<SRC>/rabbitmq-defs-LATEST.json.gz[.age]
 #   verify-reports/*/fingerprint-source-<SRC>-LATEST.json[.age]  (опционально)
 #
 # Args (env):
@@ -177,13 +177,13 @@ integrity_check() {
 # -----------------------------------------------------------------------------
 # Поле optional вычисляется ниже из REQUIRED_BACKUPS (если задано).
 ARTIFACTS=(
-  "environments/backups|$SRC_ENV-*.tar.gz|env-backup|0"
-  "postgres/backups|postgres-backup-*.sql.gz|postgres|0"
-  "redis/backups|redis-backup-*.tar.gz|redis|0"
-  "kafka/backups|kafka-meta-*.tar.gz|kafka|0"
-  "minio/backups|minio-meta-*.tar.gz|minio|0"
-  "clickhouse/backups|clickhouse-backup-*.tar.gz|clickhouse|0"
-  "rabbitmq/backups|rabbitmq-defs-*.json.gz|rabbitmq|0"
+  "environments/backups/$SRC_ENV|*.tar.gz|env-backup|0"
+  "postgres/backups/$SRC_ENV|postgres-backup-*.sql.gz|postgres|0"
+  "redis/backups/$SRC_ENV|redis-backup-*.tar.gz|redis|0"
+  "kafka/backups/$SRC_ENV|kafka-meta-*.tar.gz|kafka|0"
+  "minio/backups/$SRC_ENV|minio-meta-*.tar.gz|minio|0"
+  "clickhouse/backups/$SRC_ENV|clickhouse-backup-*.tar.gz|clickhouse|0"
+  "rabbitmq/backups/$SRC_ENV|rabbitmq-defs-*.json.gz|rabbitmq|0"
 )
 
 # Если REQUIRED_BACKUPS задан — отметить лейблы НЕ из списка как optional=1.

@@ -337,8 +337,8 @@ microk8s enable metrics-server
 - **`environments/<env>.mk`**: локальные секреты/переопределения окружения (SSH_HOST/SSH_KEY/KUBECONFIG/REGISTRY и т.п.). Создаётся: `make env-new ENV=<env>`.
 - **`k8s/config/<env>`**: kubeconfig для окружения. Создаётся плейсхолдером: `make env-new ENV=<env>`, затем заполняется/скачивается: `make kubeconfig-fetch ENV=<env> ...` (см. `k8s/config/README.md`).
 - **`<service>/images/*.tar`**: tar-файлы Docker образов для offline/registry. Создаются: `make images-save ENV=<env>` (или `make images-save ENV=<env> SERVICE=<service>`).
-- **`environments/backups/`**: бэкапы Kubernetes secrets/configmaps сервисов. Создаются: `make env-backup ENV=<env> [CONFIRM=1]` (см. раздел "Бэкап конфигов/секретов").
-- **`postgres/backups/`**: бэкапы PostgreSQL. Создаются `make postgres-backup ENV=...` или `make -C postgres backup ENV=...` (см. `postgres/README.md` и `postgres/BACKUP.md`).
+- **`environments/backups/<env>/`**: бэкапы Kubernetes secrets/configmaps сервисов (`<TS>.tar.gz`). Создаются: `make env-backup ENV=<env> [CONFIRM=1]` (см. раздел "Бэкап конфигов/секретов").
+- **`<service>/backups/<env>/`**: бэкапы данных/definitions сервисов (`postgres-backup-*.sql.gz`, `redis-backup-*.tar.gz`, `kafka-meta-*.tar.gz`, `minio-meta-*.tar.gz`, `clickhouse-backup-*.tar.gz`, `rabbitmq-defs-*.json.gz`). Создаются `make <svc>-backup ENV=...` (или эквивалентные backup-meta/backup-defs цели); см. `<service>/BACKUP.md`.
 
 Важно: **values-файлы, чарты и lock-файлы чартов (`Chart.lock`) коммитятся** — их намеренно не игнорируем, чтобы “чистый клон” работал одинаково у всех.
 

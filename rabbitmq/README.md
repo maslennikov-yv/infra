@@ -109,9 +109,9 @@ $user $password`), не через shell-string interp — пароли с `'`/`
 сообщений — federation/shovel/replication.
 
 ```bash
-make backup-defs           ENV=local        # backups/rabbitmq-defs-*.json.gz
+make backup-defs           ENV=local        # backups/local/rabbitmq-defs-*.json.gz
 make list-backups
-make restore-defs          BACKUP_FILE=backups/rabbitmq-defs-…json.gz ENV=local
+make restore-defs          BACKUP_FILE=backups/local/rabbitmq-defs-…json.gz ENV=local
 ```
 
 `restore-defs` идемпотентен (`rabbitmqctl import_definitions` делает merge).

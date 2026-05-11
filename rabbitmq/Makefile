@@ -211,6 +211,67 @@ app-drop:
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" rabbitmq || true; \
 	echo "✓ vhost $$APP_VHOST, пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
+# Usage: make app-backup APP=myapp ENV=local [APP_VHOST=myapp]
+# Создаёт apps/backups/$(ENV)/$(APP)/rabbitmq/$(APP)-defs-<TS>.json.gz: vhost-specific
+# выборка definitions (vhost + users-с-permissions + exchanges/queues/bindings/policies/parameters/topic_permissions).
+# Сообщения в очередях НЕ бэкапятся (как и в общем rabbitmq-backup-defs).
+app-backup:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-backup APP=myapp ENV=$(ENV))"; exit 1; fi
+	@command -v jq >/dev/null 2>&1 || { echo "✗ jq не найден в PATH (требуется для vhost-фильтра definitions)"; exit 1; }
+	@set -eo pipefail; \
+	APP_VHOST=$${APP_VHOST:-$(APP)}; \
+	OUT_DIR="$(INFRA_ROOT)/apps/backups/$(ENV)/$(APP)/rabbitmq"; \
+	install -d -m 700 "$$OUT_DIR"; \
+	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
+	OUT="$$OUT_DIR/$(APP)-defs-$$TS.json.gz"; \
+	echo "Экспорт definitions для vhost $$APP_VHOST в $$OUT..."; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl export_definitions /tmp/rabbitmq-defs-$$TS.json >/dev/null; \
+	: "Фильтр jq оставляет только vhost-specific секции и пользователей с permissions на этом vhost."; \
+	: "Хэши паролей у этих пользователей сохраняются — но при restore на чистом сервере apps-apply"; \
+	: "перепишет их актуальными из apps/conf/<APP>/secrets.yaml."; \
+	: "jq-программа: одна строка без \-continuation внутри single quotes."; \
+	: "Make + shell сохраняют \<newline> внутри '...' дословно, и jq падает с syntax error."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- cat /tmp/rabbitmq-defs-$$TS.json \
+		| jq --arg vhost "$$APP_VHOST" '.vhosts |= map(select(.name == $$vhost)) | .permissions |= map(select(.vhost == $$vhost)) | (if has("topic_permissions") then . else .topic_permissions = [] end) | .topic_permissions |= map(select(.vhost == $$vhost)) | .exchanges |= map(select(.vhost == $$vhost)) | .queues |= map(select(.vhost == $$vhost)) | .bindings |= map(select(.vhost == $$vhost)) | (if has("policies") then . else .policies = [] end) | .policies |= map(select(.vhost == $$vhost)) | (if has("parameters") then . else .parameters = [] end) | .parameters |= map(select(.vhost == $$vhost)) | . as $$root | ($$root.permissions | map(.user)) as $$users | .users |= map(select(.name as $$n | $$users | index($$n) != null))' \
+		| gzip > "$$OUT"; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/rabbitmq-defs-$$TS.json >/dev/null 2>&1 || true; \
+	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не создан"; exit 1; }; \
+	gunzip -c "$$OUT" | jq -e '.vhosts | length' >/dev/null || { echo "✗ Архив $$OUT не содержит валидный vhost-объект"; exit 1; }; \
+	VH_COUNT=$$(gunzip -c "$$OUT" | jq -r '.vhosts | length'); \
+	if [ "$$VH_COUNT" -ne 1 ]; then echo "✗ В архиве $$VH_COUNT vhost'ов (ожидаем 1); возможно vhost $$APP_VHOST не существует"; exit 1; fi; \
+	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
+	echo "✓ Definitions vhost $$APP_VHOST экспортированы: $$OUT ($$SIZE)"; \
+	echo "=> $$OUT"
+
+# Usage: make app-restore APP=myapp ENV=local BACKUP_FILE=<path> [APP_VHOST=myapp] [SKIP_CONFIRM=1]
+# Применяет definitions через rabbitmqctl import_definitions (idempotent merge).
+app-restore:
+	@if [ -z "$(APP)" ]; then echo "✗ APP не задан"; exit 1; fi
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "✗ Укажите BACKUP_FILE=apps/backups/$(ENV)/$(APP)/rabbitmq/$(APP)-defs-YYYYMMDD-HHMMSS.json.gz"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BACKUP_FILE)" ]; then echo "✗ Файл $(BACKUP_FILE) не найден"; exit 1; fi
+	@APP_VHOST=$${APP_VHOST:-$(APP)}; \
+	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+		echo "⚠ Будет выполнен import_definitions для vhost $$APP_VHOST из $(BACKUP_FILE)."; \
+		echo "  Idempotent merge: новое добавится, существующее не пересоздаётся."; \
+		read -p "Продолжить? (y/N): " confirm; \
+		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
+	fi
+	@set -eo pipefail; \
+	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=rabbitmq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -z "$$POD" ]; then echo "✗ RabbitMQ pod не найден"; exit 1; fi; \
+	gunzip -t "$(BACKUP_FILE)" || { echo "✗ $(BACKUP_FILE) — невалидный gzip"; exit 1; }; \
+	echo "  Копирую $(BACKUP_FILE) в pod..."; \
+	gunzip -c "$(BACKUP_FILE)" | kubectl exec -i "$$POD" -n $(NAMESPACE) -- sh -c 'cat > /tmp/rabbitmq-app-defs.json'; \
+	echo "  rabbitmqctl import_definitions..."; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rabbitmqctl import_definitions /tmp/rabbitmq-app-defs.json; \
+	kubectl exec "$$POD" -n $(NAMESPACE) -- rm -f /tmp/rabbitmq-app-defs.json >/dev/null 2>&1 || true; \
+	echo "✓ Definitions для $(APP) импортированы"
+
 images-verify:
 	@# Проверяем именно SRC-теги через $$(IMAGES_SRC) — то, что реально pull-ится.
 	@# Сейчас *_SRC_TAG ?= $$(*_TAG), но переключение устойчиво к будущему выпилу
@@ -391,7 +452,7 @@ images-clean-files:
 ## =========================
 ## Backup / Restore (definitions: rabbitmqctl export/import_definitions)
 ## =========================
-BACKUP_DIR ?= backups
+BACKUP_DIR ?= backups/$(ENV)
 
 # Экспорт всех definitions (vhosts, users, permissions, exchanges, queues, bindings, parameters, policies)
 # в JSON. Сообщения и состояние очередей НЕ бэкапятся — для durability используется persistence + replication.

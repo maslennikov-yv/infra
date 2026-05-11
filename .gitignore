@@ -16,6 +16,9 @@ environments/*.mk
 # Бэкапы secrets/configmaps из кластера (make env-backup)
 environments/backups/
 
+# Per-app бэкапы (make app-backup APP=… ENV=…): apps/backups/<ENV>/<APP>/<service>/…
+apps/backups/
+
 # Секреты и чувствительные данные
 .env
 .env.*

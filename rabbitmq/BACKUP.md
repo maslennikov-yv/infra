@@ -4,7 +4,7 @@
 
 ## Что попадает в бэкап definitions
 
-`make rabbitmq-backup-defs ENV=...` (или `make backup-defs` из `rabbitmq/`) создаёт **`rabbitmq/backups/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz`** — gzip-сжатый JSON с:
+`make rabbitmq-backup-defs ENV=...` (или `make backup-defs` из `rabbitmq/`) создаёт **`rabbitmq/backups/<ENV>/rabbitmq-defs-YYYYMMDD-HHMMSS.json.gz`** — gzip-сжатый JSON с:
 
 - **`vhosts`** — все virtual hosts.
 - **`users`** — пользователи + хэши паролей (формат `rabbit_password_hashing_sha256`).
@@ -44,7 +44,7 @@ make list-backups        # из rabbitmq/
 - хэши паролей пользователей применяются как есть из бэкапа.
 
 ```bash
-make rabbitmq-restore-defs BACKUP_FILE=rabbitmq/backups/rabbitmq-defs-20260508-143022.json.gz ENV=local
+make rabbitmq-restore-defs BACKUP_FILE=backups/local/rabbitmq-defs-20260508-143022.json.gz ENV=local
 
 # Без подтверждения
 make rabbitmq-restore-defs BACKUP_FILE=... SKIP_CONFIRM=1 ENV=local
@@ -92,7 +92,7 @@ kubectl exec -i -n rabbitmq rabbitmq-0 -- rabbitmqadmin -u admin -p $ADMIN_PW \
 
 1. Восстановить Secret `rabbitmq/rabbitmq` (содержит admin password + erlang-cookie) из `make env-backup` **до** `make up`. Без правильного erlang-cookie новый кластер не сможет прочитать существующий PV (mnesia).
    ```bash
-   kubectl apply -f environments/backups/<env>-YYYYMMDD/rabbitmq-secrets.yaml
+   kubectl apply -f environments/backups/<env>/YYYYMMDD/rabbitmq-secrets.yaml
    ```
 2. `make up ENV=<env>` — поднимает RabbitMQ с восстановленным Secret.
 3. `make rabbitmq-restore-defs BACKUP_FILE=...` — восстановить vhosts, users, queues, bindings.
@@ -107,7 +107,7 @@ kubectl exec -i -n rabbitmq rabbitmq-0 -- rabbitmqadmin -u admin -p $ADMIN_PW \
 
 Ротация:
 ```bash
-find rabbitmq/backups -name 'rabbitmq-defs-*.json.gz' -mtime +14 -delete
+find rabbitmq/backups/prod -name 'rabbitmq-defs-*.json.gz' -mtime +14 -delete
 ```
 
 ## Известные ограничения

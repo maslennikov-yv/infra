@@ -173,8 +173,8 @@ make kubeconfig-fetch ENV=<env>
    ```cron
    0 4 * * * cd /opt/infra && make env-backup ENV=prod CONFIRM=1
    0 5 * * * gpg --symmetric --batch --passphrase-file /etc/secret/env-backup.pass \
-              environments/backups/prod-$(date +\%Y\%m\%d)*.tar.gz
-   0 6 * * * rsync -a environments/backups/*.tar.gz.gpg admin-storage:/backups/
+              environments/backups/prod/$(date +\%Y\%m\%d)*.tar.gz
+   0 6 * * * rsync -a environments/backups/*/*.tar.gz.gpg admin-storage:/backups/
    ```
 2. Новый админ получает `env-backup.pass` отдельным каналом (одним разом).
 3. При онбординге: `gpg -d /storage/prod-latest.tar.gz.gpg | tar -xzf - -C /tmp/` + `make env-restore SKIP_K8S=1`.

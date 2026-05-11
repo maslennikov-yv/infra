@@ -87,9 +87,9 @@ ACL-правила: `+@all -ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS 
 ## Бэкапы и восстановление
 
 ```bash
-make backup       ENV=local            # RDB-снимок + ACL + INFO в backups/redis-backup-*.tar.gz
+make backup       ENV=local            # RDB-снимок + ACL + INFO в backups/local/redis-backup-*.tar.gz
 make list-backups
-make restore-acl  BACKUP_FILE=backups/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=local
+make restore-acl  BACKUP_FILE=backups/local/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=local
 ```
 
 Восстановление RDB-данных — ручная процедура (scale 0 → замена в PVC),

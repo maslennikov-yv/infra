@@ -116,14 +116,14 @@ make topic-list    [PREFIX=myapp.]
 ## Бэкапы и восстановление
 
 `make backup-meta` сохраняет **definitions** топиков + ACL + список SCRAM-юзеров
-в `backups/kafka-meta-YYYYMMDD-HHMMSS.tar.gz`. **Содержимое топиков
+в `backups/<ENV>/kafka-meta-YYYYMMDD-HHMMSS.tar.gz`. **Содержимое топиков
 (сообщения) не бэкапится** — для этого используется отдельный механизм
 (MirrorMaker 2 / репликация на второй кластер).
 
 ```bash
 make backup-meta              ENV=local
 make list-backups
-make restore-meta-topics      BACKUP_FILE=backups/kafka-meta-…tar.gz ENV=local
+make restore-meta-topics      BACKUP_FILE=backups/local/kafka-meta-…tar.gz ENV=local
 ```
 
 Полный disaster recovery (KRaft cluster-id, SCRAM creds через apps-apply,

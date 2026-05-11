@@ -93,9 +93,9 @@ make app-create APP=myapp ENV=local
 существуют `BACKUP TO Disk()`, `SELECT INTO OUTFILE`, snapshot PV — см. BACKUP.md).
 
 ```bash
-make backup                ENV=local         # backups/clickhouse-backup-*.tar.gz
+make backup                ENV=local         # backups/local/clickhouse-backup-*.tar.gz
 make list-backups
-make restore               BACKUP_FILE=backups/clickhouse-backup-…tar.gz ENV=local
+make restore               BACKUP_FILE=backups/local/clickhouse-backup-…tar.gz ENV=local
 ```
 
 `restore` идемпотентен: schemas с `IF NOT EXISTS`, пользователи через

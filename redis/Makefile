@@ -440,7 +440,7 @@ images-clean-files:
 ## =========================
 ## Backup / Restore (RDB + ACL)
 ## =========================
-BACKUP_DIR ?= backups
+BACKUP_DIR ?= backups/$(ENV)
 
 # Полный бэкап definitions: RDB снимок (через replication protocol — независимо от persistence config),
 # ACL LIST и INFO server. Упаковывается в один tar.gz.

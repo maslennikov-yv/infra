@@ -13,7 +13,7 @@ persistence:
 При удалении PVC (например, `make <svc>-recreate-prep`, `kubectl delete
 pvc`, `make down`) — PV удаляется автоматически и каталог
 `/var/snap/microk8s/common/default-storage/<volume>` стирается. **Данные
-теряются безвозвратно** (вне бэкапов в `<svc>/backups/`).
+теряются безвозвратно** (вне бэкапов в `<svc>/backups/<ENV>/`).
 
 Целевое состояние — **явный SC** в каждом values + **`reclaimPolicy:
 Retain`** для prod, чтобы случайное удаление PVC не уничтожало данные.

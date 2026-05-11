@@ -4,7 +4,7 @@
 
 ## Что попадает в meta-бэкап
 
-`make kafka-backup-meta ENV=...` (или `make backup-meta` из `kafka/`) создаёт **`kafka/backups/kafka-meta-YYYYMMDD-HHMMSS.tar.gz`** с:
+`make kafka-backup-meta ENV=...` (или `make backup-meta` из `kafka/`) создаёт **`kafka/backups/<ENV>/kafka-meta-YYYYMMDD-HHMMSS.tar.gz`** с:
 
 - **`topics.list`** — список всех топиков (включая internal, с префиксом `__`).
 - **`topics-describe.txt`** — `kafka-topics.sh --describe` для всех топиков (partitions, replication factor, configs, replicas, ISR).
@@ -40,7 +40,7 @@ make list-backups        # из kafka/
 `make restore-meta-topics` запускает helper-pod с kafka-image и выполняет `recreate-topics.sh`. Каждая команда — `kafka-topics.sh --create --if-not-exists`, поэтому существующие топики не пересоздаются и сохраняют свои данные.
 
 ```bash
-make kafka-restore-meta-topics BACKUP_FILE=kafka/backups/kafka-meta-20260508-143022.tar.gz ENV=local
+make kafka-restore-meta-topics BACKUP_FILE=backups/local/kafka-meta-20260508-143022.tar.gz ENV=local
 
 # Без интерактивного подтверждения
 make kafka-restore-meta-topics BACKUP_FILE=... SKIP_CONFIRM=1 ENV=local
@@ -65,7 +65,7 @@ Bitnami Kafka в KRaft-режиме хранит идентичность кла
 **A. Полный disaster recovery (новый кластер, пустые PV).**
 1. Восстановить Secret `kafka/kafka-kraft` из бэкапа `make env-backup` **до** `make up`:
    ```bash
-   kubectl apply -f environments/backups/<env>-YYYYMMDD/kafka-secrets.yaml
+   kubectl apply -f environments/backups/<env>/YYYYMMDD/kafka-secrets.yaml
    ```
 2. `make up ENV=<env>` — кластер стартует с восстановленным cluster-id, ZP создадут meta.properties с этим же id.
 3. `make kafka-restore-meta-topics BACKUP_FILE=...` — пересоздать топики.
@@ -99,7 +99,7 @@ Bitnami Kafka в KRaft-режиме хранит идентичность кла
 
 Ротация:
 ```bash
-find kafka/backups -name 'kafka-meta-*.tar.gz' -mtime +14 -delete
+find kafka/backups/prod -name 'kafka-meta-*.tar.gz' -mtime +14 -delete
 ```
 
 ## Известные ограничения

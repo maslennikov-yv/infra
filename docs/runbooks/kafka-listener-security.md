@@ -81,7 +81,7 @@ SSL-controller (controllerListenerNames одно, и не может быть д
 
 ```bash
 make kafka-backup-meta ENV=prod
-# Производит kafka/backups/kafka-meta-YYYYMMDD-HHMMSS.tar.gz:
+# Производит kafka/backups/<ENV>/kafka-meta-YYYYMMDD-HHMMSS.tar.gz:
 # топики (с конфигом), consumer groups, offsets, ACL.
 ```
 

@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { ACCOUNT_SERVICES } from "../meta.mjs";
 import { DATA_SERVICES } from "../../lib/data-services.mjs";
 import { ENGINES } from "../actions/accounts.mjs";
-import { STATEFUL } from "../actions/backup.mjs";
+import { STATEFUL, PER_APP_BACKUP } from "../actions/backup.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
@@ -79,7 +79,7 @@ const STATIC_TARGETS = [
   "doctor", "status", "top-totals",
   "monitoring-events", "monitoring-pod-events", "monitoring-describe-pod",
   // actions/backup.mjs
-  "backup-all", "env-backup", "env-restore",
+  "backup-all", "env-backup", "env-restore", "app-backup",
   // actions/accounts.mjs (нестандартные)
   "pg-app-psql", "minio-app-append",
   // actions/accounts.mjs — kafka topics
@@ -133,6 +133,15 @@ describe("динамические цели по движкам", () => {
 
 describe("backup/restore цели по STATEFUL", () => {
   for (const s of STATEFUL) {
+    test(`${s.value}: ${s.backup} + ${s.restore}`, () => {
+      assert.ok(TARGETS.has(s.backup), `нет ${s.backup}`);
+      assert.ok(TARGETS.has(s.restore), `нет ${s.restore}`);
+    });
+  }
+});
+
+describe("per-app backup/restore цели по PER_APP_BACKUP", () => {
+  for (const s of PER_APP_BACKUP) {
     test(`${s.value}: ${s.backup} + ${s.restore}`, () => {
       assert.ok(TARGETS.has(s.backup), `нет ${s.backup}`);
       assert.ok(TARGETS.has(s.restore), `нет ${s.restore}`);

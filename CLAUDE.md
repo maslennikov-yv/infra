@@ -74,8 +74,17 @@ make kafka-topic-list   PREFIX=appA.
 
 # PostgreSQL backup/restore
 make postgres-backup  ENV=stage
-make postgres-restore BACKUP_FILE=backups/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
+make postgres-restore BACKUP_FILE=backups/stage/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=stage
 make postgres-recreate-prep ENV=stage              # бэкап + down + delete PVC (см. postgres/TROUBLESHOOTING.md)
+
+# Per-app бэкапы — apps/backups/<ENV>/<APP>/<service>/<APP>-<scope>-<TS>.<ext>
+make app-backup APP=myapp ENV=stage                                # все сервисы APP сразу (по merged конфигу)
+make pg-app-backup        APP=myapp ENV=stage
+make clickhouse-app-backup APP=myapp ENV=stage
+make minio-app-backup     APP=myapp ENV=stage                      # включает данные bucket'а (mc mirror)
+make kafka-app-backup     APP=myapp ENV=stage                      # definitions топиков <APP>.*; данные топиков не входят
+make rabbitmq-app-backup  APP=myapp ENV=stage                      # vhost-specific definitions; сообщения не входят
+make <svc>-app-restore    APP=myapp ENV=stage BACKUP_FILE=apps/backups/stage/myapp/<svc>/...
 
 # Диагностика
 make status      ENV=...                         # ноды, поды, helm list -A
@@ -117,7 +126,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 ### Что коммитим, что нет
 
 - **В git:** Helm-чарты, `Chart.lock`, `values-<ENV>.yaml`, корневые `Makefile`/`helmfile.yaml.gotmpl`, `apps/registry.yaml.example`, `apps/conf/_example/`, `environments/<env>.yaml` (реестр для `env-backup`), `docs/`, `scripts/`.
-- **Не в git** (см. `.gitignore`): `environments/<env>.mk`, `k8s/config/<env>` (kubeconfig), `<service>/images/*.tar`, `apps/registry.yaml` (живой реестр окружения), `apps/conf/<app>/` (живые секреты), `apps/src/`, `environments/backups/`, `<service>/backups/`. Для каждого есть команда (или копирование из `.example`), которая его создаёт (см. раздел в `README.md` «Файлы, которые не коммитятся»).
+- **Не в git** (см. `.gitignore`): `environments/<env>.mk`, `k8s/config/<env>` (kubeconfig), `<service>/images/*.tar`, `apps/registry.yaml` (живой реестр окружения), `apps/conf/<app>/` (живые секреты), `apps/src/`, `environments/backups/<env>/` (env-backup tar'ы), `<service>/backups/<env>/` (service-wide бэкапы), `apps/backups/<env>/<app>/<service>/` (per-app бэкапы). Для каждого есть команда (или копирование из `.example`), которая его создаёт (см. раздел в `README.md` «Файлы, которые не коммитятся»).
 
 ### Периметр и безопасность
 
