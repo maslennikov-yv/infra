@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Вся **специфичная для приложений** информация живёт под `apps/` — не разносить такие данные по произвольным каталогам.
 
-- `apps/registry.yaml` — реестр приложений (в git). У каждой записи обязательно `enabled: true|false`; среди `enabled: true` поля `name` не должны повторяться (это проверяется при merge).
+- `apps/registry.yaml` — реестр приложений окружения (**не в git**: содержит реальные имена/namespaces). В git только `apps/registry.yaml.example` как шаблон. У каждой записи обязательно `enabled: true|false`; среди `enabled: true` поля `name` не должны повторяться (это проверяется при merge). На новом клоне: `cp apps/registry.yaml.example apps/registry.yaml`.
 - `apps/conf/<APP>/*.yaml` — пер-приложенческие секреты/overrides (deep-merge с реестром); **не в git**, кроме `apps/conf/_example/`.
 - Merge выполняется через `mikefarah/yq` v4 (либо `YQ=...`, либо бинарь `./.tools/yq-mikefarah`).
 - `make apps-merge-print` — собранный merge в stdout для отладки.
@@ -116,8 +116,8 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 ### Что коммитим, что нет
 
-- **В git:** Helm-чарты, `Chart.lock`, `values-<ENV>.yaml`, корневые `Makefile`/`helmfile.yaml.gotmpl`, `apps/registry.yaml`, `apps/conf/_example/`, `environments/<env>.yaml` (реестр для `env-backup`), `docs/`, `scripts/`.
-- **Не в git** (см. `.gitignore`): `environments/<env>.mk`, `k8s/config/<env>` (kubeconfig), `<service>/images/*.tar`, `apps/conf/<app>/` (живые секреты), `apps/src/`, `environments/backups/`, `<service>/backups/`. Для каждого есть команда, которая его создаёт (см. раздел в `README.md` «Файлы, которые не коммитятся»).
+- **В git:** Helm-чарты, `Chart.lock`, `values-<ENV>.yaml`, корневые `Makefile`/`helmfile.yaml.gotmpl`, `apps/registry.yaml.example`, `apps/conf/_example/`, `environments/<env>.yaml` (реестр для `env-backup`), `docs/`, `scripts/`.
+- **Не в git** (см. `.gitignore`): `environments/<env>.mk`, `k8s/config/<env>` (kubeconfig), `<service>/images/*.tar`, `apps/registry.yaml` (живой реестр окружения), `apps/conf/<app>/` (живые секреты), `apps/src/`, `environments/backups/`, `<service>/backups/`. Для каждого есть команда (или копирование из `.example`), которая его создаёт (см. раздел в `README.md` «Файлы, которые не коммитятся»).
 
 ### Периметр и безопасность
 

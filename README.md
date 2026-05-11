@@ -33,7 +33,7 @@ infra/
 ├── postgres/, redis/, kafka/, rabbitmq/, minio/, clickhouse/
 │       # На каждый сервис: Helm chart, images/*.tar, values-<ENV>.yaml, Makefile.
 ├── monitoring/netdata/   # Netdata (опционально через ENABLED_SERVICES).
-├── apps/                 # registry.yaml; секреты в apps/conf/<app>/ (не в git).
+├── apps/                 # registry.yaml + apps/conf/<app>/ (не в git); шаблоны registry.yaml.example и conf/_example/.
 ├── scripts/              # Merge/apply конфигов приложений + утилиты + TUI infra.
 ├── docs/                 # runbooks (DR, secrets, usage-scenarios), pg-app.md, onboarding-admin.md.
 ├── helmfile.yaml.gotmpl  # Развёртывание всего стека из корня.
@@ -256,7 +256,7 @@ make check-registry         # Проверить доступность registry
 
 ## Учётки приложений
 
-Изоляция приложений: реестр в [`apps/registry.yaml`](apps/registry.yaml) (`enabled: true|false`, уникальные `name`), секреты — в `apps/conf/<APP>/*.yaml` (deep-merge с реестром, не в git; образец [`apps/conf/_example/`](apps/conf/_example/)). Зависимость — [yq mikefarah v4](https://github.com/mikefarah/yq) или `./.tools/yq-mikefarah`.
+Изоляция приложений: реестр в `apps/registry.yaml` (`enabled: true|false`, уникальные `name`) — **не в git**, шаблон [`apps/registry.yaml.example`](apps/registry.yaml.example); секреты — в `apps/conf/<APP>/*.yaml` (deep-merge с реестром, не в git; образец [`apps/conf/_example/`](apps/conf/_example/)). Зависимость — [yq mikefarah v4](https://github.com/mikefarah/yq) или `./.tools/yq-mikefarah`.
 
 - **Применение учёток в кластер:** `make apps-apply ENV=…` (с фильтрами `ENABLED_SERVICES` / `EXCLUDE_SERVICES`; запускается автоматически после `make up`, если не задан `SKIP_APPS_APPLY=1`; продолжать после ошибки одного шага — `APPS_APPLY_CONTINUE_ON_ERROR=1`).
 - **Dry-run перед apply:** `make apps-apply-diff ENV=…` — печатает дельту (would create / would update / would drop / drift), ничего не меняет в кластере. Используйте перед `apps-apply`, особенно после правок `apps/registry.yaml` или `apps/conf/`.
@@ -333,6 +333,7 @@ microk8s enable metrics-server
 
 Чтобы новый пользователь мог “с нуля” развернуть инфраструктуру без потери важных конфигов, в игноре находятся **только локальные/генерируемые** файлы — и для каждого есть команда, которая их создаёт.
 
+- **`apps/registry.yaml`**: локальный реестр приложений окружения (имена, namespaces, redis_db и т.п.). Создаётся копированием шаблона: `cp apps/registry.yaml.example apps/registry.yaml`, дальше правится под конкретное окружение. В git только `.example`.
 - **`environments/<env>.mk`**: локальные секреты/переопределения окружения (SSH_HOST/SSH_KEY/KUBECONFIG/REGISTRY и т.п.). Создаётся: `make env-new ENV=<env>`.
 - **`k8s/config/<env>`**: kubeconfig для окружения. Создаётся плейсхолдером: `make env-new ENV=<env>`, затем заполняется/скачивается: `make kubeconfig-fetch ENV=<env> ...` (см. `k8s/config/README.md`).
 - **`<service>/images/*.tar`**: tar-файлы Docker образов для offline/registry. Создаются: `make images-save ENV=<env>` (или `make images-save ENV=<env> SERVICE=<service>`).

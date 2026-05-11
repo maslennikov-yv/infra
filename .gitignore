@@ -67,6 +67,10 @@ __pycache__/
 .classpath
 .settings/
 
+# apps/registry.yaml — локальный реестр приложений окружения (содержит реальные имена/ns),
+# не коммитим. В git только `apps/registry.yaml.example` как шаблон.
+apps/registry.yaml
+
 # apps/conf — opt-in inclusion: только _example/ и зашифрованные *.enc.yaml в git;
 # plain *.yaml/*.yml локально (gitignored). См. docs/runbooks/secrets-management.md.
 # Порядок правил критичен: ignore parent → whitelist directories → ignore subdir content → whitelist subset.

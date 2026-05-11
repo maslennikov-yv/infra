@@ -1,4 +1,6 @@
-# Реестр приложений для `apps-merge-print`, `make apps-apply`, `*-app-create`.
+# Шаблон реестра приложений. Скопируйте в `apps/registry.yaml` (gitignored) и адаптируйте под окружение.
+#   cp apps/registry.yaml.example apps/registry.yaml
+# Используется: `apps-merge-print`, `make apps-apply`, `*-app-create`.
 # У каждого элемента в `apps:` обязательно поле `enabled: true|false`.
 # Чувствительные поля (пароли, ключи) задавайте в `apps/conf/<name>/` — см. `apps/conf/_example/`.
 #
