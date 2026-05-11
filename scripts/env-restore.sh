@@ -3,8 +3,9 @@
 #
 # Распаковывает tar.gz с бэкапом окружения и применяет:
 #   1) Secrets и ConfigMaps в namespaces (платформенные + приложенческие).
-#   2) apps/conf/<APP>/ — копирует в REPO_ROOT/apps/conf/<APP>/, ЕСЛИ каталога ещё нет
-#      (НЕ перезатирает существующий локальный конфиг).
+#   2) apps/conf/<APP>/<ENV>/ — копирует только env-папку в REPO_ROOT/apps/conf/<APP>/<ENV>/,
+#      ЕСЛИ папки ещё нет (НЕ перезатирает; другие env-папки приложения не трогаются).
+#      Legacy-архивы (плоская структура без env-подкаталога) — поведение прежнее.
 #   3) apps/registry.yaml — копирует только при отсутствии локального файла; иначе
 #      печатает предупреждение и diff-указание (живой реестр может быть свежее бэкапа).
 #
@@ -20,9 +21,10 @@
 #   CONFIRM=1   — пропустить интерактивное подтверждение.
 #   SKIP_APPS_CONF=1   — НЕ восстанавливать apps/conf/ (только k8s ресурсы).
 #   SKIP_K8S=1         — НЕ применять Secrets/ConfigMaps (только apps/conf/).
-#   OVERWRITE_APPS_CONF=1 — перетереть существующие apps/conf/<APP>/ из архива
+#   OVERWRITE_APPS_CONF=1 — перетереть существующие apps/conf/<APP>/<ENV>/ из архива
 #                          (по умолчанию НЕ перетираются, чтобы не убить локальные creds).
 #                          Используется backup-verify: на verify-стенде нужны именно prod creds.
+#                          Только env-папка удаляется — другие env-папки приложения не трогаются.
 #   ALLOW_SRC_EQUALS_DST=1 — отключить sanity-check «архив этого env применяется в тот же
 #                          кластер, где env-backup был снят» (по умолчанию запрещено,
 #                          чтобы не зальить prod снимком из prod при опечатке KUBECONFIG).
@@ -128,14 +130,31 @@ fi
 
 APPS_CONF_NEW=()
 APPS_CONF_EXIST=()
+# APPS_CONF_FORMAT[<app>]="new"|"legacy":
+#   new    — архив содержит apps/conf/<APP>/<ENV_NAME>/ (env-aware формат).
+#   legacy — архив содержит плоские файлы в apps/conf/<APP>/ (старый формат до миграции).
+declare -A APPS_CONF_FORMAT
 if [ -d "$ARCHIVE_ROOT/apps/conf" ]; then
   for app_dir in "$ARCHIVE_ROOT/apps/conf"/*/; do
     [ -d "$app_dir" ] || continue
     app=$(basename "$app_dir")
-    if [ -d "$REPO_ROOT/apps/conf/$app" ]; then
-      APPS_CONF_EXIST+=("$app")
+    env_arc_dir="${app_dir}${ENV_NAME}"
+    if [ -d "$env_arc_dir" ]; then
+      # Новый формат: apps/conf/<APP>/<ENV>/
+      APPS_CONF_FORMAT[$app]="new"
+      if [ -d "$REPO_ROOT/apps/conf/$app/$ENV_NAME" ]; then
+        APPS_CONF_EXIST+=("$app/$ENV_NAME")
+      else
+        APPS_CONF_NEW+=("$app/$ENV_NAME")
+      fi
     else
-      APPS_CONF_NEW+=("$app")
+      # Legacy: плоские файлы без env-подкаталога
+      APPS_CONF_FORMAT[$app]="legacy"
+      if [ -d "$REPO_ROOT/apps/conf/$app" ]; then
+        APPS_CONF_EXIST+=("$app (legacy)")
+      else
+        APPS_CONF_NEW+=("$app (legacy)")
+      fi
     fi
   done
 fi
@@ -226,17 +245,16 @@ if [ "$SKIP_K8S" != "1" ]; then
   done
 fi
 
-# Restore apps/conf/<APP>/ (новые всегда; существующие — только при OVERWRITE_APPS_CONF=1).
-# Существующие apps/conf по умолчанию не перетираются, чтобы локальные креды и edited-secrets
-# не убились молча; OVERWRITE_APPS_CONF=1 используется backup-verify, где целевой стенд
-# должен работать на тех же creds, что и источник.
+# Restore apps/conf/<APP>/<ENV>/ (новые всегда; существующие — только при OVERWRITE_APPS_CONF=1).
+# Новый формат: затрагивается только env-папка; другие env-папки приложения не трогаются.
+# Legacy-архив (без env-подкаталога): поведение прежнее — cp -r всей папки <APP>/.
 RESTORED_APPS_CONF=0
 OVERWRITTEN_APPS_CONF=0
 if [ "$SKIP_APPS_CONF" != "1" ]; then
   TO_PROCESS=()
-  for app in "${APPS_CONF_NEW[@]}"; do TO_PROCESS+=("new:$app"); done
+  for key in "${APPS_CONF_NEW[@]}"; do TO_PROCESS+=("new:$key"); done
   if [ "$OVERWRITE_APPS_CONF" = "1" ]; then
-    for app in "${APPS_CONF_EXIST[@]}"; do TO_PROCESS+=("overwrite:$app"); done
+    for key in "${APPS_CONF_EXIST[@]}"; do TO_PROCESS+=("overwrite:$key"); done
   fi
   if [ ${#TO_PROCESS[@]} -gt 0 ]; then
     echo ""
@@ -244,18 +262,41 @@ if [ "$SKIP_APPS_CONF" != "1" ]; then
     install -d -m 700 "$REPO_ROOT/apps/conf"
     for entry in "${TO_PROCESS[@]}"; do
       mode="${entry%%:*}"
-      app="${entry#*:}"
-      if [ "$mode" = "overwrite" ]; then
-        rm -rf "$REPO_ROOT/apps/conf/$app"
-      fi
-      cp -r "$ARCHIVE_ROOT/apps/conf/$app" "$REPO_ROOT/apps/conf/$app"
-      chmod -R go-rwx "$REPO_ROOT/apps/conf/$app"
-      if [ "$mode" = "overwrite" ]; then
-        echo "  ✓ overwritten apps/conf/$app"
-        OVERWRITTEN_APPS_CONF=$((OVERWRITTEN_APPS_CONF+1))
+      key="${entry#*:}"
+      # Определяем имя app: ключ либо "bot/prod", либо "bot (legacy)"
+      app="${key%%/*}"
+      app="${app%% *}"
+      fmt="${APPS_CONF_FORMAT[$app]:-legacy}"
+      if [ "$fmt" = "new" ]; then
+        env_arc_dir="$ARCHIVE_ROOT/apps/conf/$app/$ENV_NAME"
+        env_local_dir="$REPO_ROOT/apps/conf/$app/$ENV_NAME"
+        if [ "$mode" = "overwrite" ]; then
+          rm -rf "$env_local_dir"
+        fi
+        install -d -m 700 "$REPO_ROOT/apps/conf/$app"
+        cp -r "$env_arc_dir" "$env_local_dir"
+        chmod -R go-rwx "$env_local_dir"
+        if [ "$mode" = "overwrite" ]; then
+          echo "  ✓ overwritten apps/conf/$app/$ENV_NAME"
+          OVERWRITTEN_APPS_CONF=$((OVERWRITTEN_APPS_CONF+1))
+        else
+          echo "  ✓ restored apps/conf/$app/$ENV_NAME"
+          RESTORED_APPS_CONF=$((RESTORED_APPS_CONF+1))
+        fi
       else
-        echo "  ✓ restored apps/conf/$app"
-        RESTORED_APPS_CONF=$((RESTORED_APPS_CONF+1))
+        # Legacy: восстанавливаем всю папку <APP>/
+        if [ "$mode" = "overwrite" ]; then
+          rm -rf "$REPO_ROOT/apps/conf/$app"
+        fi
+        cp -r "$ARCHIVE_ROOT/apps/conf/$app" "$REPO_ROOT/apps/conf/$app"
+        chmod -R go-rwx "$REPO_ROOT/apps/conf/$app"
+        if [ "$mode" = "overwrite" ]; then
+          echo "  ✓ overwritten apps/conf/$app (legacy)"
+          OVERWRITTEN_APPS_CONF=$((OVERWRITTEN_APPS_CONF+1))
+        else
+          echo "  ✓ restored apps/conf/$app (legacy)"
+          RESTORED_APPS_CONF=$((RESTORED_APPS_CONF+1))
+        fi
       fi
     done
   fi

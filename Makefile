@@ -197,8 +197,8 @@ help:
 	@echo "  make apps-local-src-helm-sets $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) — stdout: $(YELLOW)--set$(RESET) для $(YELLOW)app.volumes.$(RESET)* (hostPath=$(YELLOW)apps/src/<APP>$(RESET)) в вашем helm upgrade приложения"
 	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] $(YELLOW)[APPS_APPLY_DROP_DISABLED=1$(RESET)] - учётки из apps/conf; APPS_APPLY_DROP_DISABLED=1 — дропать учётки disabled приложений"
 	@echo "  make apps-apply-diff $(YELLOW)ENV=$(ENV)$(RESET) - печатает дельту (would create/update/drop/drift), ничего не меняет"
-	@echo "  make apps-conf-template $(YELLOW)APP=myapp$(RESET) $(YELLOW)[SKIP_REGISTRY=1$(RESET)] - шаблон apps/conf из apps/conf/_example + по умолчанию запись в registry (enabled: false)"
-	@echo "  make apps-conf-encrypt / apps-conf-decrypt / apps-conf-edit $(YELLOW)APP=myapp$(RESET) - sops+age workflow (apps/conf/<APP>/secrets.enc.yaml в git; см. docs/runbooks/secrets-management.md)"
+	@echo "  make apps-conf-template $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) $(YELLOW)[SKIP_REGISTRY=1$(RESET)] - шаблон apps/conf из apps/conf/_example в apps/conf/<APP>/<ENV>/ + по умолчанию запись в registry (enabled: false)"
+	@echo "  make apps-conf-encrypt / apps-conf-decrypt / apps-conf-edit $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - sops+age workflow (apps/conf/<APP>/<ENV>/secrets.enc.yaml в git; см. docs/runbooks/secrets-management.md)"
 	@echo "  make apps-src-clone $(YELLOW)APP=<name>$(RESET) [$(YELLOW)APPS_REGISTRY=...$(RESET)] - git clone по repo_url (+ repo_branch) из registry → apps/src/<APP>"
 	@echo "  make app-local-src-hostpath-mount $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) $(YELLOW)APP_LOCAL_K8S_WORKLOAD=<kind>/<имя>$(RESET) [$(YELLOW)pod/…|deployment/…|sts/…|ds/…$(RESET)] — hostPath $(YELLOW)apps/src/<APP>$(RESET); initContainers+containers; [$(YELLOW)APP_LOCAL_SRC_READ_ONLY=1$(RESET)] [$(YELLOW)APP_LOCAL_SRC_CONTAINER=…$(RESET)]"
 	@echo ""
@@ -470,7 +470,7 @@ $(addsuffix -check-updates,$(SERVICES)):
 	@$(MAKE) -C $(@:-check-updates=) check-updates
 
 apps-merge-print:
-	@"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)"
+	@"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)" "$(ENV)"
 
 apps-local-src-helm-sets:
 	@test "$(ENV)" = "local" || (echo '✗ apps-local-src-helm-sets только при ENV=local' >&2; exit 1)
@@ -494,23 +494,25 @@ apps-apply-diff:
 	APPS_APPLY_DROP_DISABLED="$(APPS_APPLY_DROP_DISABLED)" \
 	"$(REPO_ROOT)/scripts/apps-apply.sh"
 
-# Usage: make apps-conf-template APP=myapp [SKIP_REGISTRY=1]
+# Usage: make apps-conf-template APP=myapp ENV=local [SKIP_REGISTRY=1]
 apps-conf-template:
 	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
-	@SKIP_REGISTRY="$(SKIP_REGISTRY)" "$(REPO_ROOT)/scripts/apps-conf-template.sh" "$(REPO_ROOT)" "$(APP)"
+	@if [ -z "$(ENV)" ]; then echo "✗ Задайте ENV=local"; exit 1; fi
+	@SKIP_REGISTRY="$(SKIP_REGISTRY)" "$(REPO_ROOT)/scripts/apps-conf-template.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)"
 
 # === apps/conf sops+age workflow (опциональный) ===
-# Зашифровать apps/conf/<APP>/secrets.yaml → secrets.enc.yaml. Требует sops + .sops.yaml в корне.
+# Зашифровать apps/conf/<APP>/<ENV>/secrets.yaml → secrets.enc.yaml. Требует sops + .sops.yaml в корне.
 # Реализация: cp + sops -i --encrypt по DST (sops матчит creation_rules по имени файла, поэтому
 # нужен файл с расширением .enc.yaml ещё до шифрования).
 apps-conf-encrypt:
 	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@if [ -z "$(ENV)" ]; then echo "✗ Задайте ENV=local"; exit 1; fi
 	@command -v sops >/dev/null 2>&1 || { echo "✗ sops не установлен (см. docs/runbooks/secrets-management.md)"; exit 1; }
 	@if [ ! -f "$(REPO_ROOT)/.sops.yaml" ]; then \
 		echo "✗ .sops.yaml в корне репо не найден. Скопируйте apps/conf/_example/.sops.yaml.example → .sops.yaml и подставьте ваши age public-keys."; \
 		exit 1; \
 	fi
-	@SRC="apps/conf/$(APP)/secrets.yaml"; DST="apps/conf/$(APP)/secrets.enc.yaml"; \
+	@SRC="apps/conf/$(APP)/$(ENV)/secrets.yaml"; DST="apps/conf/$(APP)/$(ENV)/secrets.enc.yaml"; \
 	if [ ! -f "$$SRC" ]; then echo "✗ Файл $$SRC не найден"; exit 1; fi; \
 	cp "$$SRC" "$$DST"; \
 	if ! sops --encrypt --in-place "$$DST"; then \
@@ -519,13 +521,14 @@ apps-conf-encrypt:
 	echo "✓ Зашифровано: $$DST"; \
 	echo "  - закоммитьте $$DST в git;"; \
 	echo "  - локальный $$SRC можно удалить (он gitignored, но если останется — переопределяет .enc.yaml при apps-merge-print);"; \
-	echo "  - редактирование без расшифровки: make apps-conf-edit APP=$(APP)"
+	echo "  - редактирование без расшифровки: make apps-conf-edit APP=$(APP) ENV=$(ENV)"
 
-# Расшифровать apps/conf/<APP>/secrets.enc.yaml → secrets.yaml (для редактирования и merge-override).
+# Расшифровать apps/conf/<APP>/<ENV>/secrets.enc.yaml → secrets.yaml (для редактирования и merge-override).
 apps-conf-decrypt:
 	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@if [ -z "$(ENV)" ]; then echo "✗ Задайте ENV=local"; exit 1; fi
 	@command -v sops >/dev/null 2>&1 || { echo "✗ sops не установлен (см. docs/runbooks/secrets-management.md)"; exit 1; }
-	@SRC="apps/conf/$(APP)/secrets.enc.yaml"; DST="apps/conf/$(APP)/secrets.yaml"; \
+	@SRC="apps/conf/$(APP)/$(ENV)/secrets.enc.yaml"; DST="apps/conf/$(APP)/$(ENV)/secrets.yaml"; \
 	if [ ! -f "$$SRC" ]; then echo "✗ Файл $$SRC не найден"; exit 1; fi; \
 	if [ -f "$$DST" ] && [ "$(SKIP_CONFIRM)" != "1" ]; then \
 		echo "⚠ Файл $$DST уже существует. Перезаписать? [y/N]"; \
@@ -535,22 +538,31 @@ apps-conf-decrypt:
 	chmod 600 "$$DST"; \
 	echo "✓ Расшифровано: $$DST (chmod 600; gitignored)"
 
-# Редактировать apps/conf/<APP>/secrets.enc.yaml через sops (открывает $EDITOR, шифрует при сохранении).
+# Редактировать apps/conf/<APP>/<ENV>/secrets.enc.yaml через sops (открывает $EDITOR, шифрует при сохранении).
 apps-conf-edit:
 	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@if [ -z "$(ENV)" ]; then echo "✗ Задайте ENV=local"; exit 1; fi
 	@command -v sops >/dev/null 2>&1 || { echo "✗ sops не установлен (см. docs/runbooks/secrets-management.md)"; exit 1; }
 	@if [ ! -f "$(REPO_ROOT)/.sops.yaml" ]; then \
 		echo "✗ .sops.yaml в корне репо не найден"; exit 1; \
 	fi
-	@FILE="apps/conf/$(APP)/secrets.enc.yaml"; \
+	@FILE="apps/conf/$(APP)/$(ENV)/secrets.enc.yaml"; \
 	if [ ! -f "$$FILE" ]; then \
-		echo "✗ $$FILE не найден. Чтобы создать зашифрованный файл из plain (apps/conf/$(APP)/secrets.yaml):"; \
-		echo "    make apps-conf-encrypt APP=$(APP)"; \
+		echo "✗ $$FILE не найден. Чтобы создать зашифрованный файл из plain (apps/conf/$(APP)/$(ENV)/secrets.yaml):"; \
+		echo "    make apps-conf-encrypt APP=$(APP) ENV=$(ENV)"; \
 		echo "  Запуск sops на отсутствующем файле создал бы PLAIN-text — отказываюсь."; \
 		exit 1; \
 	fi; \
-	mkdir -p "apps/conf/$(APP)"; \
+	install -d -m 700 "apps/conf/$(APP)/$(ENV)"; \
 	sops "$$FILE"
+
+# Миграция legacy apps/conf/<APP>/*.yaml → apps/conf/<APP>/<ENV>/*.yaml.
+# Запускать один раз на машине для каждого APP с нужным ENV.
+# Usage: make apps-conf-migrate APP=bot ENV=prod
+apps-conf-migrate:
+	@if [ -z "$(APP)" ]; then echo "✗ Задайте APP=myapp"; exit 1; fi
+	@if [ -z "$(ENV)" ]; then echo "✗ Задайте ENV=prod"; exit 1; fi
+	@"$(REPO_ROOT)/scripts/apps-conf-migrate.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)"
 
 # Клон исходников в apps/src/<APP> по полям repo_url / repo_branch в registry (см. apps/registry.yaml).
 apps-src-clone:
@@ -688,8 +700,9 @@ app-backup:
 	@if [ ! -f "$(APPS_REGISTRY)" ]; then echo "✗ Реестр $(APPS_REGISTRY) не найден"; exit 1; fi
 	@MERGED=$$(mktemp); \
 	trap 'rm -f $$MERGED' EXIT INT TERM; \
-	"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)" > $$MERGED || { echo "✗ apps-merge-config упал"; exit 1; }; \
-	APP_NM="$(APP)" enabled=$$("$(YQ)" -r '.apps[] | select(.name == strenv(APP_NM)) | .enabled' $$MERGED 2>/dev/null); \
+	"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)" "$(ENV)" > $$MERGED || { echo "✗ apps-merge-config упал"; exit 1; }; \
+	export APP_NM="$(APP)"; \
+	enabled=$$("$(YQ)" -r '.apps[] | select(.name == strenv(APP_NM)) | .enabled' $$MERGED 2>/dev/null); \
 	if [ "$$enabled" != "true" ]; then \
 		echo "✗ APP=$(APP) не enabled: true в merged $(APPS_REGISTRY)"; exit 1; \
 	fi; \
@@ -1507,13 +1520,20 @@ env-backup:
 		cp "$(APPS_REGISTRY)" "$$OUT_DIR/apps/registry.yaml"; \
 	fi; \
 	if [ -d "$(REPO_ROOT)/apps/conf" ]; then \
-		mkdir -p "$$OUT_DIR/apps/conf"; \
 		for d in "$(REPO_ROOT)"/apps/conf/*/; do \
 			[ -d "$$d" ] || continue; \
 			name=$$(basename "$$d"); \
 			[ "$$name" = "_example" ] && continue; \
-			echo "=== backup apps/conf/$$name ==="; \
-			cp -r "$$d" "$$OUT_DIR/apps/conf/$$name"; \
+			env_dir="$${d}$(ENV)"; \
+			if [ -d "$$env_dir" ]; then \
+				mkdir -p "$$OUT_DIR/apps/conf/$$name/$(ENV)"; \
+				cp -r "$$env_dir/." "$$OUT_DIR/apps/conf/$$name/$(ENV)/"; \
+				echo "=== backup apps/conf/$$name/$(ENV) ==="; \
+			elif [ -n "$$(find "$$d" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | head -1)" ]; then \
+				mkdir -p "$$OUT_DIR/apps/conf"; \
+				cp -r "$$d" "$$OUT_DIR/apps/conf/$$name"; \
+				echo "⚠ legacy backup apps/conf/$$name/ (нет $(ENV)/, мигрируйте: make apps-conf-migrate APP=$$name ENV=$(ENV))"; \
+			fi; \
 		done; \
 	fi; \
 	tar -czf "$$ARCHIVE" -C "$$TMP_DIR" "$(ENV)"; \

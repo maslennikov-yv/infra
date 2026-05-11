@@ -213,7 +213,7 @@ app-create:
 	@{ set -euo pipefail; \
 	INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
 	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
-	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" "$(ENV)" >"$$MG"; fi; \
 	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
 	APP_NS=$${APP_NS:-$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
@@ -316,7 +316,7 @@ app-drop:
 		'; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
-	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" kafka || true; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" "$(ENV)" kafka || true; \
 	echo "✓ Пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены (топики с префиксом $(APP). сохранены)"
 
 # Usage: make app-backup APP=myapp ENV=local

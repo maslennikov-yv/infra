@@ -268,7 +268,7 @@ app-create:
 	CLEAN_MG=0; \
 	if [ -z "$$MG" ]; then \
 		MG=$$(mktemp); CLEAN_MG=1; \
-		"$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; \
+		"$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" "$(ENV)" >"$$MG"; \
 	fi; \
 	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
 	APP_NS=$${APP_NS:-$(APP)}; \
@@ -364,7 +364,7 @@ app-drop:
 		kubectl exec -i "$$POD" -n $(NAMESPACE) -- env PGPASSWORD="$$ADMIN_PASSWORD" psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v app_user="$$APP_USER"; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
-	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" postgres || true; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" "$(ENV)" postgres || true; \
 	echo "✓ БД $$APP_DB, роль $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены"
 
 # Usage: make app-verify APP=mcp

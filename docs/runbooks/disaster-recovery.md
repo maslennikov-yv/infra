@@ -3,7 +3,7 @@
 Документ описывает **полное восстановление** окружения на новом сервере при условии, что у вас есть:
 
 - Доступ к **git-репозиторию** этой инфраструктуры.
-- **`env-backup`-архив** (`environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz`) — содержит платформенные Secrets, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/`. Создан через `make env-backup`.
+- **`env-backup`-архив** (`environments/backups/<env>/YYYYMMDD-HHMMSS.tar.gz`) — содержит платформенные Secrets, Secrets приложений, `apps/registry.yaml`, `apps/conf/<APP>/<ENV>/`. Создан через `make env-backup`.
 - **Бэкапы данных** для сервисов, чьё состояние нужно восстановить (Postgres dump, Redis RDB, Kafka meta, MinIO meta, ClickHouse schemas, RabbitMQ definitions). См. `<service>/BACKUP.md`.
 - (Опционально) **tar-файлы образов** (`<service>/images/*.tar`) — если `bitnamilegacy` к моменту восстановления может оказаться недоступен.
 
@@ -17,7 +17,7 @@
 | `environments/<env>.mk` (SSH_HOST, SSH_KEY, REGISTRY) | от существующего админа (см. [onboarding-admin.md](../onboarding-admin.md)) | нет |
 | `k8s/config/<env>` (kubeconfig) | `make kubeconfig-fetch` или передача от админа | нет |
 | `apps/registry.yaml` | git **или** env-backup-архив | да |
-| `apps/conf/<APP>/*.yaml` (пароли приложений) | env-backup-архив | да |
+| `apps/conf/<APP>/<ENV>/*.yaml` (пароли приложений) | env-backup-архив | да |
 | Платформенные Secrets (`redis/redis`, `rabbitmq/rabbitmq`, `kafka/kafka-kraft`, `postgres-postgresql`, `minio/minio`, `clickhouse/clickhouse`) | env-backup-архив | да |
 | Application Secrets (`<APP>-postgres`, `<APP>-redis`, ...) | env-backup-архив (после Этапа 3) | да |
 | Бэкапы данных | `<service>/backups/<env>/*` или внешнее хранилище | нет |
@@ -112,7 +112,7 @@ make env-restore \
 - Распакуется архив, покажется pre-flight summary (namespaces, secrets/configmaps, новые vs существующие apps/conf).
 - Создадутся namespaces (`postgres`, `redis`, ..., `<app1>`, `<app2>`).
 - Применятся **Secrets и ConfigMaps** платформенных и приложенческих namespaces (с фильтрацией `creationTimestamp`/`resourceVersion`/`uid`/`managedFields`/`ownerReferences`).
-- Скопируется `apps/conf/<APP>/` для приложений, отсутствующих локально.
+- Скопируется `apps/conf/<APP>/<ENV>/` для приложений, отсутствующих локально.
 - Если `apps/registry.yaml` отсутствует локально — скопируется; если отличается — печатается diff-предупреждение, **не перезаписывается**.
 
 ⚠️ **Это критичный шаг.** Без него `make up` для MinIO/ClickHouse/Postgres попытается **сгенерировать новые** Secret-ы (см. Этап 1) — пароли изменятся, и старые клиенты не смогут подключиться. Для KRaft Kafka это вообще катастрофа: новый `cluster-id` не совпадёт с `meta.properties` на восстановленном PV → брокер не стартует. Делайте `env-restore` **до** `make up`.
@@ -129,7 +129,7 @@ make up ENV=<env>
 - Корневой Makefile (Этап 1) видит, что Secrets `redis/redis`, `rabbitmq/rabbitmq`, `postgres-postgresql`, `minio/minio`, `clickhouse/clickhouse` уже есть (из env-restore) — генерация **пропускается**, используются восстановленные.
 - Если `kafka` в активных — вызывается `kafka secrets-init` (идемпотентен, не пересоздаёт `kafka-kraft`).
 - `helmfile apply` развёртывает все 7 релизов, ссылающихся на existingSecret.
-- После helmfile автоматически запускается `apps-apply`: для каждого `enabled: true` в `apps/registry.yaml` — `<svc>-app-create`. Эти команды **обновляют пароли** в Secret приложения из `apps/conf/<APP>/secrets.yaml`. Если бэкап `apps/conf/` свежее, чем env-backup секретов в Kubernetes, пароли в k8s Secret приведутся в актуальное состояние.
+- После helmfile автоматически запускается `apps-apply`: для каждого `enabled: true` в `apps/registry.yaml` — `<svc>-app-create`. Эти команды **обновляют пароли** в Secret приложения из `apps/conf/<APP>/<ENV>/secrets.yaml`. Если бэкап `apps/conf/` свежее, чем env-backup секретов в Kubernetes, пароли в k8s Secret приведутся в актуальное состояние.
 
 Проверьте, что поды запустились:
 ```bash
@@ -236,11 +236,11 @@ make doctor ENV=<env>
 
 Для других сервисов аналогично, см. их BACKUP.md.
 
-### В. Recovery после потери `apps/conf/<APP>/`
+### В. Recovery после потери `apps/conf/<APP>/<ENV>/`
 
-Если `apps/conf/<APP>/secrets.yaml` потерян, а в env-backup его нет (бэкап старый):
+Если `apps/conf/<APP>/<ENV>/secrets.yaml` потерян, а в env-backup его нет (бэкап старый):
 
-1. Сгенерируйте новые пароли вручную, запишите в `apps/conf/<APP>/secrets.yaml`.
+1. Сгенерируйте новые пароли вручную, запишите в `apps/conf/<APP>/<ENV>/secrets.yaml`.
 2. `make apps-apply ENV=<env> ENABLED_SERVICES=...` — обновит Secret приложения и SCRAM/ACL/User в сервисе.
 3. **Все клиенты приложения** должны подхватить новый Secret (rolling restart pods приложения).
 

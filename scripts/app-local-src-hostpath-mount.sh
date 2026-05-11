@@ -35,7 +35,7 @@ if [[ -n "${APPS_MERGED_FILE:-}" && -f "${APPS_MERGED_FILE:-}" ]]; then
 else
 	merged_file=$(mktemp)
 	clean_merged=1
-	if ! "$SCRIPT_DIR/apps-merge-config.sh" "$REG" "$REPO_ABS" >"$merged_file"; then
+	if ! "$SCRIPT_DIR/apps-merge-config.sh" "$REG" "$REPO_ABS" "$ENV" >"$merged_file"; then
 		rm -f "$merged_file"
 		exit 1
 	fi

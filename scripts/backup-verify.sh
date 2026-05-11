@@ -258,7 +258,7 @@ echo "${C_DIM}CLEAN=$CLEAN  CLEAN_AFTER=$CLEAN_AFTER  STOP_ON_FAIL=$STOP_ON_FAIL
 APPS_MERGED_FILE_FOR_DETECT=$(mktemp)
 trap_old_exit=$(trap -p EXIT | grep -oP "(?<=-- ').*(?=' EXIT)" || true)
 # Не перетираем существующий trap EXIT (cleanup) — добавляем явный rm в нём ниже.
-if "$REPO_ROOT/scripts/apps-merge-config.sh" "$APPS_REGISTRY" "$REPO_ROOT" >"$APPS_MERGED_FILE_FOR_DETECT" 2>/dev/null; then
+if "$REPO_ROOT/scripts/apps-merge-config.sh" "$APPS_REGISTRY" "$REPO_ROOT" "$SRC_ENV" >"$APPS_MERGED_FILE_FOR_DETECT" 2>/dev/null; then
   REQUIRED_BACKUPS="env-backup"
   for _svc in postgres redis kafka minio clickhouse rabbitmq; do
     case "$_svc" in

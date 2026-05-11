@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Удаляет ветку top-level-ключа SERVICE из apps/conf/<APP>/secrets.yaml.
+# Удаляет ветку top-level-ключа SERVICE из apps/conf/<APP>/<ENV>/secrets.yaml.
 # SERVICE: postgres|redis|kafka|minio|clickhouse|rabbitmq
 set -euo pipefail
 
@@ -9,7 +9,8 @@ source "$DIR/apps-yq-probe.sh"
 
 REPO="${1:?repo_root}"
 APP="${2:?APP}"
-SERVICE="${3:?service}"
+ENV="${3:?env name}"
+SERVICE="${4:?service}"
 
 # Валидация APP — defence-in-depth от path-traversal.
 if ! [[ "$APP" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
@@ -25,7 +26,7 @@ postgres | redis | kafka | minio | clickhouse | rabbitmq) ;;
 	;;
 esac
 
-secrets="$REPO/apps/conf/$APP/secrets.yaml"
+secrets="$REPO/apps/conf/$APP/$ENV/secrets.yaml"
 [[ -f "$secrets" ]] || exit 0
 
 "$YQBIN" eval "del(.${SERVICE})" -i "$secrets"

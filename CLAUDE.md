@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Инфраструктура данных в Kubernetes (microk8s): локальные Helm-чарты для PostgreSQL, Redis, Kafka, RabbitMQ, MinIO, ClickHouse и Netdata, оркестрируемые через `helmfile` и корневой `Makefile`. Образы тянутся из `docker.io/bitnamilegacy/*`, сохраняются в tar и публикуются в локальный registry microk8s (`localhost:32000`) — это даёт офлайн-сборку и независимость от закрытия старых тегов в Bitnami.
 
-Подробности эксплуатации — в `README.md` и README внутри каталогов сервисов; сценарии работы — `docs/runbooks/usage-scenarios.md`. Расширенные сценарии: `docs/runbooks/disaster-recovery.md` (восстановление на новом сервере), `docs/onboarding-admin.md` (онбординг нового админа), `docs/runbooks/secrets-management.md` (опциональный sops+age для `apps/conf/<APP>/secrets.enc.yaml` в git; краткий cheat-sheet — `docs/runbooks/sops-quickstart.md`), `<service>/BACKUP.md` (backup/restore по сервисам).
+Подробности эксплуатации — в `README.md` и README внутри каталогов сервисов; сценарии работы — `docs/runbooks/usage-scenarios.md`. Расширенные сценарии: `docs/runbooks/disaster-recovery.md` (восстановление на новом сервере), `docs/onboarding-admin.md` (онбординг нового админа), `docs/runbooks/secrets-management.md` (опциональный sops+age для `apps/conf/<APP>/<ENV>/secrets.enc.yaml` в git; краткий cheat-sheet — `docs/runbooks/sops-quickstart.md`), `<service>/BACKUP.md` (backup/restore по сервисам).
 
 ## Архитектура
 
@@ -22,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Вся **специфичная для приложений** информация живёт под `apps/` — не разносить такие данные по произвольным каталогам.
 
 - `apps/registry.yaml` — реестр приложений окружения (**не в git**: содержит реальные имена/namespaces). В git только `apps/registry.yaml.example` как шаблон. У каждой записи обязательно `enabled: true|false`; среди `enabled: true` поля `name` не должны повторяться (это проверяется при merge). На новом клоне: `cp apps/registry.yaml.example apps/registry.yaml`.
-- `apps/conf/<APP>/*.yaml` — пер-приложенческие секреты/overrides (deep-merge с реестром); **не в git**, кроме `apps/conf/_example/`.
+- `apps/conf/<APP>/<ENV>/*.yaml` — пер-приложенческие секреты/overrides, разбитые по окружениям (deep-merge с реестром); **не в git**, кроме `apps/conf/_example/`.
 - Merge выполняется через `mikefarah/yq` v4 (либо `YQ=...`, либо бинарь `./.tools/yq-mikefarah`).
 - `make apps-merge-print` — собранный merge в stdout для отладки.
 - `make apps-apply ENV=...` — идемпотентно создаёт учётки (Postgres/Redis/Kafka/RabbitMQ/MinIO/ClickHouse) для каждого `enabled: true` приложения с заданными паролями/ключами в merge. По умолчанию останавливается на первой ошибке `make`; `APPS_APPLY_CONTINUE_ON_ERROR=1` пытается остальные шаги (код выхода всё равно ненулевой при сбоях).
@@ -126,7 +126,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 ### Что коммитим, что нет
 
 - **В git:** Helm-чарты, `Chart.lock`, `values-<ENV>.yaml`, корневые `Makefile`/`helmfile.yaml.gotmpl`, `apps/registry.yaml.example`, `apps/conf/_example/`, `environments/<env>.yaml` (реестр для `env-backup`), `docs/`, `scripts/`.
-- **Не в git** (см. `.gitignore`): `environments/<env>.mk`, `k8s/config/<env>` (kubeconfig), `<service>/images/*.tar`, `apps/registry.yaml` (живой реестр окружения), `apps/conf/<app>/` (живые секреты), `apps/src/`, `environments/backups/<env>/` (env-backup tar'ы), `<service>/backups/<env>/` (service-wide бэкапы), `apps/backups/<env>/<app>/<service>/` (per-app бэкапы). Для каждого есть команда (или копирование из `.example`), которая его создаёт (см. раздел в `README.md` «Файлы, которые не коммитятся»).
+- **Не в git** (см. `.gitignore`): `environments/<env>.mk`, `k8s/config/<env>` (kubeconfig), `<service>/images/*.tar`, `apps/registry.yaml` (живой реестр окружения), `apps/conf/<app>/<env>/` (живые секреты; структура `apps/conf/<APP>/<ENV>/`), `apps/src/`, `environments/backups/<env>/` (env-backup tar'ы), `<service>/backups/<env>/` (service-wide бэкапы), `apps/backups/<env>/<app>/<service>/` (per-app бэкапы). Для каждого есть команда (или копирование из `.example`), которая его создаёт (см. раздел в `README.md` «Файлы, которые не коммитятся»).
 
 ### Периметр и безопасность
 

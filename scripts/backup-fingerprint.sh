@@ -81,7 +81,7 @@ mkdir -p "$(dirname "$OUT_FILE")"
 CLEAN_MERGED=0
 if [ -z "$APPS_MERGED_FILE" ]; then
   APPS_MERGED_FILE=$(mktemp); CLEAN_MERGED=1
-  if ! "$REPO_ROOT/scripts/apps-merge-config.sh" "$APPS_REGISTRY" "$REPO_ROOT" >"$APPS_MERGED_FILE"; then
+  if ! "$REPO_ROOT/scripts/apps-merge-config.sh" "$APPS_REGISTRY" "$REPO_ROOT" "$ENV_NAME" >"$APPS_MERGED_FILE"; then
     err "✗ apps-merge-config.sh упал"; rm -f "$APPS_MERGED_FILE"; exit 1
   fi
 fi

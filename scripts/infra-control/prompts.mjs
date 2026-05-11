@@ -8,12 +8,18 @@ import {
   isCancel,
   log,
   multiselect,
+  select,
   text,
 } from "./io.mjs";
 
 import { runMake, reportMakeExit } from "../lib/make.mjs";
+import { resolveYq } from "../lib/repo.mjs";
+import { listRegistryApps } from "../lib/registry-yq.mjs";
 import { HELM_OPTIONS } from "./meta.mjs";
 import { setSessionApp } from "./context.mjs";
+
+const MANUAL = "__manual__";
+const CLEAR = "__clear__";
 
 /** Унифицированный обработчик отмены. Вызывает cancel + exit при Ctrl+C. */
 export function ensure(value) {
@@ -74,31 +80,66 @@ export async function promptServicesSelection({ kind = "operation" } = {}) {
 }
 
 /**
- * Запросить APP. Если задан в сессии — предложить использовать его (по умолчанию да),
- * либо ввести другой и сохранить в кэш. Возвращает строку (не пустую) или null при отказе.
+ * Универсальный prompt со списком подсказок.
+ * - `suggestions.length === 0` → fallback к `text()` (поведение 1:1 как старый APP-prompt).
+ * - Иначе показывает `select`: каждая подсказка (`value: name`, опционально `hint`),
+ *   `initialValue = sessionValue` — под курсором сразу сессионное значение.
+ *   Последним пунктом — «Ввести вручную…», открывает `text()`.
+ *   При `requireValue === false` добавляется пункт «Очистить» → возвращает `null`.
  *
- * @param {{ env: string, app?: string|null }} session
- * @param {{ requireValue?: boolean, persist?: boolean, message?: string }} [opts]
+ * @param {{
+ *   message: string,
+ *   suggestions: Array<{ value: string, label?: string, hint?: string }>,
+ *   sessionValue?: string|null,
+ *   requireValue?: boolean,
+ *   manualLabel?: string,
+ *   clearLabel?: string,
+ * }} opts
+ * @returns {Promise<string|null>}
  */
-export async function promptAppFromSession(session, opts = {}) {
+export async function promptWithSuggestions(opts) {
   const {
+    message,
+    suggestions,
+    sessionValue = null,
     requireValue = true,
-    persist = true,
-    message = "APP — короткое имя как в apps/registry.yaml (без пробелов):",
+    manualLabel = "Ввести вручную…",
+    clearLabel = "Очистить (пусто)",
   } = opts;
 
-  if (session.app) {
-    const keep = await promptYesNo(
-      `Использовать APP=${session.app} из сессии?`,
-      true,
-    );
-    if (keep) return session.app;
+  if (!suggestions || suggestions.length === 0) {
+    return await textFallback({ message, initialValue: sessionValue, requireValue });
   }
 
+  /** @type {{value: string, label: string, hint?: string}[]} */
+  const options = suggestions.map((s) => ({
+    value: s.value,
+    label: s.label ?? s.value,
+    ...(s.hint ? { hint: s.hint } : {}),
+  }));
+  options.push({ value: MANUAL, label: manualLabel });
+  if (!requireValue) options.push({ value: CLEAR, label: clearLabel });
+
+  // initialValue ставим только если действительно есть совпадающий пункт —
+  // иначе clack нарисует курсор на первом элементе, что нам и нужно.
+  const hasSessionMatch = !!sessionValue && options.some((o) => o.value === sessionValue);
+  /** @type {Record<string, unknown>} */
+  const selectArgs = { message, options };
+  if (hasSessionMatch) selectArgs.initialValue = sessionValue;
+
+  const picked = ensure(await select(selectArgs));
+  if (picked === CLEAR) return null;
+  if (picked === MANUAL) {
+    return await textFallback({ message, initialValue: sessionValue, requireValue });
+  }
+  return String(picked);
+}
+
+async function textFallback({ message, initialValue, requireValue }) {
   const v = ensure(
     await text({
       message,
-      initialValue: session.app ?? "",
+      initialValue: initialValue ?? "",
       validate: (s) =>
         !s || !String(s).trim()
           ? requireValue
@@ -107,9 +148,42 @@ export async function promptAppFromSession(session, opts = {}) {
           : undefined,
     }),
   );
-  const app = String(v ?? "").trim() || null;
-  if (app && persist) setSessionApp(session, app);
-  return app;
+  return String(v ?? "").trim() || null;
+}
+
+/**
+ * Запросить APP. Подтягивает список из apps/registry.yaml (если есть) и показывает
+ * выбор; если реестра нет/он пуст — fallback к вводу строки. Сессионное APP
+ * подсвечивается курсором по умолчанию. Возвращает строку или null.
+ *
+ * @param {{ env: string, app?: string|null }} session
+ * @param {{ requireValue?: boolean, persist?: boolean, message?: string }} [opts]
+ */
+export async function promptAppFromSession(session, opts = {}) {
+  const {
+    requireValue = true,
+    persist = true,
+    message = "APP — выберите приложение или введите вручную:",
+  } = opts;
+
+  const apps = listRegistryApps(resolveYq());
+  /** @type {Array<{value: string, label: string, hint?: string}>} */
+  const suggestions = apps.map((a) => {
+    const hintParts = [a.enabled ? "enabled" : "disabled"];
+    if (a.app_ns && a.app_ns !== a.name) hintParts.push(`ns=${a.app_ns}`);
+    return { value: a.name, label: a.name, hint: hintParts.join(", ") };
+  });
+
+  const picked = await promptWithSuggestions({
+    message,
+    suggestions,
+    sessionValue: session.app ?? null,
+    requireValue,
+    manualLabel: "Ввести вручную (не из реестра)…",
+  });
+
+  if (persist) setSessionApp(session, picked);
+  return picked;
 }
 
 /**

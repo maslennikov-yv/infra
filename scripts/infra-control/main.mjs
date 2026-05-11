@@ -3,7 +3,7 @@
 // Контекст ENV+APP — см. context.mjs (APP кэшируется per-ENV между запусками).
 // Покрытие 7 сценариев из docs/runbooks/usage-scenarios.md — 1:1.
 
-import { intro, outro, select, text, note, log } from "./io.mjs";
+import { intro, outro, select, note, log } from "./io.mjs";
 
 import {
   ensureSessionShape,
@@ -11,7 +11,7 @@ import {
   setSessionEnv,
   renderSessionHeader,
 } from "./context.mjs";
-import { ensure } from "./prompts.mjs";
+import { ensure, promptAppFromSession } from "./prompts.mjs";
 import {
   formatSessionEnvOptionLabel,
   listEnvironmentNames,
@@ -39,17 +39,16 @@ function defaultEnv() {
 }
 
 async function pickAppFlow(session) {
-  const value = ensure(
-    await text({
-      message: `APP для сессии (ENV=${session.env}). Пусто — очистить.`,
-      placeholder: session.app ?? "myapp",
-      initialValue: session.app ?? "",
-    }),
-  );
-  const trimmed = String(value ?? "").trim();
-  setSessionApp(session, trimmed || null);
-  if (!trimmed) note("APP сессии очищен.", "Сессия");
-  else note(`APP сессии: ${trimmed}.`, "Сессия");
+  // requireValue=false → в списке появляется пункт «Очистить», эквивалент
+  // «пусто — очистить» из старого text()-варианта. promptAppFromSession сам
+  // вызовет setSessionApp(persist=true), включая запись null при очистке.
+  const next = await promptAppFromSession(session, {
+    requireValue: false,
+    persist: true,
+    message: `APP для сессии (ENV=${session.env}):`,
+  });
+  if (!next) note("APP сессии очищен.", "Сессия");
+  else note(`APP сессии: ${next}.`, "Сессия");
 }
 
 async function pickEnvFlow(session) {

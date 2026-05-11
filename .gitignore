@@ -75,16 +75,24 @@ __pycache__/
 apps/registry.yaml
 
 # apps/conf — opt-in inclusion: только _example/ и зашифрованные *.enc.yaml в git;
-# plain *.yaml/*.yml локально (gitignored). См. docs/runbooks/secrets-management.md.
-# Порядок правил критичен: ignore parent → whitelist directories → ignore subdir content → whitelist subset.
-# `!apps/conf/_example/**` ДОЛЖНО быть после `apps/conf/*/*` (последнее правило побеждает).
+# plain *.yaml/*.yml и вся структура env-подкаталогов — локально (gitignored).
+# Структура: apps/conf/<APP>/<ENV>/*.yaml (env-specific).
+# Порядок правил критичен (последнее совпадение побеждает):
+#   1. игнорируем apps/conf/*
+#   2. разрешаем директории <APP>/ и <APP>/<ENV>/
+#   3. игнорируем содержимое apps/conf/<APP>/<ENV>/*
+#   4. разрешаем _example/** и зашифрованные *.enc.yaml на любом уровне
 apps/conf/*
 !apps/conf/_example/
 !apps/conf/*/
 apps/conf/*/*
 !apps/conf/_example/**
-!apps/conf/*/*.enc.yaml
-!apps/conf/*/*.enc.yml
+!apps/conf/*/*/
+apps/conf/*/*/*
+!apps/conf/*/*/*.enc.yaml
+!apps/conf/*/*/*.enc.yml
+# Временные файлы backup-verify localize
+apps/conf/*/*/*.localize.bak
 
 # Клоны исходников приложений (git clone в apps/src/<name>) — не коммитим
 apps/src/**

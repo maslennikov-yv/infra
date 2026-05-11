@@ -102,7 +102,7 @@ app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
 	@INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
 	MG="$${APPS_MERGED_FILE:-}"; CLEAN_MG=0; \
-	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" >"$$MG"; fi; \
+	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" "$(ENV)" >"$$MG"; fi; \
 	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
 	APP_NS=$${APP_NS:-$(APP)}; \
 	BUCKET=$${BUCKET:-$(APP)}; \
@@ -418,7 +418,7 @@ app-drop:
 	echo "Deleting Secrets..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	kubectl delete secret "minio-app-$(APP)" -n "$(NAMESPACE)" --ignore-not-found; \
-	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" minio || true; \
+	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" "$(ENV)" minio || true; \
 	if [ $$DO_RB -eq 1 ]; then echo "✓ Учётка MinIO для $(APP) удалена; bucket из tracking Secret удалены (mc rb --force)"; else echo "✓ Учётка MinIO для $(APP) удалена; bucket не удалялись"; fi
 
 # Usage: make app-backup APP=myapp ENV=local [BUCKET=myapp]

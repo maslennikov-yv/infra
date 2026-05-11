@@ -14,7 +14,7 @@
 | `environments/<env>.yaml` (реестр namespaces для `env-backup`) | да | `git clone` |
 | `environments/<env>.mk` (SSH_HOST, SSH_KEY, REGISTRY, KUBECONFIG override) | **нет** | от существующего админа |
 | `k8s/config/<env>` (kubeconfig — токен доступа к кластеру) | **нет** | `make kubeconfig-fetch` (по SSH) или от админа |
-| `apps/conf/<APP>/*.yaml` (пароли приложений) | **нет** | от существующего админа или из env-backup-архива |
+| `apps/conf/<APP>/<ENV>/*.yaml` (пароли приложений) | **нет** | от существующего админа или из env-backup-архива |
 | `<service>/images/*.tar` (offline tar образов) | **нет** | пересоздаются `make images-save`, **или** от админа если `bitnamilegacy` уже недоступен |
 | `<service>/backups/` (Postgres dump и т.д.) | **нет** | от существующего админа или из бэкапов |
 | `environments/backups/` (env-backup tar.gz) | **нет** | от существующего админа |
@@ -28,7 +28,7 @@
 | `environments/<env>.mk` | `SSH_HOST`, `SSH_USER`, `SSH_PORT`, `SSH_KEY`, `REGISTRY`, опционально `KUBECONFIG`, `MICROK8S_CHANNEL` | низкая (host + путь к ключу) |
 | `~/.ssh/<key>` | приватный SSH-ключ для доступа к ноде microk8s | **высокая** |
 | `k8s/config/<env>` | kubeconfig (token, CA-cert, server URL) | **высокая** (даёт полный доступ к кластеру) |
-| `apps/conf/<APP>/*.yaml` (для каждого приложения) | пароли приложений к Postgres/Redis/Kafka/MinIO/ClickHouse/RabbitMQ | **очень высокая** |
+| `apps/conf/<APP>/<ENV>/*.yaml` (для каждого приложения) | пароли приложений к Postgres/Redis/Kafka/MinIO/ClickHouse/RabbitMQ | **очень высокая** |
 
 ---
 
@@ -83,7 +83,7 @@ make tools-check
 # 3. От существующего админа получите (любым из безопасных способов):
 #    - environments/<env>.mk
 #    - k8s/config/<env>           (если SSH-доступ к ноде нет — иначе можно kubeconfig-fetch)
-#    - apps/conf/<APP>/secrets.yaml для каждого активного приложения
+#    - apps/conf/<APP>/<env>/secrets.yaml для каждого активного приложения
 
 mkdir -p k8s/config apps/conf
 cp /received/<env>.mk environments/<env>.mk
@@ -95,9 +95,9 @@ make kubeconfig-fetch ENV=<env>
 
 # Применить apps/conf/:
 for app in <app1> <app2> ...; do
-  mkdir -p apps/conf/$app
-  cp /received/apps-conf-$app/*.yaml apps/conf/$app/
-  chmod 600 apps/conf/$app/*.yaml
+  mkdir -p apps/conf/$app/<env>
+  cp /received/apps-conf-$app/*.yaml apps/conf/$app/<env>/
+  chmod 600 apps/conf/$app/<env>/*.yaml
 done
 
 # 4. Проверка доступа
@@ -134,7 +134,7 @@ make env-restore \
   ENV=<env> \
   SKIP_K8S=1 \
   CONFIRM=1
-# Будут скопированы apps/conf/<APP>/ для отсутствующих локально приложений
+# Будут скопированы apps/conf/<APP>/<ENV>/ для отсутствующих локально приложений
 # и apps/registry.yaml, если локально его нет.
 
 # 5. Проверка.
@@ -191,14 +191,14 @@ make kubeconfig-fetch ENV=<env>
 - [ ] `make status ENV=<env>` — все expected helm-релизы в Deployed; поды Running.
 - [ ] `make doctor ENV=<env>` — `✓` (5 шагов).
 - [ ] `make apps-apply-diff ENV=<env>` — нет drift.
-- [ ] Локальный `~/.ssh/<key>` имеет права `600`, `apps/conf/<APP>/*.yaml` — `600`.
+- [ ] Локальный `~/.ssh/<key>` имеет права `600`, `apps/conf/<APP>/<ENV>/*.yaml` — `600`.
 - [ ] Понимает, **что нельзя коммитить** (см. таблицу выше).
 
 ---
 
 ## Что админ обязан НЕ делать
 
-- **Не коммитить** `apps/conf/<APP>/`, `environments/<env>.mk`, `k8s/config/<env>` в git (даже в private репо).
+- **Не коммитить** `apps/conf/<APP>/<ENV>/`, `environments/<env>.mk`, `k8s/config/<env>` в git (даже в private репо).
 - **Не передавать** kubeconfig и `apps/conf/` через email, неэнкриптованные мессенджеры, public S3, чаты.
 - **Не делать `kubectl apply` в namespace `kube-system`** или другие платформенные namespaces без явной задачи.
 - **Не запускать `make microk8s-uninstall`** без согласования.

@@ -197,7 +197,7 @@ make redis-app-drop APP=myapp ENV=stage   # ACL-пользователь + Secre
 1. `make kubeconfig-fetch ENV=<env>` (если ещё не сделано).
 2. `make images-save ENV=<env> SERVICE=redis` и `make images-push-remote ENV=<env> SERVICE=redis` при необходимости.
 3. `make redis-up ENV=<env>`
-4. Запись для приложения в `apps/registry.yaml` с секретами в `apps/conf/<APP>/` (образец — [`apps/conf/_example/`](../apps/conf/_example/)); **`redis_db`** можно опустить — подставится следующий свободный номер.
+4. Запись для приложения в `apps/registry.yaml` с секретами в `apps/conf/<APP>/<ENV>/` (образец — [`apps/conf/_example/`](../apps/conf/_example/)); **`redis_db`** можно опустить — подставится следующий свободный номер.
 5. `make redis-app-create APP=myapp ENV=<env>` (при необходимости `REDIS_DB=...` или `APPS_REGISTRY=...`)
 
 ---

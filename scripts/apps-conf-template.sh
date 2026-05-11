@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Копирует шаблон из apps/conf/_example/*.yaml|*.yml в apps/conf/<APP>/;
+# Копирует шаблон из apps/conf/_example/*.yaml|*.yml в apps/conf/<APP>/<ENV>/;
 # по умолчанию добавляет запись в apps/registry.yaml (enabled: false).
-# Использование: apps-conf-template.sh <repo_root> <APP>
+# Использование: apps-conf-template.sh <repo_root> <APP> <ENV>
 # SKIP_REGISTRY=1 — не трогать registry (если запись уже есть или добавите вручную).
 set -euo pipefail
 
@@ -11,6 +11,7 @@ source "$DIR/apps-yq-probe.sh"
 
 REPO="${1:?repo_root}"
 APP_RAW="${2:?APP}"
+ENV="${3:?env name}"
 
 [[ -f "$REPO/apps/registry.yaml" ]] || {
 	echo "✗ Не найден registry: $REPO/apps/registry.yaml" >&2
@@ -36,10 +37,10 @@ fi
 }
 
 REG="$REPO/apps/registry.yaml"
-DEST="$REPO/apps/conf/$APP"
+DEST="$REPO/apps/conf/$APP/$ENV"
 
 if [[ -e "$DEST" ]]; then
-	echo "✗ Уже существует: $DEST — удалите каталог или выберите другое APP." >&2
+	echo "✗ Уже существует: $DEST — удалите каталог или выберите другое APP/ENV." >&2
 	exit 1
 fi
 
@@ -51,12 +52,13 @@ if [[ "${SKIP_REGISTRY:-}" != "1" ]]; then
 	fi
 fi
 
-mkdir -p "$DEST"
+install -d -m 700 "$DEST"
 copied=0
 shopt -s nullglob
 for f in "$EXAMPLE"/*.yaml "$EXAMPLE"/*.yml; do
 	base=$(basename "$f")
 	cp "$f" "$DEST/$base"
+	chmod 600 "$DEST/$base"
 	copied=$((copied + 1))
 done
 shopt -u nullglob
@@ -74,4 +76,4 @@ if [[ "${SKIP_REGISTRY:-}" != "1" ]]; then
 	echo "✓ Registry: добавлена запись name=$APP (enabled: false, app_ns=$APP)"
 fi
 
-echo "✓ Шаблон конфигурации: $DEST (скопировано файлов: $copied)"
+echo "✓ Шаблон конфигурации: $DEST (ENV=$ENV, скопировано файлов: $copied)"

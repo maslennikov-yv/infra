@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Объединяет YAML со stdin с apps/conf/<APP>/secrets.yaml (создаёт при необходимости).
-# Использование: app-conf-set.sh <repo_root> <APP> <stdin=yaml>
+# Объединяет YAML со stdin с apps/conf/<APP>/<ENV>/secrets.yaml (создаёт при необходимости).
+# Использование: app-conf-set.sh <repo_root> <APP> <ENV> <stdin=yaml>
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -9,8 +9,9 @@ source "$DIR/apps-yq-probe.sh"
 
 REPO="${1:?repo_root}"
 APP="${2:?APP}"
+ENV="${3:?env name}"
 
-# Валидация APP — defence-in-depth от path-traversal через apps/conf/<APP>/secrets.yaml.
+# Валидация APP — defence-in-depth от path-traversal через apps/conf/<APP>/<ENV>/secrets.yaml.
 # Все стандартные вызовы (Makefile, configure-infra.mjs) проверяют APP до нас, но
 # полагаться на это нельзя.
 if ! [[ "$APP" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
@@ -18,7 +19,7 @@ if ! [[ "$APP" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]]; then
 	exit 1
 fi
 
-secrets="$REPO/apps/conf/$APP/secrets.yaml"
+secrets="$REPO/apps/conf/$APP/$ENV/secrets.yaml"
 mkdir -p "$(dirname "$secrets")"
 
 patch=$(mktemp)

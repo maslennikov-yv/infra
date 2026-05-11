@@ -12,7 +12,7 @@ describe("actionAccounts", () => {
   test("pg → show: APP из сессии, цель pg-app-show-creds", async () => {
     const { makeCalls } = runWith(h, {
       answers: [
-        true,           // confirm: use APP="myapp" из сессии
+        "myapp",        // select: APP из реестра (initialValue=session.app)
         "pg",           // select: engine
         "show",         // select: action
         "back",         // select: out of engine menu
@@ -31,7 +31,7 @@ describe("actionAccounts", () => {
   test("minio → create с bucket и ACCESS_MODE", async () => {
     const { makeCalls } = runWith(h, {
       answers: [
-        true,            // use APP from session
+        "myapp",         // select: APP
         "mn",            // engine MinIO
         "create",        // action
         "",              // text APP_NS (пусто — не передаём)
@@ -59,7 +59,7 @@ describe("actionAccounts", () => {
   test("drop отменён: первый confirm в promptDangerous = false → make не вызывается", async () => {
     const { makeCalls } = runWith(h, {
       answers: [
-        true,           // use APP from session
+        "myapp",        // select: APP
         "pg",           // engine
         "drop",         // action
         false,          // promptDangerous step 1: «Продолжить?» → нет

@@ -56,13 +56,13 @@ export async function wizardConnectApp(session) {
   const app = String(appRaw).trim();
   setSessionApp(session, app);
 
-  const confDir = path.join(REPO_ROOT, "apps", "conf", app);
+  const confDir = path.join(REPO_ROOT, "apps", "conf", app, session.env);
   const alreadyExists = fs.existsSync(confDir);
 
   // 2. apps-conf-template
   step(2, 7, alreadyExists
-    ? `Каталог apps/conf/${app}/ уже существует — шаг шаблона можно пропустить.`
-    : `Создаём шаблон apps/conf/${app}/ + запись в registry (enabled: false по умолчанию).`);
+    ? `Каталог apps/conf/${app}/${session.env}/ уже существует — шаг шаблона можно пропустить.`
+    : `Создаём шаблон apps/conf/${app}/${session.env}/ + запись в registry (enabled: false по умолчанию).`);
   const doTemplate = await promptYesNo(
     alreadyExists
       ? "Перезаписать шаблон (опасно — затрёт текущие файлы)?"
@@ -83,7 +83,7 @@ export async function wizardConnectApp(session) {
   }
 
   // 3. редактирование секретов (просто открыть/показать путь)
-  step(3, 7, `Заполните секреты в apps/conf/${app}/secrets.yaml.`);
+  step(3, 7, `Заполните секреты в apps/conf/${app}/${session.env}/secrets.yaml.`);
   note(
     [
       `Путь: ${path.relative(REPO_ROOT, confDir)}/secrets.yaml`,

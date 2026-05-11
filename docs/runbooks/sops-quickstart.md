@@ -42,30 +42,30 @@ git add .sops.yaml && git commit -m "secrets: enable sops+age"
 
 ```bash
 # 1. Создать/отредактировать plain-файл (gitignored):
-$EDITOR apps/conf/myapp/secrets.yaml
+$EDITOR apps/conf/myapp/prod/secrets.yaml
 
 # 2. Зашифровать → secrets.enc.yaml (коммитится в git):
-make apps-conf-encrypt APP=myapp
+make apps-conf-encrypt APP=myapp ENV=prod
 
 # 3. Закоммитить:
-git add apps/conf/myapp/secrets.enc.yaml
+git add apps/conf/myapp/prod/secrets.enc.yaml
 git commit -m "myapp: encrypted secrets"
 
 # 4. (Опц.) удалить plain — он gitignored, но переопределяет .enc.yaml в merge:
-rm apps/conf/myapp/secrets.yaml
+rm apps/conf/myapp/prod/secrets.yaml
 ```
 
 ## Просмотреть/отредактировать существующий зашифрованный файл
 
 ```bash
 # Через sops (без появления plain на диске; рекомендуется):
-make apps-conf-edit APP=myapp
+make apps-conf-edit APP=myapp ENV=prod
 
 # Через расшифровку → редактирование → шифрование:
-make apps-conf-decrypt APP=myapp
-$EDITOR apps/conf/myapp/secrets.yaml
-make apps-conf-encrypt APP=myapp
-git add apps/conf/myapp/secrets.enc.yaml && git commit -m "myapp: rotate secrets"
+make apps-conf-decrypt APP=myapp ENV=prod
+$EDITOR apps/conf/myapp/prod/secrets.yaml
+make apps-conf-encrypt APP=myapp ENV=prod
+git add apps/conf/myapp/prod/secrets.enc.yaml && git commit -m "myapp: rotate secrets"
 ```
 
 ## Применить (как обычно)
@@ -101,7 +101,7 @@ find apps/conf -name '*.enc.yaml' -exec sops updatekeys -y {} \;
 | Проблема | Решение |
 |---|---|
 | `Failed to get the data key` | `chmod 600 ~/.config/sops/age/keys.txt`; ваш age-ключ должен быть в `.sops.yaml` |
-| `apps-merge-config.sh: Не удалось расшифровать` | проверьте `sops --decrypt apps/conf/<APP>/secrets.enc.yaml` напрямую |
+| `apps-merge-config.sh: Не удалось расшифровать` | проверьте `sops --decrypt apps/conf/<APP>/<ENV>/secrets.enc.yaml` напрямую |
 | `error loading config: no matching creation rules` | имя файла должно соответствовать `path_regex` в `.sops.yaml` (по умолчанию `*.enc.yaml`) |
 | Plain `secrets.yaml` не обновляет merge | помните, что plain переопределяет `.enc.yaml` — удалите plain или обновите оба |
 

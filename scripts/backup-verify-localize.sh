@@ -7,7 +7,7 @@
 # либо (хуже) указывает в prod — тогда local-приложение при первом presigned-запросе
 # уходит в prod-MinIO. Скрипт меняет такие значения на in-cluster URL DST.
 #
-# Также прорабатывается apps/conf/<APP>/secrets.yaml (восстановленный из env-backup
+# Также прорабатывается apps/conf/<APP>/<DST_ENV>/secrets.yaml (восстановленный из env-backup
 # с OVERWRITE_APPS_CONF=1) — поле minio.public_endpoint.
 #
 # Гарантии безопасности:
@@ -132,9 +132,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. apps/conf/<APP>/secrets.yaml — minio.public_endpoint поле.
+# 2. apps/conf/<APP>/<DST_ENV>/secrets.yaml — minio.public_endpoint поле.
 # ---------------------------------------------------------------------------
-CONF_FILE="$REPO_ROOT/apps/conf/$APP/secrets.yaml"
+CONF_FILE="$REPO_ROOT/apps/conf/$APP/$DST_ENV/secrets.yaml"
 echo ""
 echo "-- $CONF_FILE"
 

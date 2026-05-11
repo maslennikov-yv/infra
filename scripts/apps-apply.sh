@@ -20,7 +20,7 @@ DROP_DISABLED="${APPS_APPLY_DROP_DISABLED:-0}"
 
 merged=$(mktemp)
 trap 'rm -f "$merged"' EXIT
-"$SCRIPT_DIR/apps-merge-config.sh" "$REG" "$REPO" >"$merged"
+"$SCRIPT_DIR/apps-merge-config.sh" "$REG" "$REPO" "$ENV" >"$merged"
 
 declare -a ACTIVE=()
 DATA_LIST="$SCRIPT_DIR/lib/data-services.txt"

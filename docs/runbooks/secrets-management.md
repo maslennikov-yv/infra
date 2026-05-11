@@ -1,6 +1,6 @@
 # Шифрование `apps/conf/` через sops + age
 
-Документ описывает **опциональный** workflow для хранения секретов приложений (`apps/conf/<APP>/secrets.enc.yaml`) в git в зашифрованном виде. Стандартный workflow с нешифрованными `secrets.yaml` (gitignored) продолжает работать без изменений — sops+age включается на проектах, где удобнее иметь секреты под контролем версий.
+Документ описывает **опциональный** workflow для хранения секретов приложений (`apps/conf/<APP>/<ENV>/secrets.enc.yaml`) в git в зашифрованном виде. Стандартный workflow с нешифрованными `secrets.yaml` (gitignored) продолжает работать без изменений — sops+age включается на проектах, где удобнее иметь секреты под контролем версий.
 
 > 💡 Если нужны только команды без объяснений — см. **[sops-quickstart.md](./sops-quickstart.md)** (cheat-sheet).
 
@@ -12,6 +12,8 @@
 | **sops+age (этот документ)** | Зашифрованные `secrets.enc.yaml` в git, история, можно дать доступ нескольким админам, нет внешних серверов | Нужны sops + age на каждой машине; нужна процедура ротации ключей при смене состава команды |
 | **sealed-secrets (k8s controller)** | k8s-native, автоматический deploy | Требует controller в кластере; не подходит для секретов вне k8s (`apps/conf/`) |
 | **vault / external secrets** | Полнофункциональный менеджер, динамические креды | Тяжёлая инфраструктура; для текущего масштаба избыточно |
+
+> **Структура каталогов**: секреты лежат в `apps/conf/<APP>/<ENV>/`, т.е. у каждого приложения — подкаталог на окружение (`local/`, `prod/`, `stage/`). Все make-цели требуют `APP=` и `ENV=`.
 
 **sops+age** — лучший компромисс для этого репозитория: один файл `.sops.yaml` в корне, ключи у каждого админа в `~/.config/sops/age/keys.txt`, шифрование без онлайн-сервисов.
 
@@ -96,18 +98,18 @@ creation_rules:
 
 `.sops.yaml` коммитится в git — это публичная конфигурация.
 
-### 3. Зашифровать существующие `apps/conf/<APP>/secrets.yaml`
+### 3. Зашифровать существующие `apps/conf/<APP>/<ENV>/secrets.yaml`
 
 ```bash
-# Для каждого приложения с локальным secrets.yaml:
-make apps-conf-encrypt APP=myapp
-# → apps/conf/myapp/secrets.enc.yaml (зашифрованный, добавляется в git)
+# Для каждого приложения/окружения с локальным secrets.yaml:
+make apps-conf-encrypt APP=myapp ENV=prod
+# → apps/conf/myapp/prod/secrets.enc.yaml (зашифрованный, добавляется в git)
 # Локальный secrets.yaml остаётся (gitignored). Он переопределяет .enc.yaml при apps-merge-print —
 # удобно для локальной разработки. Если удалить — будет использоваться только .enc.yaml.
 
 # Закоммитьте:
-git add .sops.yaml apps/conf/<APP>/secrets.enc.yaml
-git commit -m "secrets: enable sops+age, encrypt apps/conf/<APP>"
+git add .sops.yaml apps/conf/<APP>/<ENV>/secrets.enc.yaml
+git commit -m "secrets: enable sops+age, encrypt apps/conf/<APP>/<ENV>"
 ```
 
 ## Ежедневный workflow
@@ -116,24 +118,24 @@ git commit -m "secrets: enable sops+age, encrypt apps/conf/<APP>"
 
 **Через sops (рекомендуется — без появления plain-файла на диске):**
 ```bash
-make apps-conf-edit APP=myapp
+make apps-conf-edit APP=myapp ENV=prod
 # Открывает $EDITOR с расшифрованным содержимым; при сохранении — шифрует обратно.
 # Поддерживает diff-мерж.
 ```
 
 **Через decrypt → edit → encrypt** (если хотите видеть `secrets.yaml` локально):
 ```bash
-make apps-conf-decrypt APP=myapp                 # → apps/conf/myapp/secrets.yaml (gitignored, chmod 600)
-$EDITOR apps/conf/myapp/secrets.yaml
-make apps-conf-encrypt APP=myapp                 # → apps/conf/myapp/secrets.enc.yaml
-git add apps/conf/myapp/secrets.enc.yaml && git commit -m "..."
+make apps-conf-decrypt APP=myapp ENV=prod        # → apps/conf/myapp/prod/secrets.yaml (gitignored, chmod 600)
+$EDITOR apps/conf/myapp/prod/secrets.yaml
+make apps-conf-encrypt APP=myapp ENV=prod        # → apps/conf/myapp/prod/secrets.enc.yaml
+git add apps/conf/myapp/prod/secrets.enc.yaml && git commit -m "..."
 ```
 
 ⚠️ Локальный `secrets.yaml` **переопределяет** `secrets.enc.yaml` в `apps-merge-config.sh`. Это by design (override для разработки). Удалите локальный `secrets.yaml` после `apps-conf-encrypt`, если хотите убедиться, что в `apps-apply` пойдёт ровно содержимое `.enc.yaml`.
 
 ### Применить секреты (`make apps-apply`)
 
-Без изменений: `apps-merge-config.sh` теперь автоматически расшифровывает любые `*.enc.yaml`/`*.enc.yml` в `apps/conf/<APP>/` через sops перед deep-merge. Если sops не установлен и встречается `*.enc.yaml` — скрипт упадёт с явной ошибкой.
+Без изменений: `apps-merge-config.sh` автоматически расшифровывает любые `*.enc.yaml`/`*.enc.yml` в `apps/conf/<APP>/<ENV>/` через sops перед deep-merge. Если sops не установлен и встречается `*.enc.yaml` — скрипт упадёт с явной ошибкой.
 
 ```bash
 make apps-apply ENV=local                        # как обычно
@@ -160,7 +162,8 @@ make apps-merge-print                            # выводит plain merged Y
    ```
 4. Коммит:
    ```bash
-   git add .sops.yaml apps/conf/**/*.enc.yaml
+   git add .sops.yaml
+   git add $(find apps/conf -name '*.enc.yaml')
    git commit -m "secrets: add admin Alice to sops recipients"
    ```
 5. Новый админ после `git pull` может расшифровать своим ключом.
@@ -170,7 +173,7 @@ make apps-merge-print                            # выводит plain merged Y
 То же что добавление, только удалить public-ключ из `.sops.yaml` и `sops updatekeys`. **После этого** удалённый админ:
 - Не может расшифровать новые версии файлов.
 - **Может** расшифровать старые версии (которые были зашифрованы до ротации) — git history содержит их.
-- Поэтому **обязательно** ротировать сами секреты (поменять пароли в БД, в `apps/conf/<APP>/secrets.yaml`, перешифровать) после ротации ключей.
+- Поэтому **обязательно** ротировать сами секреты (поменять пароли в БД, в `apps/conf/<APP>/<ENV>/secrets.yaml`, перешифровать) после ротации ключей.
 
 ```bash
 # Полная процедура смены состава команды:
@@ -204,15 +207,15 @@ make apps-apply ENV=<env>
 
 ### `apps-merge-config.sh: Не удалось расшифровать ...`
 
-То же. Проверьте `sops --decrypt apps/conf/<APP>/secrets.enc.yaml` напрямую — увидите внятную ошибку.
+То же. Проверьте `sops --decrypt apps/conf/<APP>/<ENV>/secrets.enc.yaml` напрямую — увидите внятную ошибку.
 
 ### Локальный `secrets.yaml` переопределяет `secrets.enc.yaml`
 
-By design. Если запустили `apps-conf-decrypt` для редактирования и забыли удалить — merge возьмёт plain. Удалите `apps/conf/<APP>/secrets.yaml`:
+By design. Если запустили `apps-conf-decrypt` для редактирования и забыли удалить — merge возьмёт plain. Удалите `apps/conf/<APP>/<ENV>/secrets.yaml`:
 
 ```bash
-rm apps/conf/<APP>/secrets.yaml
-make apps-merge-print | yq ".apps[] | select(.name == \"<APP>\")"   # проверка
+rm apps/conf/<APP>/<ENV>/secrets.yaml
+make apps-merge-print ENV=<ENV> | yq ".apps[] | select(.name == \"<APP>\")"   # проверка
 ```
 
 ### Изменилась версия sops/age и encrypted-файлы перестали читаться
@@ -221,8 +224,8 @@ make apps-merge-print | yq ".apps[] | select(.name == \"<APP>\")"   # прове
 
 ## Совместимость с env-backup
 
-`make env-backup` (Этап 3) копирует `apps/conf/` в архив **как есть**: и `secrets.enc.yaml`, и (если есть) plain `secrets.yaml`. Это **корректно**:
-- На новом сервере при `env-restore` восстанавливаются оба варианта.
+`make env-backup ENV=prod` копирует `apps/conf/<APP>/prod/` в архив для каждого приложения — только текущий ENV, без перетекания данных других окружений. В архиве сохраняются и `secrets.enc.yaml`, и (если есть) plain `secrets.yaml`. Это **корректно**:
+- На новом сервере при `env-restore` восстанавливается только `apps/conf/<APP>/<ENV>/` — соседние окружения не затрагиваются.
 - Если sops+age настроен — `apps-merge-config.sh` сам расшифрует `.enc.yaml`.
 - Если новый сервер не имеет `~/.config/sops/age/keys.txt` для текущих ключей — `apps-apply` упадёт с явной ошибкой про sops; нужно перенести age-keys (вне env-backup-архива, отдельным каналом).
 

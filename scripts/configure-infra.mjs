@@ -325,9 +325,9 @@ function gitPullAppFfOnly(appName) {
   });
 }
 
-function runAppConfSet(app, yamlBody) {
+function runAppConfSet(app, env, yamlBody) {
   return new Promise((resolveP, rejectP) => {
-    const child = spawn(APP_CONF_SET, [REPO_ROOT, app], {
+    const child = spawn(APP_CONF_SET, [REPO_ROOT, app, env], {
       cwd: REPO_ROOT,
       stdio: ["pipe", "inherit", "inherit"],
     });
@@ -376,7 +376,7 @@ function validateAppName(v) {
   return undefined;
 }
 
-async function runAppConfTemplateInteractive({ standalone, yqBin }) {
+async function runAppConfTemplateInteractive({ standalone, yqBin, session }) {
   const app = ensure(
     await text({
       message: "Имя приложения (APP = поле name в registry):",
@@ -422,7 +422,7 @@ async function runAppConfTemplateInteractive({ standalone, yqBin }) {
   const code = await new Promise((resolveP) => {
     const env = { ...process.env };
     if (!addRegistry) env.SKIP_REGISTRY = "1";
-    const child = spawn(APPS_CONF_TEMPLATE, [REPO_ROOT, app], {
+    const child = spawn(APPS_CONF_TEMPLATE, [REPO_ROOT, app, session.env], {
       cwd: REPO_ROOT,
       stdio: "inherit",
       env,
@@ -516,7 +516,7 @@ export async function runConfigure(options = {}) {
   }
 
   if (mode === "template") {
-    await runAppConfTemplateInteractive({ standalone, yqBin });
+    await runAppConfTemplateInteractive({ standalone, yqBin, session });
     return;
   }
 
@@ -762,9 +762,9 @@ export async function runConfigure(options = {}) {
   }
 
   const yamlBody = `${parts.join("\n")}\n`;
-  log.step(`app-conf-set.sh → apps/conf/${app}/secrets.yaml`);
+  log.step(`app-conf-set.sh → apps/conf/${app}/${session.env}/secrets.yaml`);
 
-  const code = await runAppConfSet(app, yamlBody);
+  const code = await runAppConfSet(app, session.env, yamlBody);
   if (code === 0) log.success(`Секреты для «${app}» записаны.`);
   else log.error(`app-conf-set завершился с кодом ${code}.`);
 

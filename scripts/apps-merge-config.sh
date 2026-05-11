@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Собирает единый YAML: apps: [ ... ] только для приложений с enabled: true,
-# каждая запись = объект из registry deep-merge всех *.yaml (+ *.yml) в apps/conf/<name>/.
-# Использование: apps-merge-config.sh <registry.yaml> <repo_root>
+# каждая запись = объект из registry deep-merge всех *.yaml (+ *.yml) в apps/conf/<name>/<env>/.
+# Использование: apps-merge-config.sh <registry.yaml> <repo_root> <env>
 # stdout при завершении: записывает в временный файл, только если нужен файл — используйте redirection
 #
 # На stdout всегда печатается итоговый YAML через cat в конце.
@@ -13,6 +13,7 @@ source "$DIR/apps-yq-probe.sh"
 
 REG="${1:?registry path}"
 REPO="${2:?repo root}"
+ENV="${3:?env name}"
 
 [[ -f "$REG" ]] || {
 	echo "✗ Реестр не найден: $REG" >&2
@@ -58,7 +59,7 @@ while IFS= read -r name; do
 
 	env NM="$name" "$YQBIN" -o yaml '.apps[] | select(.enabled == true) | select(.name == strenv(NM))' "$REG" >"$current"
 
-	confdir="$REPO/apps/conf/$name"
+	confdir="$REPO/apps/conf/$name/$ENV"
 	if [[ -d "$confdir" ]]; then
 		# Двухпроходный сбор файлов: сначала ВСЕ зашифрованные (*.enc.yaml/*.enc.yml в алфавите),
 		# потом ВСЕ plain (*.yaml/*.yml в алфавите, исключая .enc.*). Это гарантирует override-

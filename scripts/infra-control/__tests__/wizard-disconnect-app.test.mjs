@@ -10,6 +10,11 @@ const h = setupHarness(before, {
   extraMocks: {
     "../../lib/registry-yq.mjs": {
       patchRegistryEnabled: () => true,
+      // Возвращаем тестовый набор, чтобы promptAppFromSession показал select
+      // и принял "myapp" как одну из опций (а не уходил в text() fallback).
+      listRegistryApps: () => [
+        { name: "myapp", enabled: true, app_ns: "myapp" },
+      ],
     },
   },
 });
@@ -19,7 +24,7 @@ describe("wizardDisconnectApp", () => {
     const patchCalls = [];
     const { makeCalls } = runWith(h, {
       answers: [
-        true,          // confirm: use APP="myapp" из сессии (promptAppFromSession)
+        "myapp",       // select: APP="myapp" (initialValue=session.app, promptAppFromSession)
         true,          // confirm: «Снять enabled у приложения в registry?»
         true,          // confirm: «Запустить apps-apply сейчас?»
         true,          // confirm: «Удалить учётки?»
@@ -65,7 +70,7 @@ describe("wizardDisconnectApp", () => {
   test("отказ от drop — wizard выходит после apps-apply", async () => {
     const { makeCalls } = runWith(h, {
       answers: [
-        true,           // use APP from session
+        "myapp",        // select: APP
         true,           // patch registry
         true,           // apps-apply
         false,          // НЕ удалять учётки
@@ -81,7 +86,7 @@ describe("wizardDisconnectApp", () => {
   test("отмена promptDangerous — make-drop не вызывается", async () => {
     const { makeCalls } = runWith(h, {
       answers: [
-        true,           // use APP
+        "myapp",        // select: APP
         true,           // patch
         true,           // apps-apply
         true,           // да, удалять
