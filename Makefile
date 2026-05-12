@@ -8,6 +8,8 @@
 	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
 	apps-merge-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
+	app-capabilities app-deploy app-rollback app-status app-logs app-migrate app-seed app-shell \
+	app-interface-init \
 	apps-conf-encrypt apps-conf-decrypt apps-conf-edit \
 	postgres-status postgres-logs postgres-shell postgres-db postgres-up postgres-diff postgres-down \
 	redis-status redis-logs redis-shell redis-up redis-diff redis-down \
@@ -201,6 +203,19 @@ help:
 	@echo "  make apps-conf-encrypt / apps-conf-decrypt / apps-conf-edit $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - sops+age workflow (apps/conf/<APP>/<ENV>/secrets.enc.yaml в git; см. docs/runbooks/secrets-management.md)"
 	@echo "  make apps-src-clone $(YELLOW)APP=<name>$(RESET) [$(YELLOW)APPS_REGISTRY=...$(RESET)] - git clone по repo_url (+ repo_branch) из registry → apps/src/<APP>"
 	@echo "  make app-local-src-hostpath-mount $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) $(YELLOW)APP_LOCAL_K8S_WORKLOAD=<kind>/<имя>$(RESET) [$(YELLOW)pod/…|deployment/…|sts/…|ds/…$(RESET)] — hostPath $(YELLOW)apps/src/<APP>$(RESET); initContainers+containers; [$(YELLOW)APP_LOCAL_SRC_READ_ONLY=1$(RESET)] [$(YELLOW)APP_LOCAL_SRC_CONTAINER=…$(RESET)]"
+	@echo ""
+	@echo "$(BOLD)$(GREEN)App lifecycle (infra-interface):$(RESET)"
+	@echo "  make app-capabilities $(YELLOW)APP=myapp$(RESET)            — версия + список методов + валидация целей Makefile"
+	@echo "  make app-deploy   $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)     — infra-deploy в apps/src/<APP>/Makefile"
+	@echo "  make app-rollback $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)REVISION=N$(RESET)] — infra-rollback"
+	@echo "  make app-status   $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)     — infra-status"
+	@echo "  make app-logs     $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)FOLLOW=1$(RESET)] [$(YELLOW)CONTAINER=name$(RESET)] — infra-logs"
+	@echo "  make app-migrate  $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)     — infra-migrate (миграции БД)"
+	@echo "  make app-seed     $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)SKIP_CONFIRM=1$(RESET)] — infra-seed (⚠ деструктивно)"
+	@echo "  make app-shell    $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)CONTAINER=name$(RESET)] — infra-shell"
+	@echo "  make app-interface-init $(YELLOW)APP=myapp$(RESET) [$(YELLOW)OVERWRITE=1$(RESET)] — рыба infra-interface.yaml + Makefile.infra в apps/src/<APP>/"
+	@echo "  Требуется: apps/src/<APP>/ (make apps-src-clone) + apps/src/<APP>/infra-interface.yaml"
+	@echo "  Документация контракта: docs/runbooks/app-interface.md"
 	@echo ""
 	@echo "  make up $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=postgres,redis$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=kafka,clickhouse$(RESET)] [$(YELLOW)SKIP_APPS_APPLY=1$(RESET)] — helmfile apply, затем apps-apply из apps/registry.yaml и apps/conf/..."
 	@echo "  make diff $(YELLOW)ENV=$(ENV)$(RESET) [$(YELLOW)ENABLED_SERVICES=postgres,redis$(RESET)] [$(YELLOW)EXCLUDE_SERVICES=kafka,clickhouse$(RESET)] - helmfile diff"
@@ -583,6 +598,76 @@ app-local-src-hostpath-mount:
 		APP_LOCAL_SRC_CONTAINER="$(APP_LOCAL_SRC_CONTAINER)" \
 		APP_LOCAL_SRC_READ_ONLY="$(APP_LOCAL_SRC_READ_ONLY)" \
 		"$(REPO_ROOT)/scripts/app-local-src-hostpath-mount.sh"
+
+# ---- App lifecycle interface (infra-interface.yaml) ----
+# Документация: docs/runbooks/app-interface.md
+# Каждая цель: проверяет APP + наличие apps/src/<APP>/ + реализацию метода,
+# затем вычисляет APP_NS из registry (дефолт = APP) и делегирует в apps/src/<APP>/Makefile.
+
+app-interface-init:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@OVERWRITE="$(OVERWRITE)" "$(REPO_ROOT)/scripts/app-interface-init.sh" "$(REPO_ROOT)" "$(APP)"
+
+app-capabilities:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-discover.sh" "$(REPO_ROOT)" "$(APP)"
+
+app-deploy:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" deploy
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-deploy \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+app-rollback:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" rollback
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-rollback \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" \
+	  $(if $(strip $(REVISION)),REVISION="$(REVISION)")
+
+app-status:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" status
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-status \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+app-logs:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" logs
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-logs \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" \
+	  $(if $(strip $(FOLLOW)),FOLLOW="$(FOLLOW)") \
+	  $(if $(strip $(CONTAINER)),CONTAINER="$(CONTAINER)")
+
+app-migrate:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" migrate
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-migrate \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+app-seed:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" seed
+	@if [ "$(SKIP_CONFIRM)" != "1" ]; then \
+	  read -r -p "⚠  seed может быть деструктивным для APP=$(APP) ENV=$(ENV). Продолжить? (y/N) " c; \
+	  [ "$$c" = "y" ] || [ "$$c" = "Y" ] || { echo "Отменено."; exit 1; }; \
+	fi
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-seed \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+
+app-shell:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" shell
+	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-shell \
+	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" \
+	  $(if $(strip $(CONTAINER)),CONTAINER="$(CONTAINER)")
 
 pg-app-create:
 	@# Не передаём POSTGRES_ADMIN_PASSWORD пустым — иначе затирается ?= дефолт

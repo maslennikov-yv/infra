@@ -38,14 +38,14 @@ export async function wizardConnectApp(session) {
   note(
     [
       `ENV: ${session.env}.`,
-      "Шаги: имя → шаблон конфигов → редактирование → merge → apps-apply → опц. clone/hostpath.",
+      "Шаги: имя → шаблон конфигов → редактирование → merge → apps-apply → опц. clone/hostpath → опц. infra-interface.",
       "Каждый шаг можно пропустить.",
     ].join("\n"),
     TITLE,
   );
 
   // 1. APP
-  step(1, 7, "Имя приложения (поле .apps[].name в apps/registry.yaml).");
+  step(1, 8, "Имя приложения (поле .apps[].name в apps/registry.yaml).");
   const appRaw = ensure(
     await text({
       message: "APP:",
@@ -60,7 +60,7 @@ export async function wizardConnectApp(session) {
   const alreadyExists = fs.existsSync(confDir);
 
   // 2. apps-conf-template
-  step(2, 7, alreadyExists
+  step(2, 8, alreadyExists
     ? `Каталог apps/conf/${app}/${session.env}/ уже существует — шаг шаблона можно пропустить.`
     : `Создаём шаблон apps/conf/${app}/${session.env}/ + запись в registry (enabled: false по умолчанию).`);
   const doTemplate = await promptYesNo(
@@ -83,7 +83,7 @@ export async function wizardConnectApp(session) {
   }
 
   // 3. редактирование секретов (просто открыть/показать путь)
-  step(3, 7, `Заполните секреты в apps/conf/${app}/${session.env}/secrets.yaml.`);
+  step(3, 8, `Заполните секреты в apps/conf/${app}/${session.env}/secrets.yaml.`);
   note(
     [
       `Путь: ${path.relative(REPO_ROOT, confDir)}/secrets.yaml`,
@@ -95,7 +95,7 @@ export async function wizardConnectApp(session) {
   await promptYesNo("Файл отредактирован — продолжать?", true);
 
   // 4. интерактивный конфигуратор (опционально)
-  step(4, 7, "Можно дополнительно пройти интерактивный конфигуратор (apps/conf + registry, генерация паролей).");
+  step(4, 8, "Можно дополнительно пройти интерактивный конфигуратор (apps/conf + registry, генерация паролей).");
   if (
     await promptYesNo(
       "Запустить конфигуратор сейчас? (его меню — отдельный поток)",
@@ -110,13 +110,13 @@ export async function wizardConnectApp(session) {
   }
 
   // 5. merge-просмотр
-  step(5, 7, "Проверим итоговую конфигурацию (apps-merge-print).");
+  step(5, 8, "Проверим итоговую конфигурацию (apps-merge-print).");
   if (await promptYesNo("Показать итоговый merge?", true)) {
     await runTarget(session, "apps-merge-print", {});
   }
 
   // 6. apps-apply
-  step(6, 7, "Применим учётки в кластер (apps-apply). Это создаст Secret <APP>-<service> в namespace приложения.");
+  step(6, 8, "Применим учётки в кластер (apps-apply). Это создаст Secret <APP>-<service> в namespace приложения.");
   if (await promptYesNo("Запустить apps-apply сейчас?", true)) {
     const { enabled, exclude } = await promptServicesSelection({ kind: "apps-apply" });
     /** @type {Record<string,string>} */
@@ -130,7 +130,7 @@ export async function wizardConnectApp(session) {
   }
 
   // 7. опциональные хвосты: clone и hostpath
-  step(7, 7, "Опционально: клон git-репо приложения и hostPath для local-разработки.");
+  step(7, 8, "Опционально: клон git-репо приложения и hostPath для local-разработки.");
   if (await promptYesNo("Клонировать репозиторий в apps/src/ (apps-src-clone, требует repo_url в registry)?", false)) {
     await runTarget(session, "apps-src-clone", { APP: app });
   }
@@ -145,10 +145,20 @@ export async function wizardConnectApp(session) {
     }
   }
 
+  // 8. рыба infra-interface (только если apps/src/<APP>/ уже есть)
+  const srcDir = path.join(REPO_ROOT, "apps", "src", app);
+  if (fs.existsSync(srcDir)) {
+    step(8, 8, `Сгенерировать рыбу infra-interface.yaml + Makefile.infra в apps/src/${app}/.`);
+    if (await promptYesNo("Создать рыбу infra-interface (app-interface-init)?", true)) {
+      await runTarget(session, "app-interface-init", { APP: app });
+    }
+  }
+
   note(
     [
       `Приложение ${app} подключено (или шаги пропущены).`,
       "Дальше: «Каждый день → Учётки и топики → движок» для проверки кред.",
+      `Lifecycle: «Lifecycle приложения → Capabilities» после реализации infra-interface.`,
     ].join("\n"),
     `${TITLE} · готово`,
   );

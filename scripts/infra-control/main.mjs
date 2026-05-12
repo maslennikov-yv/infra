@@ -26,6 +26,7 @@ import { wizardConnectApp } from "./wizards/connect-app.mjs";
 import { wizardDisconnectApp } from "./wizards/disconnect-app.mjs";
 import { wizardConfigureServices } from "./wizards/configure-services.mjs";
 
+import { actionLifecycle } from "./actions/lifecycle.mjs";
 import { actionBackup } from "./actions/backup.mjs";
 import { settingsEnvironment } from "./settings/environment.mjs";
 import { settingsTcp } from "./settings/tcp.mjs";
@@ -117,7 +118,8 @@ export const ACTIONS = [
   { value: "apply",   label: "Применить изменения",      hint: "helm up + apps-apply (мультивыбор сервисов)" },
   { value: "diff",    label: "Сравнить с кластером",     hint: "helm diff" },
   { value: "status",  label: "Состояние и логи",         hint: "doctor / status / логи / shell / события" },
-  { value: "accts",   label: "Учётки и топики",          hint: "по APP: pg/redis/kafka/minio/clickhouse/rabbitmq + Kafka topics" },
+  { value: "accts",     label: "Учётки и топики",          hint: "по APP: pg/redis/kafka/minio/clickhouse/rabbitmq + Kafka topics" },
+  { value: "lifecycle", label: "Lifecycle приложения",     hint: "deploy / rollback / status / logs / migrate / seed / shell (infra-interface)" },
   // Сценарии-мастера
   { value: "wiz_connect",    label: "Сценарий: подключить приложение",   hint: "template → configure → merge → apps-apply" },
   { value: "wiz_services",   label: "Сценарий: конфигурирование сервисов", hint: "весь набор / только указанные / кроме указанных + запись в <env>.mk + diff" },
@@ -153,7 +155,7 @@ export async function runInfraV2() {
       await select({
         message: renderSessionHeader(session),
         options: ACTIONS,
-        maxItems: 14,
+        maxItems: 15,
       }),
     );
 
@@ -163,7 +165,8 @@ export async function runInfraV2() {
     if (choice === "apply")  { await actionApply(session);    continue; }
     if (choice === "diff")   { await actionDiff(session);     continue; }
     if (choice === "status") { await actionStatus(session);   continue; }
-    if (choice === "accts")  { await actionAccounts(session); continue; }
+    if (choice === "accts")     { await actionAccounts(session);  continue; }
+    if (choice === "lifecycle") { await actionLifecycle(session); continue; }
 
     if (choice === "wiz_connect")    { await wizardConnectApp(session);       continue; }
     if (choice === "wiz_services")   { await wizardConfigureServices(session); continue; }
