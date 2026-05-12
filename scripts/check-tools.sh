@@ -18,6 +18,36 @@ set -uo pipefail
 
 YQ_BIN="${YQ:-yq}"
 
+# Инструкции установки для Ubuntu (показываются только для упавших инструментов).
+declare -A INSTALL_HINTS
+INSTALL_HINTS=(
+	[kubectl]="sudo snap install kubectl --classic"
+	[helm]="sudo snap install helm --classic"
+	[helmfile]="# нет snap/apt; актуальную версию см. https://github.com/helmfile/helmfile/releases
+VER=0.169.2
+curl -Lo /usr/local/bin/helmfile \"https://github.com/helmfile/helmfile/releases/download/v\${VER}/helmfile_\${VER}_linux_amd64\"
+chmod +x /usr/local/bin/helmfile"
+	[yq]="sudo snap install yq   # mikefarah/yq v4
+# или бинарь: https://github.com/mikefarah/yq/releases"
+	[jq]="sudo apt-get install -y jq"
+	[openssl]="sudo apt-get install -y openssl"
+	[docker]="sudo snap install docker
+# или: https://docs.docker.com/engine/install/ubuntu/"
+	[bash]="sudo apt-get install --reinstall bash"
+	[tar]="sudo apt-get install -y tar"
+	[gzip]="sudo apt-get install -y gzip"
+	[node]="sudo snap install node --classic --channel=lts
+# или: https://nodejs.org/en/download/package-manager"
+	[sops]="# актуальную версию см. https://github.com/getsops/sops/releases
+VER=3.9.4
+curl -Lo /usr/local/bin/sops \"https://github.com/getsops/sops/releases/download/v\${VER}/sops-v\${VER}.linux.amd64\"
+chmod +x /usr/local/bin/sops"
+	[age]="sudo apt-get install -y age   # Ubuntu 22.04+
+# или бинарь: https://github.com/FiloSottile/age/releases"
+)
+
+FAILED_TOOLS=()
+
 # tool, min_version, optional ("0"|"1"), how_to_check
 # Минимумы выбраны под текущий код:
 #   helmfile 0.165 — поддержка `set` и `--quiet` опций используемых в helmfile.yaml.gotmpl.
@@ -89,6 +119,7 @@ for entry in "${TOOLS[@]}"; do
 	[ "$tool" = "yq" ] && bin="$YQ_BIN"
 	if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then
 		mark="—"
+		FAILED_TOOLS+=("$tool")
 		[ "$req" = "1" ] && { mark="<"; FAIL=$((FAIL + 1)); }
 		printf '%-12s  %-15s  %-10s  %s\n' "$tool" "(не найден)" "$min" "$(color "$mark") $([ "$req" = "1" ] && echo "(обязательно)" || echo "(опционально)")"
 		continue
@@ -104,12 +135,22 @@ for entry in "${TOOLS[@]}"; do
 		mark="OK"
 	else
 		mark="<"
+		FAILED_TOOLS+=("$tool")
 		[ "$req" = "1" ] && FAIL=$((FAIL + 1))
 	fi
 	printf '%-12s  %-15s  %-10s  %s\n' "$tool" "$ver" "${min:-—}" "$(color "$mark")"
 done
 
 echo ""
+if [ "${#FAILED_TOOLS[@]}" -gt 0 ]; then
+	echo "Как установить (Ubuntu):"
+	for t in "${FAILED_TOOLS[@]}"; do
+		hint="${INSTALL_HINTS[$t]:-# см. документацию проекта}"
+		echo "  ${t}:"
+		echo "$hint" | sed 's/^/    /'
+	done
+	echo ""
+fi
 if [ "$FAIL" -gt 0 ]; then
 	echo "✗ Не хватает $FAIL обязательных инструмент(а/ов) — установите/обновите перед make up."
 	exit 1
