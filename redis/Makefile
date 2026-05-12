@@ -170,7 +170,7 @@ app-create:
 		"  key_prefix: \"$(APP):\"" \
 		"  host: \"$$REDIS_HOST\"" \
 		"  port: $$REDIS_PORT" \
-	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME, REDIS_DB=$$REDIS_DB_VAL)"; \
 	}
 

@@ -311,7 +311,7 @@ app-create:
 	YQBIN="$${YQ:-yq}"; \
 	APP_PASSWORD="$$APP_PASSWORD" APP_USER="$$APP_USER" APP_DB="$$APP_DB" PG_HOST="$$PG_HOST" PG_PORT="$$PG_PORT" \
 	"$$YQBIN" -n '.postgres.password = strenv(APP_PASSWORD) | .postgres.username = strenv(APP_USER) | .postgres.database = strenv(APP_DB) | .postgres.host = strenv(PG_HOST) | .postgres.port = (env(PG_PORT) | tonumber)' \
-	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"; \
 	}
 
