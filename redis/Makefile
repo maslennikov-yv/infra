@@ -142,12 +142,14 @@ app-create:
 	if [ -z "$$REDIS_SVC" ]; then echo "✗ Redis master service не найден"; exit 1; fi; \
 	REDIS_HOST="$$REDIS_SVC.$(NAMESPACE).svc.cluster.local"; \
 	REDIS_PORT=6379; \
-	echo "Creating Redis ACL user $$APP_USER (keys: $(APP):*)"; \
+	echo "Creating Redis ACL user $$APP_USER (keys & channels: $(APP):*)"; \
 	# RESET перед правилами делает повторный app-create идемпотентным: \
-	# старые passwords/keys/categories/commands очищаются, далее применяются только \
+	# старые passwords/keys/channels/categories/commands очищаются, далее применяются только \
 	# актуальные правила ниже (см. Redis ACL SETUSER docs). \
+	# &$(APP):* — pub/sub channel pattern (без него SUBSCRIBE/PUBLISH падают с NOPERM, \
+	# симметрично keys pattern ~$(APP):*). \
 	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$ADMIN_PASSWORD" sh -c \
-		'redis-cli --no-auth-warning ACL SETUSER "$$1" RESET on ">"$$2 ~"$$3" +@all \
+		'redis-cli --no-auth-warning ACL SETUSER "$$1" RESET on ">"$$2 ~"$$3" "&$$3" +@all \
 			-ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL -FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF \
 			-REPLCONF -REPLICAOF -SLAVEOF -SYNC -PSYNC' \
 		sh "$$APP_USER" "$$APP_PASSWORD" "$(APP):*"; \
