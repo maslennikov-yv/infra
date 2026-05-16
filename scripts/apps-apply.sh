@@ -105,6 +105,11 @@ HAD_FAILURE=0
 # invoke <label> <maketarget> <app> [extra args...]
 # В DRY_RUN режиме не запускает make — печатает предполагаемое действие на основе
 # наличия Secret в namespace приложения.
+#
+# Для redis: пер-приложенческий create/drop не должен дёргать acl-reconcile каждый раз
+# (это дорого: N reconcile подряд против ConfigMap+ACL LOAD). Передаём
+# REDIS_SKIP_ACL_RECONCILE=1; единственный агрегированный reconcile запускается ниже
+# после прохода 1 (и при drop в проходе 2 — там тоже отключаем per-app reconcile).
 invoke() {
 	local label=$1 maketarget=$2 app=$3
 	shift 3
@@ -126,6 +131,7 @@ invoke() {
 		export APPS_MERGED_FILE="$merged"
 		export APPS_REGISTRY="$REG"
 		export REPO_ROOT="$REPO"
+		if [[ "$label" == "redis" ]]; then export REDIS_SKIP_ACL_RECONCILE=1; fi
 		make "$maketarget" ENV="$ENV" "APP=$app" "$@"
 	); then
 		return 0
@@ -140,6 +146,7 @@ invoke() {
 
 # invoke_drop <label> <maketarget> <app>
 # Аналогично invoke, но для удаления учётки. Передаёт SKIP_CONFIRM=1.
+# Для redis также отключаем per-app reconcile — он будет вызван один раз в конце.
 invoke_drop() {
 	local label=$1 maketarget=$2 app=$3
 	if [[ "$DRY_RUN" == "1" ]]; then
@@ -155,6 +162,7 @@ invoke_drop() {
 		export APPS_MERGED_FILE="$merged"
 		export APPS_REGISTRY="$REG"
 		export REPO_ROOT="$REPO"
+		if [[ "$label" == "redis" ]]; then export REDIS_SKIP_ACL_RECONCILE=1; fi
 		make "$maketarget" ENV="$ENV" "APP=$app" SKIP_CONFIRM=1
 	); then
 		return 0
@@ -244,6 +252,39 @@ while IFS= read -r app_disabled; do
 		fi
 	done
 done < <("$YQBIN" -r '.apps[] | select(.enabled == false) | .name' "$REG")
+
+# === Агрегированный reconcile сервисов с multi-tenant конфигом ===
+# Redis ACL живёт в ConfigMap redis-configuration; per-app create/drop выше уже
+# обновили apps/conf и Secret в namespace приложения, но реальный ACL применяется
+# одним вызовом reconcile из полного состояния merged config. Это и обеспечивает
+# инвариант: ACL после apps-apply = ровно то, что в apps/registry+conf.
+# Делаем безусловно при svc_active redis (даже без действий) — на случай drift'а
+# (внешние правки ACL, перезаписи ConfigMap helm-апгрейдом и т.п.).
+if [[ "$DRY_RUN" == "1" ]] && svc_active redis; then
+	echo ""
+	redis_apps=$("$YQBIN" -r '[.apps[] | select(.enabled == true) | select(.redis.password != null and .redis.password != "")] | length' "$merged" 2>/dev/null || echo 0)
+	echo "  [dry-run] would reconcile Redis ACL (ConfigMap redis-configuration + aclfile + ACL LOAD): 1 default + $redis_apps app users"
+fi
+if [[ "$DRY_RUN" != "1" ]] && svc_active redis; then
+	echo ""
+	echo "=== apps-apply: redis-acl-reconcile (config-driven, агрегированно) ==="
+	if (
+		cd "$REPO"
+		export APPS_MERGED_FILE="$merged"
+		export APPS_REGISTRY="$REG"
+		export REPO_ROOT="$REPO"
+		make redis-acl-reconcile ENV="$ENV"
+	); then
+		:
+	else
+		echo "✗ apps-apply: redis-acl-reconcile завершился с ошибкой" >&2
+		if [[ "${APPS_APPLY_CONTINUE_ON_ERROR:-}" == "1" ]]; then
+			HAD_FAILURE=1
+		else
+			exit 1
+		fi
+	fi
+fi
 
 if [[ "$HAD_FAILURE" -ne 0 ]]; then
 	echo '✗ apps-apply завершён с ошибками (см. сообщения make выше)' >&2

@@ -48,6 +48,7 @@ implements:
 | `APP` | Имя приложения (= поле `name` в registry) |
 | `APP_NS` | Kubernetes namespace (= `app_ns` из registry или `APP` если не задано) |
 | `APPS_REGISTRY` | Абсолютный путь к `apps/registry.yaml` |
+| `APP_CONFIG` | Абсолютный путь к merged YAML-конфигу приложения (`apps/.tmp/<APP>-<ENV>.merged.yaml`). Содержит запись из registry + deep-merge всех `apps/conf/<APP>/<ENV>/*.yaml` (включая зашифрованные `*.enc.yaml`). Используется как datasource для шаблона `deploy/helm/values.yaml.gotmpl` (gomplate). Файл регенерируется infra перед каждым вызовом `app-*` через `apps-config-merge`. |
 
 Дополнительные переменные по методу:
 
@@ -57,6 +58,74 @@ implements:
 | `logs` | `FOLLOW=1` — следить за потоком; `CONTAINER` — имя контейнера |
 | `shell` | `CONTAINER` — имя контейнера |
 | `seed` | `SKIP_CONFIRM=1` — пропустить подтверждение (уже подтверждено TUI/Makefile) |
+
+## Конфигурация приложения через `APP_CONFIG`
+
+Infra передаёт в `Makefile.infra` приложения путь к merged YAML — единый файл, в котором собрано всё, что нужно для рендера values:
+
+| Источник | Что добавляет |
+|---|---|
+| `apps/registry.yaml` (запись `<APP>`) | `name`, `app_ns`, `repo_url`, `repo_branch`, любые пользовательские поля |
+| `apps/conf/<APP>/<ENV>/secrets.yaml` (gitignored) | креды postgres/redis/kafka/minio/clickhouse/rabbitmq |
+| `apps/conf/<APP>/<ENV>/secrets.enc.yaml` (в git, sops+age) | те же креды, опционально зашифрованные |
+| `apps/conf/<APP>/<ENV>/app.yaml` | не-секретные env-specific параметры (replicas, ingress host, ресурсы, log level) |
+| `apps/conf/<APP>/<ENV>/*.yaml` (любые другие) | произвольная env-specific конфигурация |
+
+Порядок мержа (`mikefarah/yq` deep-merge): registry → encrypted → plain. Последнее победит.
+
+### Рендер `values.yaml.gotmpl`
+
+Приложение хранит **один** шаблон `deploy/helm/values.yaml.gotmpl` (вместо `values-<ENV>.yaml` для каждой среды) и рендерит его через [gomplate](https://docs.gomplate.ca/) с datasource `cfg`:
+
+```makefile
+# Makefile.infra (вырезка)
+VALUES_OUT := $(CHART)/.tmp/values.yaml
+
+$(VALUES_OUT): $(CHART)/values.yaml.gotmpl $(APP_CONFIG)
+	@test -f "$(APP_CONFIG)" || (echo "✗ APP_CONFIG не найден: $(APP_CONFIG)" >&2; exit 1)
+	@mkdir -p "$(CHART)/.tmp"
+	gomplate -f "$(CHART)/values.yaml.gotmpl" -d cfg="$(APP_CONFIG)" -o "$(VALUES_OUT)"
+
+infra-deploy: $(VALUES_OUT)
+	helm upgrade --install $(APP) $(CHART) -n $(APP_NS) --create-namespace -f $(VALUES_OUT) --wait
+```
+
+### Пример `values.yaml.gotmpl`
+
+```gotmpl
+replicaCount: {{ (ds "cfg").app.replicas.web | default 1 }}
+
+app:
+  env: {{ (ds "cfg").app.env | quote }}
+  logLevel: {{ (ds "cfg").app.logLevel | default "info" }}
+  {{- with (ds "cfg").app.trustedProxies }}
+  trustedProxies: {{ . | quote }}
+  {{- end }}
+
+ingress:
+  enabled: {{ (ds "cfg").app.ingress.enabled | default false }}
+  {{- with (ds "cfg").app.ingress.host }}
+  host: {{ . | quote }}
+  {{- end }}
+
+{{- with (ds "cfg").app.resources }}
+resources:
+{{ . | toYAML | indent 2 }}
+{{- end }}
+```
+
+### Отладка
+
+```bash
+make apps-merge-app-print APP=myapp ENV=local      # stdout merged YAML
+make apps-config-merge    APP=myapp ENV=local      # запись в apps/.tmp/<APP>-<ENV>.merged.yaml
+make -C apps/src/myapp infra-values-print \
+  APP_CONFIG=$(realpath apps/.tmp/myapp-local.merged.yaml)
+```
+
+### Совместимость
+
+`Makefile.infra` приложения может поддерживать **оба** пути — `values.yaml.gotmpl` и legacy `values-<ENV>.yaml` — пока не все приложения мигрированы. `APP_CONFIG` инфраструктура передаёт всегда; приложение само решает, использовать ли его.
 
 ## Контракт методов
 

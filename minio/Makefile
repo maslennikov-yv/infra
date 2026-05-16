@@ -190,8 +190,17 @@ app-create:
 				mc mb -p "minio/$$BUCKET" || true; \
 			fi; \
 			mc admin policy create minio "$$POLICY_NAME" /tmp/policy.json || mc admin policy info minio "$$POLICY_NAME" >/dev/null; \
-			mc admin user add minio "$$ACCESS_KEY" "$$SECRET_KEY" || true; \
-			mc admin policy attach minio "$$POLICY_NAME" --user "$$ACCESS_KEY"; \
+			# mc admin user add НЕ обновляет secret_key для существующего пользователя \
+			# в большинстве версий mc — повторный вызов с новым ключом тихо игнорируется. \
+			# Чтобы повторный app-create реально применил изменение minio.secret_key из \
+			# apps/conf, при наличии пользователя удаляем и пересоздаём (короткое окно \
+			# отсутствия — приложения переподключаются на retry). Policy attach ниже \
+			# в обоих случаях идемпотентен. \
+			if mc admin user info minio "$$ACCESS_KEY" >/dev/null 2>&1; then \
+				mc admin user remove minio "$$ACCESS_KEY" >/dev/null; \
+			fi; \
+			mc admin user add minio "$$ACCESS_KEY" "$$SECRET_KEY"; \
+			mc admin policy attach minio "$$POLICY_NAME" --user "$$ACCESS_KEY" || true; \
 			if [ -n "$$PUBLIC_POLICY_JSON" ]; then \
 				printf "%s" "$$PUBLIC_POLICY_JSON" > /tmp/public.json; \
 				mc anonymous set-json /tmp/public.json "minio/$$BUCKET" 2>/dev/null || true; \
@@ -235,7 +244,7 @@ app-create:
 		"  scheme: \"$$MINIO_SCHEME\"" \
 		"  endpoint: \"$$MINIO_ENDPOINT\"" \
 		"  public_endpoint: \"$$MINIO_PUBLIC_ENDPOINT\"" \
-	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"
 
 # Usage: make app-show-creds APP=myapp [APP_NS=myapp]

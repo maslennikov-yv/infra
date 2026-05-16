@@ -1,14 +1,6 @@
-# Redis standalone + local microk8s registry
 global:
   security:
     allowInsecureImages: true
-
-# NetworkPolicy: создаётся chart'ом, но allowExternal: true делает её
-# фактически noop. Для жёсткой сегментации — см. docs/runbooks/network-policy.md.
-networkPolicy:
-  enabled: true
-  allowExternal: true
-  allowExternalEgress: true
 
 architecture: standalone
 
@@ -31,6 +23,13 @@ sentinel:
     repository: bitnami/redis-sentinel
     tag: "8.4.0"
 
+metrics:
+  enabled: true
+  image:
+    registry: localhost:32000
+    repository: bitnami/redis-exporter
+    tag: "1.80.1"
+
 volumePermissions:
   enabled: false
   image:
@@ -44,37 +43,19 @@ kubectl:
     repository: bitnami/kubectl
     tag: "1.35.0"
 
-# Light prod-профиль: рассчитан на ~рабочий набор < 256Mi.
-# Если нагрузка вырастет — пересмотреть resources.limits.memory и persistence.size
-# (изменение PVC StatefulSet — через make redis-recreate-prep, см. redis/BACKUP.md).
+# Lightweight local-профиль: минимальные limits, чтобы не давить на dev-машину.
 master:
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  persistence:
-    enabled: true
-    size: 4Gi
-    storageClass: ""
-
-# metrics-контейнер не требует много CPU; явный resources перебивает chart preset "nano"
-# (по умолчанию даёт 100m, что в нашем prod-кластере overprovisioned + плохо помещается).
-metrics:
-  enabled: true
-  resources:
-    requests:
-      cpu: 25m
       memory: 64Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
-  image:
-    registry: localhost:32000
-    repository: bitnami/redis-exporter
-    tag: "1.80.1"
+      cpu: 200m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
 
 # Синхронизировать с redis/redis/values.yaml commonConfiguration при смене модулей/AOF.
 # Логические БД для REDIS_DB в app-redis Secret (см. docs/pg-app.md): в реестре закрепляйте с 1, 0 — фолбэк; дефолт Redis — 16.

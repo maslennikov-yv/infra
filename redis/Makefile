@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: help \
 	images-verify images-pull images-tag images-push images-sync images-save images-load images-sync-from-files images-clean images-clean-files \
-	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify \
+	install upgrade uninstall status logs shell app-create app-show-creds app-drop app-verify acl-reconcile \
 	backup restore-acl list-backups \
 	check-registry check-updates
 
@@ -87,8 +87,9 @@ help:
 	@echo "App accounts:"
 	@echo "  make app-show-creds APP=myapp [APP_NS=...] — показать креды из Secret app-redis"
 	@echo "  make app-create APP=myapp [REDIS_DB=0] — REDIS_DB из CLI; иначе следующий свободный 1..127 по $(APPS_REGISTRY) (yq); без yq — предупреждение и 0"
-	@echo "  make app-drop APP=myapp — удалить ACL-пользователя и Secret (⚠ y/N; SKIP_CONFIRM=1). Ключи по префиксу не удаляются"
+	@echo "  make app-drop APP=myapp — удалить запись из apps/conf, Secret, реконсилировать ACL (⚠ y/N; SKIP_CONFIRM=1). Ключи по префиксу не удаляются"
 	@echo "  make app-verify APP=myapp [APP_NS=...] — smoke: PING + DBSIZE под APP-кредами из Secret"
+	@echo "  make acl-reconcile ENV=... — полная реконсилиация ACL из apps/registry+conf (ConfigMap + aclfile + ACL LOAD)"
 	@echo ""
 	@echo "Бэкапы и восстановление (RDB + ACL):"
 	@echo "  make backup              - RDB снимок + ACL LIST + INFO (tar.gz в $(BACKUP_DIR)/)"
@@ -114,6 +115,11 @@ APPS_REGISTRY ?= $(INFRA_ROOT)/apps/registry.yaml
 # REDIS_DB не задаём через ?= — корневой Makefile передаёт REDIS_DB только при явном REDIS_DB= в вызове.
 
 # Usage: make app-create APP=myapp [REDIS_DB=…] … — пароль только из merged (redis.password).
+#
+# Этот recipe обновляет per-app состояние (apps/conf, k8s Secret), а кластерный ACL
+# применяется через acl-reconcile (полная реконсилиация из apps/registry+conf).
+# Если REDIS_SKIP_ACL_RECONCILE=1 — reconcile не вызывается (используется в apps-apply,
+# который дёргает reconcile один раз после прохода всех приложений).
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
 	@{ set -euo pipefail; \
@@ -131,28 +137,10 @@ app-create:
 	else REDIS_DB_VAL=$$("$$INF/scripts/redis-next-db.sh" "$$MG" "$(APP)") || exit 1; echo "  → REDIS_DB=$$REDIS_DB_VAL (merged)"; fi; \
 	case "$$REDIS_DB_VAL" in ''|*[!0-9]*) echo "✗ REDIS_DB должен быть целым числом ≥ 0"; exit 1;; esac; \
 	if [ "$$REDIS_DB_VAL" -gt 127 ]; then echo "✗ REDIS_DB не должен превышать 127"; exit 1; fi; \
-	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
-	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
-	if ! kubectl get secret $(REDIS_AUTH_SECRET_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then \
-		echo "✗ Secret $(REDIS_AUTH_SECRET_NAME) не найден"; exit 1; \
-	fi; \
-	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
-	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось прочитать ключ $(REDIS_AUTH_SECRET_PASSWORD_KEY) из секрета"; exit 1; fi; \
 	REDIS_SVC=$$(kubectl get svc -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$REDIS_SVC" ]; then echo "✗ Redis master service не найден"; exit 1; fi; \
 	REDIS_HOST="$$REDIS_SVC.$(NAMESPACE).svc.cluster.local"; \
 	REDIS_PORT=6379; \
-	echo "Creating Redis ACL user $$APP_USER (keys & channels: $(APP):*)"; \
-	# RESET перед правилами делает повторный app-create идемпотентным: \
-	# старые passwords/keys/channels/categories/commands очищаются, далее применяются только \
-	# актуальные правила ниже (см. Redis ACL SETUSER docs). \
-	# &$(APP):* — pub/sub channel pattern (без него SUBSCRIBE/PUBLISH падают с NOPERM, \
-	# симметрично keys pattern ~$(APP):*). \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$ADMIN_PASSWORD" sh -c \
-		'redis-cli --no-auth-warning ACL SETUSER "$$1" RESET on ">"$$2 ~"$$3" "&$$3" +@all \
-			-ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL -FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF \
-			-REPLCONF -REPLICAOF -SLAVEOF -SYNC -PSYNC' \
-		sh "$$APP_USER" "$$APP_PASSWORD" "$(APP):*"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -173,35 +161,60 @@ app-create:
 		"  host: \"$$REDIS_HOST\"" \
 		"  port: $$REDIS_PORT" \
 	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \
+	if [ "$${REDIS_SKIP_ACL_RECONCILE:-0}" != "1" ]; then \
+		APPS_REGISTRY="$$REG" REPO_ROOT="$$INF" ENV="$(ENV)" APPS_MERGED_FILE="$$MG" \
+			NAMESPACE="$(NAMESPACE)" RELEASE="$(RELEASE)" \
+			REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)" \
+			REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)" \
+			"$$INF/scripts/redis-acl-reconcile.sh"; \
+	else \
+		echo "  (REDIS_SKIP_ACL_RECONCILE=1 — ACL применит agg-reconcile в apps-apply)"; \
+	fi; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME, REDIS_DB=$$REDIS_DB_VAL)"; \
 	}
 
+# Полная реконсилиация ACL в Redis из apps/registry.yaml + apps/conf/<APP>/<ENV>/.
+# Источник истины — merged конфиг. Идемпотентно. Используется apps-apply (один вызов
+# после прохода всех redis-приложений) и доступно вручную для починки drift.
+acl-reconcile:
+	@APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(INFRA_ROOT)" ENV="$(ENV)" \
+		NAMESPACE="$(NAMESPACE)" RELEASE="$(RELEASE)" \
+		REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)" \
+		REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)" \
+		"$(INFRA_ROOT)/scripts/redis-acl-reconcile.sh"
+
 # Usage: make app-drop APP=myapp [APP_NS=myapp] [SKIP_CONFIRM=1]
+#
+# Удаляет per-app состояние: запись redis.* из apps/conf/<APP>/<ENV>/secrets.yaml,
+# Secret <APP>-redis в namespace приложения, и реконсилирует ACL в Redis.
+# Поскольку запись apps/conf удалена до reconcile, пользователь app_<APP> не попадёт
+# в новый users.acl и удалится из памяти (ACL LOAD).
+# REDIS_SKIP_ACL_RECONCILE=1 — пропустить reconcile (используется apps-apply при массовом drop).
 app-drop:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-drop APP=myapp)"; exit 1; fi
-	@APP_NS=$${APP_NS:-$(APP)}; \
+	@{ set -euo pipefail; \
+	APP_NS=$${APP_NS:-$(APP)}; \
 	APP_USER=$${APP_USER:-app_$(APP)}; \
 	APP_SECRET_NAME=$${APP_SECRET_NAME:-$(APP)-redis}; \
 	if [ "$(SKIP_CONFIRM)" != "1" ]; then \
-		echo "⚠ ВНИМАНИЕ: Будут удалены ACL-пользователь \"$$APP_USER\" и Secret \"$$APP_NS/$$APP_SECRET_NAME\". Ключи с префиксом ключей приложения остаются в Redis до ручной очистки."; \
+		echo "⚠ ВНИМАНИЕ: будут удалены запись redis.* из apps/conf/$(APP)/$(ENV)/, Secret \"$$APP_NS/$$APP_SECRET_NAME\" и ACL-пользователь \"$$APP_USER\" в Redis. Ключи с префиксом приложения остаются в Redis до ручной очистки."; \
 		read -p "Вы уверены? (y/N): " confirm; \
 		if [ "$$confirm" != "y" ] && [ "$$confirm" != "Y" ]; then echo "Отменено."; exit 0; fi; \
 	fi; \
-	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=redis,app.kubernetes.io/component=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
-	if [ -z "$$POD" ]; then echo "✗ Redis master pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
-	if ! kubectl get secret $(REDIS_AUTH_SECRET_NAME) -n $(NAMESPACE) >/dev/null 2>&1; then \
-		echo "✗ Secret $(REDIS_AUTH_SECRET_NAME) не найден в namespace $(NAMESPACE)"; exit 1; \
-	fi; \
-	ADMIN_PASSWORD=$$(kubectl get secret -n $(NAMESPACE) $(REDIS_AUTH_SECRET_NAME) -o jsonpath="{.data['$(REDIS_AUTH_SECRET_PASSWORD_KEY)']}" 2>/dev/null | base64 -d); \
-	if [ -z "$$ADMIN_PASSWORD" ]; then echo "✗ Не удалось прочитать пароль админа Redis"; exit 1; fi; \
-	echo "Removing ACL user $$APP_USER..."; \
-	kubectl exec "$$POD" -n $(NAMESPACE) -- env REDISCLI_AUTH="$$ADMIN_PASSWORD" sh -c \
-		'redis-cli --no-auth-warning ACL DELUSER "$$1" 2>/dev/null || true' \
-		sh "$$APP_USER"; \
 	echo "Deleting Secret $$APP_SECRET_NAME in namespace $$APP_NS..."; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found; \
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" "$(ENV)" redis || true; \
-	echo "✓ ACL-пользователь $$APP_USER и Secret $$APP_NS/$$APP_SECRET_NAME удалены (при отсутствии пользователя ACL DELUSER мог быть пропущен)"
+	if [ "$${REDIS_SKIP_ACL_RECONCILE:-0}" != "1" ]; then \
+		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(INFRA_ROOT)" ENV="$(ENV)" \
+			NAMESPACE="$(NAMESPACE)" RELEASE="$(RELEASE)" \
+			REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)" \
+			REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)" \
+			"$(INFRA_ROOT)/scripts/redis-acl-reconcile.sh"; \
+	else \
+		echo "  (REDIS_SKIP_ACL_RECONCILE=1 — ACL применит agg-reconcile в apps-apply)"; \
+	fi; \
+	echo "✓ App-state очищен ($$APP_NS/$$APP_SECRET_NAME, apps/conf/$(APP)/$(ENV)/.redis), ACL реконсилирован"; \
+	}
 
 app-show-creds:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-show-creds APP=myapp)"; exit 1; fi

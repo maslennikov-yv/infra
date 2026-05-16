@@ -35,8 +35,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Стандартизированный контракт, по которому `infra` управляет lifecycle приложения через его `Makefile` — в том же стиле, что управляет сервисами.
 
 - **`apps/src/<APP>/infra-interface.yaml`** — декларация версии и списка реализованных методов (`deploy`, `rollback`, `status`, `logs`, `migrate`, `seed`, `shell`). Файл живёт в репозитории приложения; infra читает его из `apps/src/<APP>/` (gitignored в infra).
-- **`apps/src/<APP>/Makefile.infra`** — реализация `infra-*` целей. Включается в Makefile приложения через `include Makefile.infra`. Infra вызывает: `make -C apps/src/<APP> infra-deploy ENV=... KUBECONFIG=... APP=... APP_NS=... APPS_REGISTRY=...`.
-- `make app-interface-init APP=myapp` — генерирует рыбу `infra-interface.yaml` + `Makefile.infra` (все 7 стабов) в `apps/src/<APP>/`. Если `Makefile` отсутствует — создаёт минимальный с `include Makefile.infra`. `OVERWRITE=1` — перезаписать.
+- **`apps/src/<APP>/Makefile.infra`** — реализация `infra-*` целей. Включается в Makefile приложения через `include Makefile.infra`. Infra вызывает: `make -C apps/src/<APP> infra-deploy ENV=... KUBECONFIG=... APP=... APP_NS=... APPS_REGISTRY=... APP_CONFIG=...`.
+- **`APP_CONFIG`** — путь к merged YAML (`apps/.tmp/<APP>-<ENV>.merged.yaml`). Содержит запись приложения из `apps/registry.yaml` + deep-merge всех `apps/conf/<APP>/<ENV>/*.yaml` (включая зашифрованные `*.enc.yaml`). Перегенерируется infra перед каждым `app-*` через `apps-config-merge`. Приложение использует его как datasource для шаблона `deploy/helm/values.yaml.gotmpl` (рендер через `gomplate`) — один шаблон вместо набора `values-<ENV>.yaml`.
+- `make app-interface-init APP=myapp` — генерирует рыбу `infra-interface.yaml` + `Makefile.infra` (все 7 стабов) + `deploy/helm/values.yaml.gotmpl` (если не существует) в `apps/src/<APP>/`. Если `Makefile` отсутствует — создаёт минимальный с `include Makefile.infra`. `OVERWRITE=1` — перезаписать `infra-interface.yaml`/`Makefile.infra` (но не gotmpl-шаблон).
 - `make app-capabilities APP=myapp` — показывает версию, список методов и проверяет наличие целей в Makefile.
 - `APP_NS` вычисляется из registry (`app_ns` или дефолт = `APP`); приложение читает секреты из k8s Secret, созданного `apps-apply`.
 - Полный контракт (переменные, ожидания по каждому методу, пример Makefile) — `docs/runbooks/app-interface.md`.
@@ -130,6 +131,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 - `make`, Helm 3, `helmfile`, `kubectl`, Docker.
 - `mikefarah/yq` v4 — для merge `apps/registry.yaml` + `apps/conf/`. Либо `YQ=...`, либо `./.tools/yq-mikefarah`.
+- `gomplate` 4+ (опционально, нужен только для приложений с `deploy/helm/values.yaml.gotmpl`) — рендер шаблона values из merged `APP_CONFIG`. `make tools-check` подсказывает установку.
 - Node.js 18+ и `npm install` в корне (зависимость `@clack/prompts`) — для `make infra`.
 - `jq` — для `top-totals` и `k8s-port-expose-patch`.
 
@@ -144,6 +146,11 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 - **Перед критичным применением — `make diff ENV=...`** (или эквивалент по сервису), либо `helmfile template` без кластера.
 - **Деструктивные операции** с PVC, reset Kafka и т.п. — только по документации сервиса (`*/TROUBLESHOOTING.md`, `postgres/BACKUP.md` и т.д.). Не выполнять «по наитию».
 - **Сообщения оператору с контекстом** (`ENV`, namespace, имя релиза/пода), а не голый traceback. Не глотать ошибки в shell/Make без причины — `set -e`, проверка предусловий (`kubeconfig`, `SSH_HOST`).
+- **Config-driven reconciliation для multi-tenant сервисов.** Источник истины для состояния, разделяемого приложениями (ACL/users/policies/topics), — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`. Состояние сервиса после `apps-apply` должно быть **равно** desired-state из конфигов, а не результатом последовательности императивных правок. Инварианты:
+  - Рестарт пода сервиса не должен терять учётки приложений — данные пользователей живут либо в ConfigMap/чарт-values (для in-memory сервисов вроде Redis ACL), либо в PVC (Postgres/CH/Minio).
+  - `app-create`/`app-drop` обновляют per-app данные (apps/conf, Secret в namespace приложения), затем дёргают `*-reconcile` (полная пересборка из реестра). Никаких прямых `SETUSER`/`add_user`/`mc admin user add` в обход источника истины.
+  - Действия по одному приложению **не должны** влиять на другие (нет глобальных flush, нет «снеси и пересоздай ACL для всех»). Reconcile применяет diff атомарно (Redis: `ACL LOAD` полностью замещает; RabbitMQ: `import_definitions`; MinIO: `mc admin policy attach/detach` per user).
+  - Текущая реализация: Redis (`scripts/redis-acl-reconcile.sh`, `make redis-acl-reconcile ENV=...`). Аналог для других сервисов — отдельный аудит/тикеты.
 
 ### Что коммитим, что нет
 

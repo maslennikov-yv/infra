@@ -1,0 +1,40 @@
+# Не-секретные env-specific параметры приложения.
+# Deep-merge с registry (`apps/registry.yaml`) и секретами (`secrets.yaml`/`secrets.enc.yaml`)
+# производит merged YAML, который infra подставляет в `apps/src/<APP>/deploy/helm/values.yaml.gotmpl`
+# через переменную APP_CONFIG (gomplate -d cfg=<merged>.yaml).
+#
+# Это файл не зашифрован — структура и значения не считаются секретными
+# (host'ы, replicas, ресурсы, флаги). Реальные пароли/ключи — в secrets.yaml.
+#
+# Документация контракта: docs/runbooks/app-interface.md
+#
+# Пример: значения, которые раньше жили в values-local.yaml / values-prod.yaml.
+# Удалите неиспользуемые блоки. Имена ключей — на ваше усмотрение, но шаблон
+# приложения `values.yaml.gotmpl` должен под них опираться.
+
+app:
+  # Профиль среды (production / local / staging), используется в env приложения.
+  env: ""
+  # Уровень логирования (error / warn / info / debug).
+  logLevel: ""
+  # Кол-во реплик по компонентам (web / worker / scheduler / ...).
+  replicas:
+    web: 1
+    worker: 1
+  # Образ — repository уникален для приложения, tag обычно подставляется в Makefile.infra
+  # (например, через git short SHA). Здесь — фоллбэк/закреп.
+  image:
+    repository: ""
+    tag: ""
+  # Ingress: публичный домен и базовые аннотации.
+  ingress:
+    enabled: false
+    host: ""
+  # Ресурсы по компонентам.
+  resources:
+    web:
+      requests:
+        cpu: ""
+        memory: ""
+      limits:
+        memory: ""

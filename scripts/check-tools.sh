@@ -17,6 +17,7 @@ set -uo pipefail
 # отсутствующих инструментов (показываем «—» в таблице, а не падаем).
 
 YQ_BIN="${YQ:-yq}"
+GOMPLATE_BIN="${GOMPLATE:-gomplate}"
 
 # Инструкции установки для Ubuntu (показываются только для упавших инструментов).
 declare -A INSTALL_HINTS
@@ -44,6 +45,10 @@ curl -Lo /usr/local/bin/sops \"https://github.com/getsops/sops/releases/download
 chmod +x /usr/local/bin/sops"
 	[age]="sudo apt-get install -y age   # Ubuntu 22.04+
 # или бинарь: https://github.com/FiloSottile/age/releases"
+	[gomplate]="# актуальную версию см. https://github.com/hairyhenderson/gomplate/releases
+VER=4.3.0
+curl -Lo /usr/local/bin/gomplate \"https://github.com/hairyhenderson/gomplate/releases/download/v\${VER}/gomplate_linux-amd64\"
+chmod +x /usr/local/bin/gomplate"
 )
 
 FAILED_TOOLS=()
@@ -75,6 +80,7 @@ TOOLS=(
 	"node|18.0|0|node --version"
 	"sops|3.7|0|sops --version"
 	"age|0|0|age --version"
+	"gomplate|4.0|0|$GOMPLATE_BIN --version"
 )
 
 # Извлекает первое X.Y.Z из строки. Возвращает пустую строку, если не нашёл.
@@ -117,6 +123,7 @@ for entry in "${TOOLS[@]}"; do
 	# Поиск бинаря: учитываем YQ переменную (может быть путь, не "yq").
 	bin="$tool"
 	[ "$tool" = "yq" ] && bin="$YQ_BIN"
+	[ "$tool" = "gomplate" ] && bin="$GOMPLATE_BIN"
 	if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then
 		mark="—"
 		FAILED_TOOLS+=("$tool")

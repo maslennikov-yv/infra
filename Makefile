@@ -5,10 +5,11 @@
 	postgres-verify redis-verify minio-verify clickhouse-verify \
 	check-updates postgres-check-updates redis-check-updates kafka-check-updates \
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
-	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
+	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop redis-acl-reconcile kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
-	apps-merge-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
+	apps-merge-print apps-merge-app-print apps-config-merge apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
 	app-capabilities app-deploy app-rollback app-status app-logs app-migrate app-seed app-shell \
+	app-image-build app-image-save app-image-push-remote \
 	app-interface-init \
 	apps-conf-encrypt apps-conf-decrypt apps-conf-edit \
 	postgres-status postgres-logs postgres-shell postgres-db postgres-up postgres-diff postgres-down \
@@ -51,6 +52,13 @@ else
 YQ ?= yq
 endif
 export YQ
+
+ifneq ($(wildcard $(REPO_ROOT)/.tools/gomplate),)
+GOMPLATE ?= $(REPO_ROOT)/.tools/gomplate
+else
+GOMPLATE ?= gomplate
+endif
+export GOMPLATE
 
 # per-environment overrides (SSH_HOST/SSH_KEY/KUBECONFIG/REGISTRY/etc)
 -include environments/$(ENV).mk
@@ -97,7 +105,7 @@ infra:
 
 # tools-check: проверить минимальные версии тулинга (kubectl, helm, helmfile, yq, jq, ...).
 tools-check:
-	@YQ="$(YQ)" "$(REPO_ROOT)/scripts/check-tools.sh"
+	@YQ="$(YQ)" GOMPLATE="$(GOMPLATE)" "$(REPO_ROOT)/scripts/check-tools.sh"
 
 # doctor: единая точка диагностики окружения. Tools, кластер, релизы, поды, учётки.
 # Завершается с exit 0 если все шаги OK; иначе exit 1 (но проходит все проверки до конца).
@@ -196,6 +204,8 @@ help:
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Apps конфигурация:$(RESET)"
 	@echo "  make apps-merge-print $(YELLOW)[APPS_REGISTRY=...$(RESET)] $(YELLOW)[YQ=path/to/yq$(RESET)] - сырый merge (stdout, mikefarah yq v4)"
+	@echo "  make apps-merge-app-print $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - merged YAML одного APP (registry + apps/conf/<APP>/<ENV>/, stdout) — отладка values.yaml.gotmpl"
+	@echo "  make apps-config-merge $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - пишет merged YAML в apps/.tmp/<APP>-<ENV>.merged.yaml (запускается автоматически перед app-* целями; путь пробрасывается в Makefile.infra через APP_CONFIG)"
 	@echo "  make apps-local-src-helm-sets $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) — stdout: $(YELLOW)--set$(RESET) для $(YELLOW)app.volumes.$(RESET)* (hostPath=$(YELLOW)apps/src/<APP>$(RESET)) в вашем helm upgrade приложения"
 	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] $(YELLOW)[APPS_APPLY_DROP_DISABLED=1$(RESET)] - учётки из apps/conf; APPS_APPLY_DROP_DISABLED=1 — дропать учётки disabled приложений"
 	@echo "  make apps-apply-diff $(YELLOW)ENV=$(ENV)$(RESET) - печатает дельту (would create/update/drop/drift), ничего не меняет"
@@ -251,7 +261,8 @@ help:
 	@echo "  make postgres-db      $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - открыть psql под ролью приложения (алиас pg-app-psql)"
 	@echo "  make redis-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)] [$(YELLOW)REDIS_DB=0$(RESET)] [$(YELLOW)APPS_REGISTRY=...$(RESET)] — следующий свободный redis_db из registry или REDIS_DB"
 	@echo "  make redis-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - показать креды из Secret app-redis (REDIS_KEY_PREFIX, REDIS_DB)"
-	@echo "  make redis-app-drop     $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - ACL + Secret (⚠ y/N; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
+	@echo "  make redis-app-drop     $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - удалить запись apps/conf, Secret + reconcile ACL (⚠ y/N; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
+	@echo "  make redis-acl-reconcile $(YELLOW)ENV=$(ENV)$(RESET) - полная реконсилиация ACL из apps/registry+conf (config-driven)"
 	@echo "  make kafka-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
 	@echo "  make kafka-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
 	@echo "  make kafka-app-drop     $(YELLOW)APP=myapp$(RESET) - SCRAM, ACL, Secret (топики не удаляются; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
@@ -467,6 +478,36 @@ images-push-remote:
 	rm -f "$$MAP_FILE"; \
 	echo "✓ Done"
 
+# Usage: make app-image-build APP=career2 ENV=prod
+app-image-build:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	$(MAKE) -C apps/src/$(APP) infra-image-build REGISTRY=$(REGISTRY) ENV=$(ENV)
+
+# Usage: make app-image-save APP=career2 ENV=prod
+# Сохраняет образ в apps/images/<APP>/<APP>-<git-sha>.tar
+app-image-save:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@mkdir -p apps/images/$(APP)
+	$(MAKE) -C apps/src/$(APP) infra-image-save REGISTRY=$(REGISTRY) ENV=$(ENV) \
+	  IMAGES_DIR=$(CURDIR)/apps/images/$(APP)
+
+# Upload app image tar to remote server and publish to its local registry.
+# Requires SSH_* variables (from environments/$(ENV).mk).
+# Usage: make app-image-push-remote APP=career2 ENV=prod
+app-image-push-remote:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@if [ -z "$(SSH_HOST)" ]; then echo "✗ SSH_HOST не задан (используйте ENV=prod или SSH_HOST=...)"; exit 1; fi
+	@IMAGE_TAG="$$( $(MAKE) -s -C apps/src/$(APP) print-IMAGE_TAG REGISTRY=$(REGISTRY) ENV=$(ENV) )"; \
+	IMAGE="$$( $(MAKE) -s -C apps/src/$(APP) print-IMAGE REGISTRY=$(REGISTRY) ENV=$(ENV) )"; \
+	TAR="$(CURDIR)/apps/images/$(APP)/$(APP)-$$IMAGE_TAG.tar"; \
+	test -f "$$TAR" || (echo "✗ $$TAR не найден, сначала: make app-image-save APP=$(APP) ENV=$(ENV)" >&2; exit 1); \
+	REMOTE_TAR="/tmp/$(APP)-$$IMAGE_TAG.tar"; \
+	echo "→ SCP $$TAR → $(SSH_HOST):$$REMOTE_TAR"; \
+	$(SCP) "$$TAR" "$(REMOTE):$$REMOTE_TAR" && \
+	echo "→ microk8s ctr images import на remote" && \
+	$(SSH) $(REMOTE) "microk8s ctr images import $$REMOTE_TAR && rm -f $$REMOTE_TAR" && \
+	echo "✓ $$IMAGE опубликован в containerd"
+
 # Static-pattern targets для всех сервисов из $(SERVICES). Static-pattern (не `%-verify:`)
 # намеренно: ограничиваем перехват только нашим списком сервисов.
 $(addsuffix -verify,$(SERVICES)):
@@ -486,6 +527,27 @@ $(addsuffix -check-updates,$(SERVICES)):
 
 apps-merge-print:
 	@"$(REPO_ROOT)/scripts/apps-merge-config.sh" "$(APPS_REGISTRY)" "$(REPO_ROOT)" "$(ENV)"
+
+# apps-merge-app-print: merged YAML для ОДНОГО APP (registry + apps/conf/<APP>/<ENV>/).
+# Используется для отладки шаблонов values.yaml.gotmpl приложений.
+apps-merge-app-print:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@test -n "$(ENV)" || (echo '✗ Укажите ENV=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/apps-merge-app.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)"
+
+# apps-config-merge: записывает merged YAML одного APP в apps/.tmp/<APP>-<ENV>.merged.yaml.
+# Используется внутри app-* целей: путь к файлу пробрасывается в Makefile.infra
+# приложения через переменную APP_CONFIG (контракт infra ↔ приложение).
+# Файл не коммитим (см. .gitignore: apps/.tmp/).
+APP_CONFIG_FILE = $(REPO_ROOT)/apps/.tmp/$(APP)-$(ENV).merged.yaml
+
+apps-config-merge:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@test -n "$(ENV)" || (echo '✗ Укажите ENV=<name>' >&2; exit 1)
+	@install -d -m 700 "$(REPO_ROOT)/apps/.tmp"
+	@"$(REPO_ROOT)/scripts/apps-merge-app.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)" > "$(APP_CONFIG_FILE)"
+	@chmod 600 "$(APP_CONFIG_FILE)"
+	@echo "✓ APP_CONFIG: $(APP_CONFIG_FILE)"
 
 apps-local-src-helm-sets:
 	@test "$(ENV)" = "local" || (echo '✗ apps-local-src-helm-sets только при ENV=local' >&2; exit 1)
@@ -612,43 +674,53 @@ app-capabilities:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-discover.sh" "$(REPO_ROOT)" "$(APP)"
 
+# Вычисление APP_NS из registry (.app_ns или дефолт = APP).
+# Используется во всех app-* целях через $(eval $(APP_NS_LOOKUP)) — выполняется в shell
+# первой строкой рецепта и оставляет переменную $$APP_NS в shell-окружении следующих строк.
+APP_NS_LOOKUP = APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)")
+
+# Общие переменные, передаваемые в Makefile.infra приложения при каждом вызове infra-*.
+# APP_CONFIG — путь к merged YAML (registry + apps/conf/<APP>/<ENV>/). Формируется
+# через apps-config-merge перед вызовом подmake. Контракт описан в docs/runbooks/app-interface.md.
+APP_INFRA_VARS = ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" APP_CONFIG="$(APP_CONFIG_FILE)" GOMPLATE="$(GOMPLATE)"
+
 app-deploy:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" deploy
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-deploy \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-deploy $(APP_INFRA_VARS)
 
 app-rollback:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" rollback
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-rollback \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" \
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-rollback $(APP_INFRA_VARS) \
 	  $(if $(strip $(REVISION)),REVISION="$(REVISION)")
 
 app-status:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" status
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-status \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-status $(APP_INFRA_VARS)
 
 app-logs:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" logs
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-logs \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" \
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-logs $(APP_INFRA_VARS) \
 	  $(if $(strip $(FOLLOW)),FOLLOW="$(FOLLOW)") \
 	  $(if $(strip $(CONTAINER)),CONTAINER="$(CONTAINER)")
 
 app-migrate:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" migrate
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-migrate \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-migrate $(APP_INFRA_VARS)
 
 app-seed:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
@@ -657,16 +729,16 @@ app-seed:
 	  read -r -p "⚠  seed может быть деструктивным для APP=$(APP) ENV=$(ENV). Продолжить? (y/N) " c; \
 	  [ "$$c" = "y" ] || [ "$$c" = "Y" ] || { echo "Отменено."; exit 1; }; \
 	fi
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-seed \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)"
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-seed $(APP_INFRA_VARS)
 
 app-shell:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" shell
-	@APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)"); \
-	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-shell \
-	  ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" \
+	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
+	@$(APP_NS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-shell $(APP_INFRA_VARS) \
 	  $(if $(strip $(CONTAINER)),CONTAINER="$(CONTAINER)")
 
 pg-app-create:
@@ -706,6 +778,8 @@ pg-app-restore:
 	exit $$rc
 
 # Не передаём REDIS_AUTH_* с пустым значением — иначе затираются дефолты redis/Makefile (?=).
+# REDIS_SKIP_ACL_RECONCILE — read из env (apps-apply.sh выставляет для пер-приложенческого вызова,
+# чтобы reconcile делался один раз агрегированно после прохода всех redis-приложений).
 redis-app-create:
 	@$(MAKE) -C redis app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)" \
 		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
@@ -718,10 +792,19 @@ redis-app-verify:
 	@$(MAKE) -C redis app-verify APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
 
 redis-app-drop:
-	@$(MAKE) -C redis app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" SKIP_CONFIRM="$(SKIP_CONFIRM)" \
+	@$(MAKE) -C redis app-drop APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)" SKIP_CONFIRM="$(SKIP_CONFIRM)" \
 		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
 		$(if $(strip $(REDIS_AUTH_SECRET_PASSWORD_KEY)),REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)") \
 		$(if $(strip $(APP_USER)),APP_USER="$(APP_USER)")
+
+# Полная реконсилиация Redis ACL из apps/registry.yaml + apps/conf/. Делает
+# users.acl идемпотентным относительно реестра: новые приложения добавляются,
+# исчезнувшие — удаляются (ACL LOAD заменяет содержимое целиком). Используется
+# apps-apply (агрегированно) и доступно вручную для починки drift.
+redis-acl-reconcile:
+	@$(MAKE) -C redis acl-reconcile ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)" \
+		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
+		$(if $(strip $(REDIS_AUTH_SECRET_PASSWORD_KEY)),REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)")
 
 kafka-app-create:
 	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
@@ -852,8 +935,8 @@ postgres-recreate-prep:
 	@$(MAKE) postgres-delete-pvcs ENV="$(ENV)"
 	@echo ""
 	@echo "Дальше: отредактируйте postgres/values-$(ENV).yaml (primary.persistence.size), затем:"
-	@echo "  make postgres-up ENV=$(ENV)"
-	@echo "  make postgres-restore BACKUP_FILE=backups/$(ENV)/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=$(ENV)"
+	@echo "  1. make postgres-up ENV=$(ENV)   (helmfile apply + apps-apply: создаст admin-Secret, поднимет PG, заведёт роли/БД приложений из apps/conf)"
+	@echo "  2. make postgres-restore BACKUP_FILE=backups/$(ENV)/postgres-backup-YYYYMMDD-HHMMSS.sql.gz ENV=$(ENV)   (восстановление данных)"
 	@echo "(путь BACKUP_FILE — относительно postgres/, см. postgres/list-backups)"
 
 # <svc>-recreate-prep для остальных сервисов: backup definitions → down → delete PVC → инструкции.
@@ -879,9 +962,9 @@ redis-recreate-prep:
 	@echo ""
 	@echo "Дальше:"
 	@echo "  1. Отредактируйте redis/values-$(ENV).yaml (master.persistence.size)"
-	@echo "  2. make redis-up ENV=$(ENV)"
-	@echo "  3. make redis-restore-acl BACKUP_FILE=backups/$(ENV)/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=$(ENV)"
-	@echo "  4. (Опц.) восстановление RDB-данных — см. redis/BACKUP.md"
+	@echo "  2. make redis-up ENV=$(ENV)   (helmfile apply + apps-apply → acl-reconcile из apps/registry+conf: ACL восстановится из конфигов, не из бэкапа)"
+	@echo "  3. (Опц.) восстановление RDB-данных — см. redis/BACKUP.md"
+	@echo "Примечание: redis-restore-acl нужен только для legacy-бэкапов или ad-hoc восстановления — основной путь это apps-apply (config-driven)."
 
 # ⚠ Kafka: pересоздание удаляет KRaft cluster-id (Secret kafka-kraft + meta.properties в PVC).
 # Пользователи и ACL восстанавливаются через apps-apply.

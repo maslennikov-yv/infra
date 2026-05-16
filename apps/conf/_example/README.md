@@ -28,6 +28,10 @@ apps/conf/
 
 Если в каталоге окружения есть **оба** файла — `secrets.yaml` имеет приоритет (override). Это удобно для локальной разработки: расшифровать в `secrets.yaml` через `make apps-conf-decrypt APP=... ENV=...`, отредактировать, потом `make apps-conf-encrypt APP=... ENV=...` обратно.
 
+## Не-секретные env-specific параметры: `app.yaml`
+
+Помимо `secrets.yaml`, в каталоге окружения может лежать **`app.yaml`** — не зашифрованные параметры приложения, специфичные для среды (replicas, ingress host, ресурсы, log level). Раньше эти параметры жили в `apps/src/<APP>/deploy/helm/values-<ENV>.yaml` (по одному на окружение). Теперь приложение хранит **один** шаблон `deploy/helm/values.yaml.gotmpl`, а infra перед `app-deploy` мерджит `apps/registry.yaml` + все `apps/conf/<APP>/<ENV>/*.yaml` (включая `app.yaml`) → `apps/.tmp/<APP>-<ENV>.merged.yaml` и пробрасывает путь в `Makefile.infra` через переменную `APP_CONFIG` (контракт — [docs/runbooks/app-interface.md](../../../docs/runbooks/app-interface.md)).
+
 Включение sops+age — краткий cheat-sheet [docs/runbooks/sops-quickstart.md](../../../docs/runbooks/sops-quickstart.md), полный runbook [docs/runbooks/secrets-management.md](../../../docs/runbooks/secrets-management.md). Образец конфигурации — [.sops.yaml.example](./.sops.yaml.example).
 
 ## Быстрый старт

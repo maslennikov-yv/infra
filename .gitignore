@@ -19,6 +19,13 @@ environments/backups/
 # Per-app бэкапы (make app-backup APP=… ENV=…): apps/backups/<ENV>/<APP>/<service>/…
 apps/backups/
 
+# apps/.tmp — merged config приложений (apps-config-merge APP=… ENV=…),
+# подаётся в Makefile.infra через APP_CONFIG для рендера values.yaml.gotmpl.
+apps/.tmp/
+
+# Docker tar-образы приложений (make app-image-save APP=… ENV=…)
+apps/images/
+
 # Секреты и чувствительные данные
 .env
 .env.*
