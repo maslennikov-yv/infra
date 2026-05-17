@@ -49,7 +49,7 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
-    cert-manager.io/cluster-issuer: "letsencrypt"
+    cert-manager.io/cluster-issuer: "lets-encrypt"
   tls: true
   extraHosts: []
   extraTls: []
