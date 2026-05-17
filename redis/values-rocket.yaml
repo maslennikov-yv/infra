@@ -1,0 +1,70 @@
+global:
+  security:
+    allowInsecureImages: true
+
+architecture: standalone
+
+auth:
+  enabled: true
+  existingSecret: redis
+  existingSecretPasswordKey: redis-password
+  acl:
+    enabled: true
+
+image:
+  registry: localhost:32000
+  repository: bitnami/redis
+  tag: "8.4.0"
+
+sentinel:
+  enabled: false
+  image:
+    registry: localhost:32000
+    repository: bitnami/redis-sentinel
+    tag: "8.4.0"
+
+metrics:
+  enabled: true
+  image:
+    registry: localhost:32000
+    repository: bitnami/redis-exporter
+    tag: "1.80.1"
+
+volumePermissions:
+  enabled: false
+  image:
+    registry: localhost:32000
+    repository: bitnami/os-shell
+    tag: "12-debian-12-r51"
+
+kubectl:
+  image:
+    registry: localhost:32000
+    repository: bitnami/kubectl
+    tag: "1.35.0"
+
+# Lightweight local-профиль: минимальные limits, чтобы не давить на dev-машину.
+master:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+
+# Синхронизировать с redis/redis/values.yaml commonConfiguration при смене модулей/AOF.
+# Логические БД для REDIS_DB в app-redis Secret (см. docs/pg-app.md): в реестре закрепляйте с 1, 0 — фолбэк; дефолт Redis — 16.
+commonConfiguration: |-
+  databases 128
+  # Enable ReJSON и Redisearch
+  loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
+  loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
+  # Enable AOF https://redis.io/topics/persistence#append-only-file
+  appendonly yes
+  # Disable RDB persistence, AOF persistence already enabled.
+  save ""

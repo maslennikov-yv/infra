@@ -1,0 +1,13 @@
+registry: localhost:32000
+
+postgres:
+  namespace: postgres
+  release: postgres
+
+redis:
+  namespace: redis
+  release: redis
+
+minio:
+  namespace: minio
+  release: minio
