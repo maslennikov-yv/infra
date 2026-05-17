@@ -163,6 +163,8 @@ kubectl get secret myapp-postgres -n myapp -o jsonpath='{.data.DATABASE_URL}' | 
 
 Отдельный ACL-пользователь и ключи с префиксом `APP:`; см. [redis/Makefile](../redis/Makefile).
 
+**Config-driven ACL.** Источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`. `make apps-apply` (или `redis-acl-reconcile` напрямую) собирает полный `users.acl` из merged конфига, патчит ConfigMap `redis-configuration` и делает `ACL LOAD`. `redis-app-create`/`drop` обновляют только per-app данные (Secret, `apps/conf`) и в конце дёргают reconcile (или отложенно — внутри `apps-apply`). **Состояние переживает рестарт пода** (aclfile подтягивается из ConfigMap при старте). См. [`scripts/redis-acl-reconcile.sh`](../scripts/redis-acl-reconcile.sh).
+
 ### Имена по умолчанию
 
 | Сущность | Значение по умолчанию | Переопределение |
@@ -280,6 +282,8 @@ make minio-app-drop APP=myapp ENV=stage
 ```
 
 Частые опции первого создания: `BUCKET=`, `PREFIX=`, `ACCESS_MODE=private_rw|private_ro|private_wo`, `PUBLIC_READ=true|false`, `PUBLIC_LIST=true|false`, `MINIO_SCHEME=http|https`, `APP_PUBLIC_ENDPOINT=https://files.example.com` (если снаружи другой URL, чем внутренний endpoint).
+
+**Ротация secret_key.** При повторном `minio-app-create` (или `apps-apply`) с новым `minio.secret_key` в `apps/conf/<APP>/<ENV>/secrets.yaml` старый пользователь удаляется и пересоздаётся с новым ключом (`mc admin user info → remove → add`), policy переприсваивается. Окно отсутствия — миллисекунды (приложение переподключится на retry). Без этого `mc admin user add` тихо игнорирует существующего юзера и ротация бы не применилась.
 
 Добавить ещё один bucket/prefix к той же учётке (после `minio-app-create`):
 

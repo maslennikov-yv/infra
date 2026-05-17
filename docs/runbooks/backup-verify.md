@@ -28,7 +28,7 @@
 ### НЕ покрывает (выводится как `informational`, не блокирует verdict)
 
 - **Объёмные данные** для 5 из 6 сервисов: `*-backup-meta` бэкапит **definitions**, не данные. После restore:
-  - Redis: RDB не восстановлен (`redis-restore-acl` восстанавливает только ACL — см. [`redis/BACKUP.md`](../../redis/BACKUP.md) раздел «Восстановление данных RDB»).
+  - Redis: RDB не восстановлен (`redis-restore-acl` восстанавливает ACL **только в память пода** через `ACL SETUSER` — для верификации бэкапа этого достаточно; в production основной путь восстановления ACL — `apps-apply` / `redis-acl-reconcile` (config-driven из `apps/conf` через ConfigMap, переживает рестарт пода); см. [`redis/BACKUP.md`](../../redis/BACKUP.md) раздел «Восстановление данных RDB»).
   - Kafka: топики пустые, offsets = 0 (`kafka-backup-meta` не содержит сообщений).
   - MinIO: бакеты пустые (объекты не бэкапятся).
   - ClickHouse: таблицы пустые (только schemas+grants в бэкапе).

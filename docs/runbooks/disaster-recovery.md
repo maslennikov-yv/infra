@@ -150,10 +150,14 @@ make postgres-restore BACKUP_FILE=postgres/backups/<env>/postgres-backup-YYYYMMD
 
 ### Redis
 ```bash
-# ACL применятся автоматически:
-make redis-restore-acl BACKUP_FILE=redis/backups/<env>/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=<env>
+# ACL восстанавливается из конфигов (config-driven), не из бэкапа:
+make apps-apply ENV=<env> ENABLED_SERVICES=redis
+#   → redis-acl-reconcile собирает users.acl из apps/registry.yaml + apps/conf/<APP>/<ENV>/,
+#     патчит ConfigMap redis-configuration + ACL LOAD. Состояние переживает рестарт пода.
 # Данные RDB — отдельная процедура (scale 0 + замена в PVC):
-# см. redis/BACKUP.md, раздел «Восстановление данных (RDB)».
+#   см. redis/BACKUP.md, раздел «Восстановление данных (RDB)».
+# redis-restore-acl нужен только для legacy-бэкапов или ad-hoc восстановления
+# (например, если apps/conf утрачен и есть свежий ACL-снимок в бэкапе).
 ```
 
 ### Kafka

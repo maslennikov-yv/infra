@@ -1290,23 +1290,48 @@ up:
 
 diff:
 	@# `diff:` не создаёт Secret (это делает `up:`); только читает.
-	# Раньше `|| true` маскировал kubectl-ошибки → пустой пароль → silent fail
-	# в helmfile (или валидация helmfile.yaml.gotmpl, но без ясной диагностики).
-	if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then \
-		echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; \
+	# Если сервис исключён фильтрами или Secret ещё не создан (первый deploy) —
+	# подставляются заглушки REDIS_PASSWORD/RABBITMQ_PASSWORD/RABBITMQ_ERLANG_COOKIE,
+	# чтобы helmfile зарендерил шаблоны и показал планируемый diff, а не упал.
+	set -e; \
+	svc_active() { \
+		local svc="$$1"; \
+		if [ -n "$(ENABLED_SERVICES)" ]; then \
+			echo ",$(ENABLED_SERVICES)," | grep -qF ",$$svc,"; \
+		else \
+			! echo ",$(EXCLUDE_SERVICES)," | grep -qF ",$$svc,"; \
+		fi; \
+	}; \
+	REDIS_PASSWORD="REDIS_PASSWORD"; \
+	RABBITMQ_PASSWORD="RABBITMQ_PASSWORD"; \
+	RABBITMQ_COOKIE="RABBITMQ_ERLANG_COOKIE"; \
+	if svc_active redis || svc_active rabbitmq; then \
+		if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then \
+			echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; \
+		fi; \
 	fi; \
-	if ! kubectl get secret -n redis redis >/dev/null 2>&1; then \
-		echo "✗ Secret redis/redis не найден. Запустите: make up ENV=$(ENV)"; exit 1; \
+	if svc_active redis; then \
+		if kubectl get secret -n redis redis >/dev/null 2>&1; then \
+			REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
+			if [ -z "$$REDIS_PASSWORD" ]; then \
+				echo "⚠ Secret redis/redis есть, но redis-password пуст — diff с заглушкой"; \
+				REDIS_PASSWORD="REDIS_PASSWORD"; \
+			fi; \
+		else \
+			echo "ℹ Secret redis/redis ещё нет — diff покажет создание (используется заглушка пароля)"; \
+		fi; \
 	fi; \
-	REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
-	[ -n "$$REDIS_PASSWORD" ] || { echo "✗ Secret redis/redis есть, но redis-password пуст"; exit 1; }; \
-	if ! kubectl get secret -n rabbitmq rabbitmq >/dev/null 2>&1; then \
-		echo "✗ Secret rabbitmq/rabbitmq не найден. Запустите: make up ENV=$(ENV) ENABLED_SERVICES=rabbitmq"; exit 1; \
-	fi; \
-	RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' | base64 -d); \
-	RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' | base64 -d); \
-	if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
-		echo "✗ Secret rabbitmq/rabbitmq есть, но rabbitmq-password или rabbitmq-erlang-cookie пуст"; exit 1; \
+	if svc_active rabbitmq; then \
+		if kubectl get secret -n rabbitmq rabbitmq >/dev/null 2>&1; then \
+			RABBITMQ_PASSWORD=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-password}' | base64 -d); \
+			RABBITMQ_COOKIE=$$(kubectl get secret -n rabbitmq rabbitmq -o jsonpath='{.data.rabbitmq-erlang-cookie}' | base64 -d); \
+			if [ -z "$$RABBITMQ_PASSWORD" ] || [ -z "$$RABBITMQ_COOKIE" ]; then \
+				echo "⚠ Secret rabbitmq/rabbitmq есть, но password или erlang-cookie пуст — diff с заглушкой"; \
+				RABBITMQ_PASSWORD="RABBITMQ_PASSWORD"; RABBITMQ_COOKIE="RABBITMQ_ERLANG_COOKIE"; \
+			fi; \
+		else \
+			echo "ℹ Secret rabbitmq/rabbitmq ещё нет — diff покажет создание (используется заглушка)"; \
+		fi; \
 	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default diff
 

@@ -19,6 +19,12 @@
 
 [docs/pg-app.md](pg-app.md) — изоляция по `APP`: per-сервис цели `*-app-create` / `*-app-show-creds` / `*-app-drop`, чеклисты для PostgreSQL, Redis, Kafka, MinIO, ClickHouse, RabbitMQ.
 
+Источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`; `make apps-apply` идемпотентно приводит состояние сервисов к merged конфигу (для Redis ACL — config-driven через ConfigMap + `redis-acl-reconcile`, переживает рестарт пода). Инвариант — в [CLAUDE.md](../CLAUDE.md) раздел «Config-driven reconciliation для multi-tenant сервисов».
+
+### «Lifecycle приложения через infra-interface»
+
+[docs/runbooks/app-interface.md](runbooks/app-interface.md) — стандартизированный контракт между infra и репозиторием приложения через `apps/src/<APP>/Makefile.infra` (`infra-deploy / status / logs / migrate / seed / shell / rollback`). infra передаёт merged YAML через `APP_CONFIG` для шаблонизации `deploy/helm/values.yaml.gotmpl` (gomplate). См. `make app-interface-init APP=...` для генерации рыбы.
+
 ### «У меня инцидент»
 
 1. `make doctor ENV=…` — комплексная диагностика (тулинг + кластер + helm vs helmfile + rollouts + per-app verify).
