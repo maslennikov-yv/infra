@@ -11,7 +11,8 @@ source "$SCRIPT_DIR/apps-yq-probe.sh"
 REPO_ROOT="${1:?REPO_ROOT}"
 APP="${2:?APP}"
 
-INFRA_MAX_VERSION=1
+INFRA_MAX_VERSION=2
+INFRA_MIN_VERSION=2
 
 SRC_DIR="$REPO_ROOT/apps/src/$APP"
 IFACE_FILE="$SRC_DIR/infra-interface.yaml"
@@ -40,8 +41,9 @@ if ! [[ "$version" =~ ^[0-9]+$ ]]; then
 	echo "✗ infra-interface.yaml: version должно быть целым числом, получено: $version" >&2
 	exit 1
 fi
-if [[ "$version" -lt 1 ]]; then
-	echo "✗ infra-interface.yaml: version >= 1 обязательно, получено: $version" >&2
+if [[ "$version" -lt "$INFRA_MIN_VERSION" ]]; then
+	echo "✗ infra-interface.yaml: version >= $INFRA_MIN_VERSION обязательно, получено: $version" >&2
+	echo "  Миграция v1 → v2: docs/runbooks/app-interface.md (раздел «v2: render-values»)." >&2
 	exit 1
 fi
 if [[ "$version" -gt "$INFRA_MAX_VERSION" ]]; then

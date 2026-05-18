@@ -1,29 +1,41 @@
-# App Interface (infra-interface)
+# App Interface (infra-interface) v2
 
 Контракт, по которому `infra` управляет lifecycle приложения через его `Makefile` — в том же стиле, что управляет сервисами (`postgres/`, `redis/` и т.п.).
 
+## Принцип
+
+Infra **не знает** о внутренней конфигурации приложения (replicas, ingress host, log level, resources и т.п.). Она передаёт приложению только то, чем владеет: **секреты + endpoints infra-сервисов** (Postgres / Redis / Kafka / MinIO / ClickHouse / RabbitMQ). Всё остальное — внутреннее дело приложения и хранится рядом с его чартом.
+
+Генерация `values-<ENV>.yaml` выполняется **в самом приложении** (целью `infra-render-values` в `Makefile.infra`) и запускается infra через метод `render-values`. Параметр — путь к `apps/conf/<APP>/<ENV>/secrets.yaml`.
+
 ## Как это работает
 
-1. Приложение кладёт в корень своего репозитория файл `infra-interface.yaml` с декларацией версии и списком реализованных методов.
-2. Приложение реализует соответствующие `infra-*` цели в своём `Makefile`.
-3. Infra читает файл (`apps/src/<APP>/infra-interface.yaml`), валидирует и делегирует вызовы:
+1. Приложение кладёт в корень своего репозитория файл `infra-interface.yaml` с декларацией `version: 2` и списком реализованных методов.
+2. Приложение реализует соответствующие `infra-*` цели в `Makefile.infra`.
+3. Infra читает `apps/src/<APP>/infra-interface.yaml`, валидирует версию и наличие целей, делегирует вызовы:
    ```
    make app-deploy APP=myapp ENV=prod
-   # → make -C apps/src/myapp infra-deploy ENV=prod KUBECONFIG=... APP=myapp APP_NS=myapp APPS_REGISTRY=...
+   # 1) check.sh: версия = 2, методы render-values + deploy реализованы
+   # 2) подготовка APP_SECRETS (plain или sops-decrypt в apps/.tmp/<APP>-<ENV>.secrets.yaml)
+   # 3) make -C apps/src/myapp infra-render-values  → deploy/helm/values-prod.yaml
+   # 4) make -C apps/src/myapp infra-deploy         → helm upgrade -f values-prod.yaml
    ```
 
 ## Требования
 
 - `apps/src/<APP>/` — клон репозитория приложения (`make apps-src-clone APP=myapp`).
-- `apps/src/<APP>/infra-interface.yaml` — манифест интерфейса.
-- `apps/src/<APP>/Makefile` — реализация `infra-*` целей.
+- `apps/src/<APP>/infra-interface.yaml` — манифест интерфейса (`version: 2`).
+- `apps/src/<APP>/Makefile` — `include Makefile.infra`.
+- `apps/src/<APP>/Makefile.infra` — реализация целей `infra-*`.
+- `apps/src/<APP>/deploy/helm/values.yaml.gotmpl` — шаблон, рендерится в `values-<ENV>.yaml`.
 
-## Формат infra-interface.yaml
+## Формат `infra-interface.yaml`
 
 ```yaml
-version: 1
+version: 2
 implements:
-  - deploy      # обязательно если задекларировано
+  - render-values   # обязательно: генерация values-<ENV>.yaml из APP_SECRETS
+  - deploy          # обязательно если задекларировано
   - rollback
   - status
   - logs
@@ -34,21 +46,20 @@ implements:
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `version` | int | Версия интерфейса. Infra поддерживает до v1. |
-| `implements` | list[string] | Методы, реализованные приложением. Infra проверяет наличие цели `infra-<method>` в Makefile. |
+| `version` | int | Контракт. Infra поддерживает **только v2** (v1 заблокирован: ошибка «обновите до v2»). |
+| `implements` | list[string] | Методы, реализованные приложением. Infra проверяет наличие цели `infra-<method>` в Makefile. `render-values` — обязательно для `app-render-values`/`app-deploy`. |
 
-Все методы необязательны — объявляйте только те, что реализованы. Вызов незадекларированного метода завершится с понятной ошибкой.
+## Переменные, которые infra передаёт
 
-## Переменные, которые infra передаёт при каждом вызове
-
-| Переменная | Описание |
-|---|---|
-| `ENV` | Окружение: `local`, `prod`, `stage`, … |
-| `KUBECONFIG` | Абсолютный путь к kubeconfig |
-| `APP` | Имя приложения (= поле `name` в registry) |
-| `APP_NS` | Kubernetes namespace (= `app_ns` из registry или `APP` если не задано) |
-| `APPS_REGISTRY` | Абсолютный путь к `apps/registry.yaml` |
-| `APP_CONFIG` | Абсолютный путь к merged YAML-конфигу приложения (`apps/.tmp/<APP>-<ENV>.merged.yaml`). Содержит запись из registry + deep-merge всех `apps/conf/<APP>/<ENV>/*.yaml` (включая зашифрованные `*.enc.yaml`). Используется как datasource для шаблона `deploy/helm/values.yaml.gotmpl` (gomplate). Файл регенерируется infra перед каждым вызовом `app-*` через `apps-config-merge`. |
+| Переменная | Когда | Описание |
+|---|---|---|
+| `ENV` | всегда | Окружение: `local`, `prod`, `stage`, … |
+| `KUBECONFIG` | всегда | Абсолютный путь к kubeconfig |
+| `APP` | всегда | Имя приложения (= поле `name` в registry) |
+| `APP_NS` | всегда | Kubernetes namespace (= `app_ns` из registry или `APP` если не задано) |
+| `APP_SECRETS` | render-values, deploy, migrate, seed | Абсолютный путь к `secrets.yaml` приложения. Источник: `apps/conf/<APP>/<ENV>/secrets.yaml`. Если есть только `secrets.enc.yaml` — infra расшифровывает sops в `apps/.tmp/<APP>-<ENV>.secrets.yaml` (chmod 600) и передаёт этот путь. Если ни того, ни другого — infra пишет пустой `{}` и передаёт его. |
+| `VALUES_OUT` | всегда | Абсолютный путь к месту, куда приложение должно сохранять отрендеренный values: `apps/src/<APP>/deploy/helm/values-<ENV>.yaml`. Этот же файл должен использоваться в `infra-deploy` через `helm -f`. |
+| `GOMPLATE` | всегда | Абсолютный путь к бинарю gomplate (или пусто — из PATH) |
 
 Дополнительные переменные по методу:
 
@@ -57,135 +68,102 @@ implements:
 | `rollback` | `REVISION` — номер ревизии (может быть пустым: откат к предыдущему) |
 | `logs` | `FOLLOW=1` — следить за потоком; `CONTAINER` — имя контейнера |
 | `shell` | `CONTAINER` — имя контейнера |
-| `seed` | `SKIP_CONFIRM=1` — пропустить подтверждение (уже подтверждено TUI/Makefile) |
+| `seed` | `SKIP_CONFIRM=1` — пропустить подтверждение |
 
-## Конфигурация приложения через `APP_CONFIG`
+**Чего infra НЕ передаёт** (v2):
+- `APPS_REGISTRY` (registry — внутреннее дело infra).
+- `APP_CONFIG` (merge registry + app.yaml + secrets — больше не делается).
+- Любой non-secret env-specific параметр (replicas, ingress host, log level, resources, image tag и т.п.).
 
-Infra передаёт в `Makefile.infra` приложения путь к merged YAML — единый файл, в котором собрано всё, что нужно для рендера values:
+## Что приложение должно хранить у себя
 
-| Источник | Что добавляет |
-|---|---|
-| `apps/registry.yaml` (запись `<APP>`) | `name`, `app_ns`, `repo_url`, `repo_branch`, любые пользовательские поля |
-| `apps/conf/<APP>/<ENV>/secrets.yaml` (gitignored) | креды postgres/redis/kafka/minio/clickhouse/rabbitmq |
-| `apps/conf/<APP>/<ENV>/secrets.enc.yaml` (в git, sops+age) | те же креды, опционально зашифрованные |
-| `apps/conf/<APP>/<ENV>/app.yaml` | не-секретные env-specific параметры (replicas, ingress host, ресурсы, log level) |
-| `apps/conf/<APP>/<ENV>/*.yaml` (любые другие) | произвольная env-specific конфигурация |
+Контракт v2 предполагает, что приложение знает:
+- Свой Helm-чарт `deploy/helm/`.
+- Свои env-specific параметры — в `deploy/helm/values-<ENV>.base.yaml` (или в одном `values.yaml.gotmpl` с веткой по `(ds "sec").app.env` — на ваш вкус). Эти файлы лежат **в git репозитория приложения**, не в infra.
+- Шаблон `deploy/helm/values.yaml.gotmpl`, который мержит `base` + `sec` → `values-<ENV>.yaml`.
 
-Порядок мержа (`mikefarah/yq` deep-merge): registry → encrypted → plain. Последнее победит.
+`.gitignore` приложения: коммитим `values-<ENV>.base.yaml`, игнорируем сгенерированный `values-<ENV>.yaml`.
 
-### Рендер `values.yaml.gotmpl`
-
-Приложение хранит **один** шаблон `deploy/helm/values.yaml.gotmpl` (вместо `values-<ENV>.yaml` для каждой среды) и рендерит его через [gomplate](https://docs.gomplate.ca/) с datasource `cfg`:
-
-```makefile
-# Makefile.infra (вырезка)
-VALUES_OUT := $(CHART)/.tmp/values.yaml
-
-$(VALUES_OUT): $(CHART)/values.yaml.gotmpl $(APP_CONFIG)
-	@test -f "$(APP_CONFIG)" || (echo "✗ APP_CONFIG не найден: $(APP_CONFIG)" >&2; exit 1)
-	@mkdir -p "$(CHART)/.tmp"
-	gomplate -f "$(CHART)/values.yaml.gotmpl" -d cfg="$(APP_CONFIG)" -o "$(VALUES_OUT)"
-
-infra-deploy: $(VALUES_OUT)
-	helm upgrade --install $(APP) $(CHART) -n $(APP_NS) --create-namespace -f $(VALUES_OUT) --wait
+```gitignore
+/deploy/helm/values-*.yaml
+!/deploy/helm/values-*.base.yaml
 ```
 
-### Пример `values.yaml.gotmpl`
+## Реализация `infra-render-values`
+
+Пример из career2 (`apps/src/career2/Makefile.infra`):
+
+```makefile
+CHART      := deploy/helm
+GOMPLATE   ?= gomplate
+VALUES_OUT ?= $(CHART)/values-$(ENV).yaml
+BASE_VALUES := $(CHART)/values-$(ENV).base.yaml
+
+infra-render-values:
+	@test -n "$(ENV)" || (echo '✗ ENV не задан' >&2; exit 1)
+	@test -n "$(APP_SECRETS)" || (echo '✗ APP_SECRETS не задан' >&2; exit 1)
+	@test -f "$(APP_SECRETS)" || (echo "✗ APP_SECRETS не найден: $(APP_SECRETS)" >&2; exit 1)
+	@test -f "$(BASE_VALUES)" || (echo "✗ $(BASE_VALUES) не найден" >&2; exit 1)
+	@mkdir -p "$(dir $(VALUES_OUT))"
+	@$(GOMPLATE) -f "$(CHART)/values.yaml.gotmpl" \
+	  -d sec="$(APP_SECRETS)" \
+	  -d base="$(BASE_VALUES)" \
+	  -o "$(VALUES_OUT)"
+
+infra-deploy:
+	@test -f "$(VALUES_OUT)" || (echo "✗ $(VALUES_OUT) не найден — сначала 'make app-render-values'" >&2; exit 1)
+	helm upgrade --install $(APP) $(CHART) \
+	  --kubeconfig $(KUBECONFIG) -n $(APP_NS) --create-namespace \
+	  -f $(VALUES_OUT) --wait --timeout=5m
+```
+
+**Важно**: цель `infra-render-values` не должна объявлять файловые prerequisites с переменными именами (`$(VALUES_OUT)`, `$(BASE_VALUES)`) — `app-capabilities` запускает `make -n` для проверки наличия цели без переменных, и при пустом `ENV` make попытается разрешить путь `deploy/helm/values-.base.yaml` и упадёт. Делайте все проверки **внутри рецепта**.
+
+## Пример `values.yaml.gotmpl`
 
 ```gotmpl
-replicaCount: {{ (ds "cfg").app.replicas.web | default 1 }}
+{{- $base := ds "base" -}}
+{{- $sec := ds "sec" -}}
+replicaCount: {{ $base.replicaCount | default 1 }}
 
 app:
-  env: {{ (ds "cfg").app.env | quote }}
-  logLevel: {{ (ds "cfg").app.logLevel | default "info" }}
-  {{- with (ds "cfg").app.trustedProxies }}
-  trustedProxies: {{ . | quote }}
-  {{- end }}
+  env: {{ $base.app.env | quote }}
+  logLevel: {{ $base.app.logLevel | default "info" }}
+{{- if has $sec.app "key" }}
+  key: {{ $sec.app.key | quote }}
+{{- end }}
 
+postgres:
+  host: {{ $sec.postgres.host | quote }}
+  username: {{ $sec.postgres.username | quote }}
+  password: {{ $sec.postgres.password | quote }}
+  database: {{ $sec.postgres.database | quote }}
+
+{{- with $base.ingress }}
 ingress:
-  enabled: {{ (ds "cfg").app.ingress.enabled | default false }}
-  {{- with (ds "cfg").app.ingress.host }}
-  host: {{ . | quote }}
-  {{- end }}
-
-{{- with (ds "cfg").app.resources }}
-resources:
-{{ . | toYAML | indent 2 }}
+{{ . | data.ToYAML | indent 2 }}
 {{- end }}
 ```
 
-### Отладка
-
-```bash
-make apps-merge-app-print APP=myapp ENV=local      # stdout merged YAML
-make apps-config-merge    APP=myapp ENV=local      # запись в apps/.tmp/<APP>-<ENV>.merged.yaml
-make -C apps/src/myapp infra-values-print \
-  APP_CONFIG=$(realpath apps/.tmp/myapp-local.merged.yaml)
-```
-
-### Совместимость
-
-`Makefile.infra` приложения может поддерживать **оба** пути — `values.yaml.gotmpl` и legacy `values-<ENV>.yaml` — пока не все приложения мигрированы. `APP_CONFIG` инфраструктура передаёт всегда; приложение само решает, использовать ли его.
-
 ## Контракт методов
 
+### render-values
+**Обязательный** для приложений, использующих helm с генерируемым values. Читает `APP_SECRETS` (+ собственные base-values приложения), пишет `VALUES_OUT`. Идемпотентен.
+
 ### deploy
-Идемпотентный деплой приложения в кластер (например, `helm upgrade --install`). При повторном запуске должен обновить release до текущего состояния. Читает секреты подключения из k8s Secret, созданного `apps-apply`.
+Идемпотентный деплой (`helm upgrade --install`). Использует уже отрендеренный `VALUES_OUT`. `app-deploy` infra-цели сама вызывает `infra-render-values` перед `infra-deploy`.
 
 ### rollback
-Откат release к предыдущей (`REVISION` пуст) или заданной ревизии. Пример: `helm rollback $APP $REVISION -n $APP_NS`.
+Откат release к предыдущей (`REVISION` пуст) или заданной ревизии. `APP_SECRETS` не используется.
 
-### status
-Вывод текущего состояния: поды, статус helm release. Должен быть неинтерактивным и завершаться с кодом 0.
-
-### logs
-Вывод логов приложения. Если `FOLLOW=1` — следить за потоком (`kubectl logs -f`). Если задан `CONTAINER` — только этот контейнер.
+### status, logs, shell
+Чтение состояния. `APP_SECRETS` не используется.
 
 ### migrate
-Запуск миграций БД (например, `artisan migrate`, `alembic upgrade head`, `flask db upgrade`). Должен быть идемпотентным — повторный запуск на актуальной БД не должен ломаться.
+Запуск миграций БД. Идемпотентный. Может использовать `APP_SECRETS` для получения подключения.
 
 ### seed
-Наполнение начальными данными. **Может быть деструктивным** (перезаписывает строки). Infra всегда спрашивает двойное подтверждение перед запуском seed, если только `SKIP_CONFIRM=1`.
-
-### shell
-Интерактивный shell в pod приложения. Пример: `kubectl exec -it -n $APP_NS deploy/$APP -- bash`. Если задан `CONTAINER` — exec именно в этот контейнер.
-
-## Пример Makefile приложения
-
-```makefile
-# Минимальный пример для приложения на Helm
-APP_NS     ?= $(APP)
-CHART_DIR  := deploy/helm
-RELEASE    := $(APP)
-
-infra-deploy:
-	helm upgrade --install $(RELEASE) $(CHART_DIR) \
-	  -n $(APP_NS) --create-namespace \
-	  -f $(CHART_DIR)/values-$(ENV).yaml \
-	  --set image.tag=$(shell git rev-parse --short HEAD)
-
-infra-rollback:
-	helm rollback $(RELEASE) $(REVISION) -n $(APP_NS)
-
-infra-status:
-	helm status $(RELEASE) -n $(APP_NS)
-	kubectl get pods -n $(APP_NS) -l app=$(APP)
-
-infra-logs:
-	kubectl logs -n $(APP_NS) -l app=$(APP) \
-	  $(if $(CONTAINER),--container $(CONTAINER)) \
-	  $(if $(filter 1,$(FOLLOW)),-f --tail=100,--tail=200)
-
-infra-migrate:
-	kubectl exec -n $(APP_NS) deploy/$(RELEASE) -- php artisan migrate --force
-
-infra-seed:
-	kubectl exec -n $(APP_NS) deploy/$(RELEASE) -- php artisan db:seed --force
-
-infra-shell:
-	kubectl exec -it -n $(APP_NS) deploy/$(RELEASE) \
-	  $(if $(CONTAINER),--container $(CONTAINER)) -- bash
-```
+**Может быть деструктивным**. Infra спрашивает двойное подтверждение, если не задано `SKIP_CONFIRM=1`.
 
 ## Использование из infra
 
@@ -193,8 +171,11 @@ infra-shell:
 # Просмотр capabilities и валидация
 make app-capabilities APP=myapp
 
+# Рендер values-<ENV>.yaml (без деплоя — для проверки/отладки)
+make app-render-values APP=myapp ENV=prod
+
 # Lifecycle
-make app-deploy   APP=myapp ENV=prod
+make app-deploy   APP=myapp ENV=prod     # render-values + deploy
 make app-rollback APP=myapp ENV=prod [REVISION=3]
 make app-status   APP=myapp ENV=prod
 make app-logs     APP=myapp ENV=prod [FOLLOW=1] [CONTAINER=php]
@@ -205,23 +186,26 @@ make app-shell    APP=myapp ENV=prod [CONTAINER=php]
 
 Из TUI (`make infra`): пункт **«Lifecycle приложения»**.
 
-## Как проверить локально (без кластера)
+## Инициализация интерфейса в новом приложении
 
 ```bash
-# Клонировать репо приложения
 make apps-src-clone APP=myapp
-
-# Проверить что interface файл корректен и все цели есть
+make app-interface-init APP=myapp           # рыба infra-interface.yaml + Makefile.infra + values.yaml.gotmpl
 make app-capabilities APP=myapp
-
-# Dry-run деплоя (только если helm chart: добавьте --dry-run в infra-deploy)
-make app-deploy APP=myapp ENV=local
+make app-render-values APP=myapp ENV=local  # для проверки
 ```
+
+`OVERWRITE=1` — перезаписать существующие `infra-interface.yaml` / `Makefile.infra` (но не `values.yaml.gotmpl` — шаблон чарта).
 
 ## Версионирование
 
-Версия в `infra-interface.yaml` определяет контракт. Текущая: **v1**.
+Версия в `infra-interface.yaml` определяет контракт. Текущая: **v2**.
 
-При несовместимом изменении контракта версия будет повышена. Приложения, объявляющие версию > поддерживаемой, блокируются с сообщением «обновите infra или понизьте версию».
+- **v1 → v2 (текущая граница)**: infra **жёстко блокирует** `version: 1`. Миграция:
+  1. `version: 1` → `version: 2`, добавить `render-values` в `implements:`.
+  2. Цель `infra-values-render` (если была) переименовать в `infra-render-values`, выпилить зависимость от `APP_CONFIG`, использовать `APP_SECRETS` как datasource.
+  3. Не-секретные env-параметры из `apps/conf/<APP>/<ENV>/app.yaml` перенести в репозиторий приложения как `deploy/helm/values-<ENV>.base.yaml`.
+  4. `VALUES_OUT` теперь `deploy/helm/values-<ENV>.yaml` (вместо `.tmp/values.yaml`). Обновить `.gitignore` приложения.
+  5. `infra-deploy` больше не вызывает gomplate сам — он использует уже отрендеренный `VALUES_OUT`.
 
-Понижение версии (приложение объявляет v1, infra поддерживает v1+) — всегда совместимо: infra вызывает только те методы, что задекларированы.
+При несовместимом изменении контракта (v3+) `version: 2` будет либо поддерживаться с deprecation-warning, либо блокироваться — решение принимается при выпуске.

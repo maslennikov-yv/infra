@@ -30,17 +30,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - После `make up` автоматически запускается `apps-apply`, если не задан `SKIP_APPS_APPLY=1`. Те же фильтры `ENABLED_SERVICES` / `EXCLUDE_SERVICES` действуют и для `apps-apply` / `apps-apply-diff`.
 - Учётки приложения создают Secret `<APP>-<service>` в namespace приложения (`postgres`, `redis`, `kafka`, `rabbitmq`, `minio`, `clickhouse`); изоляция — на уровне БД/role/ACL/policy/vhost/prefix.
 
-### Lifecycle приложений (infra-interface)
+### Lifecycle приложений (infra-interface v2)
 
-Стандартизированный контракт, по которому `infra` управляет lifecycle приложения через его `Makefile` — в том же стиле, что управляет сервисами.
+Стандартизированный контракт, по которому `infra` управляет lifecycle приложения через его `Makefile` — в том же стиле, что управляет сервисами. Текущая версия — **v2**; v1 жёстко заблокирован (ошибка «обновите до v2»).
 
-- **`apps/src/<APP>/infra-interface.yaml`** — декларация версии и списка реализованных методов (`deploy`, `rollback`, `status`, `logs`, `migrate`, `seed`, `shell`). Файл живёт в репозитории приложения; infra читает его из `apps/src/<APP>/` (gitignored в infra).
-- **`apps/src/<APP>/Makefile.infra`** — реализация `infra-*` целей. Включается в Makefile приложения через `include Makefile.infra`. Infra вызывает: `make -C apps/src/<APP> infra-deploy ENV=... KUBECONFIG=... APP=... APP_NS=... APPS_REGISTRY=... APP_CONFIG=...`.
-- **`APP_CONFIG`** — путь к merged YAML (`apps/.tmp/<APP>-<ENV>.merged.yaml`). Содержит запись приложения из `apps/registry.yaml` + deep-merge всех `apps/conf/<APP>/<ENV>/*.yaml` (включая зашифрованные `*.enc.yaml`). Перегенерируется infra перед каждым `app-*` через `apps-config-merge`. Приложение использует его как datasource для шаблона `deploy/helm/values.yaml.gotmpl` (рендер через `gomplate`) — один шаблон вместо набора `values-<ENV>.yaml`.
-- `make app-interface-init APP=myapp` — генерирует рыбу `infra-interface.yaml` + `Makefile.infra` (все 7 стабов) + `deploy/helm/values.yaml.gotmpl` (если не существует) в `apps/src/<APP>/`. Если `Makefile` отсутствует — создаёт минимальный с `include Makefile.infra`. `OVERWRITE=1` — перезаписать `infra-interface.yaml`/`Makefile.infra` (но не gotmpl-шаблон).
+**Принцип v2.** Infra передаёт приложению **только секреты + endpoints infra-сервисов** (Postgres / Redis / Kafka / MinIO / ClickHouse / RabbitMQ) — содержимое `apps/conf/<APP>/<ENV>/secrets.yaml`. Не-секретные env-параметры (replicas, ingress host, log level, resources и т.п.) — внутреннее дело приложения и хранятся в его репозитории (`deploy/helm/values-<ENV>.base.yaml`). Никакого merge registry/app.yaml/secrets infra больше не делает.
+
+- **`apps/src/<APP>/infra-interface.yaml`** — `version: 2` + список методов (`render-values` обязательно, далее `deploy`, `rollback`, `status`, `logs`, `migrate`, `seed`, `shell`). Файл живёт в репозитории приложения; infra читает его из `apps/src/<APP>/` (gitignored в infra).
+- **`apps/src/<APP>/Makefile.infra`** — реализация `infra-*` целей. Включается через `include Makefile.infra`. Infra вызывает: `make -C apps/src/<APP> infra-<method> ENV=... KUBECONFIG=... APP=... APP_NS=... APP_SECRETS=... VALUES_OUT=... GOMPLATE=...`.
+- **`APP_SECRETS`** — путь к `apps/conf/<APP>/<ENV>/secrets.yaml` (plain). Если есть только `secrets.enc.yaml` — infra расшифровывает sops в `apps/.tmp/<APP>-<ENV>.secrets.yaml` (chmod 600) и передаёт его. Если ни того, ни другого — пишет пустой `{}`. Подготовка вынесена в `scripts/app-render-values-prep.sh`.
+- **`VALUES_OUT`** — путь, куда приложение должно сохранить отрендеренный values: `apps/src/<APP>/deploy/helm/values-<ENV>.yaml`. Этот же файл используется в `infra-deploy` через `helm -f`. В `.gitignore` приложения: `values-<ENV>.yaml` игнорируется, `values-<ENV>.base.yaml` коммитим.
+- `make app-render-values APP=myapp ENV=...` — рендер values-<ENV>.yaml без деплоя (для отладки/проверки). `make app-deploy` сам вызывает `render-values` перед `deploy`.
+- `make app-interface-init APP=myapp` — генерирует рыбу v2: `infra-interface.yaml` + `Makefile.infra` + `deploy/helm/values.yaml.gotmpl` (если не существует). `OVERWRITE=1` — перезаписать `infra-interface.yaml`/`Makefile.infra` (но не gotmpl-шаблон).
 - `make app-capabilities APP=myapp` — показывает версию, список методов и проверяет наличие целей в Makefile.
-- `APP_NS` вычисляется из registry (`app_ns` или дефолт = `APP`); приложение читает секреты из k8s Secret, созданного `apps-apply`.
-- Полный контракт (переменные, ожидания по каждому методу, пример Makefile) — `docs/runbooks/app-interface.md`.
+- `APP_NS` вычисляется из registry (`app_ns` или дефолт = `APP`); приложение читает доп. секреты из k8s Secret, созданного `apps-apply` (если ему нужны не только те, что в `secrets.yaml`).
+- Полный контракт (переменные, ожидания по каждому методу, пример Makefile, миграция v1→v2) — `docs/runbooks/app-interface.md`.
 
 ### Образы
 
@@ -98,8 +102,9 @@ make kafka-app-backup     APP=myapp ENV=stage                      # definitions
 make rabbitmq-app-backup  APP=myapp ENV=stage                      # vhost-specific definitions; сообщения не входят
 make <svc>-app-restore    APP=myapp ENV=stage BACKUP_FILE=apps/backups/stage/myapp/<svc>/...
 
-# Lifecycle приложений (infra-interface) — требуют apps/src/<APP>/ и infra-interface.yaml
-make app-interface-init APP=myapp [OVERWRITE=1]      # рыба infra-interface.yaml + Makefile.infra
+# Lifecycle приложений (infra-interface v2) — требуют apps/src/<APP>/ и infra-interface.yaml
+make app-interface-init APP=myapp [OVERWRITE=1]      # рыба infra-interface.yaml v2 + Makefile.infra
+make app-render-values  APP=myapp ENV=prod           # рендер deploy/helm/values-<ENV>.yaml из APP_SECRETS (без деплоя)
 make app-capabilities   APP=myapp                    # версия + методы + валидация целей Makefile
 make app-deploy         APP=myapp ENV=prod
 make app-rollback       APP=myapp ENV=prod [REVISION=N]
@@ -131,7 +136,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
 
 - `make`, Helm 3, `helmfile`, `kubectl`, Docker.
 - `mikefarah/yq` v4 — для merge `apps/registry.yaml` + `apps/conf/`. Либо `YQ=...`, либо `./.tools/yq-mikefarah`.
-- `gomplate` 4+ (опционально, нужен только для приложений с `deploy/helm/values.yaml.gotmpl`) — рендер шаблона values из merged `APP_CONFIG`. `make tools-check` подсказывает установку.
+- `gomplate` 4+ (опционально, нужен только для приложений с `deploy/helm/values.yaml.gotmpl`) — рендер шаблона values из `APP_SECRETS` (контракт infra-interface v2). `make tools-check` подсказывает установку.
 - Node.js 18+ и `npm install` в корне (зависимость `@clack/prompts`) — для `make infra`.
 - `jq` — для `top-totals` и `k8s-port-expose-patch`.
 
@@ -151,6 +156,7 @@ Per-service из каталога сервиса: `make install|upgrade|uninstal
   - `app-create`/`app-drop` обновляют per-app данные (apps/conf, Secret в namespace приложения), затем дёргают `*-reconcile` (полная пересборка из реестра). Никаких прямых `SETUSER`/`add_user`/`mc admin user add` в обход источника истины.
   - Действия по одному приложению **не должны** влиять на другие (нет глобальных flush, нет «снеси и пересоздай ACL для всех»). Reconcile применяет diff атомарно (Redis: `ACL LOAD` полностью замещает; RabbitMQ: `import_definitions`; MinIO: `mc admin policy attach/detach` per user).
   - Текущая реализация: Redis (`scripts/redis-acl-reconcile.sh`, `make redis-acl-reconcile ENV=...`). Аналог для других сервисов — отдельный аудит/тикеты.
+  - **Redis ACL — двойной путь применения**, чтобы инвариант держался и при рестарте пода без вызова reconcile: (1) `scripts/redis-build-acl-overlay.sh` пересобирает overlay `redis/values-<ENV>.acl.yaml` (gitignored) из merged config; helmfile подхватывает его дополнительным values-файлом для release redis → Bitnami chart рендерит `users.acl` в ConfigMap уже с app-users. (2) `redis-acl-reconcile` параллельно патчит живой ConfigMap + перезаписывает aclfile в поде + `ACL LOAD`. Формат строк users.acl в обоих путях идентичен (`user <name> on #<sha256(pw)> ~<prefix>:* &<prefix>:* +@all <DENY>`) — `helmfile diff` после reconcile нулевой, лишних rolling restart redis-master нет. Корневой `make up`/`make diff` сами вызывают `redis-build-acl-overlay.sh` перед helmfile, поэтому новые приложения попадают в helm-рендер автоматически.
 
 ### Что коммитим, что нет
 

@@ -33,8 +33,9 @@ if [[ ! -f "$SRC_DIR/Makefile" ]]; then
 fi
 
 version=$("$YQBIN" -r '.version // 0' "$IFACE_FILE")
-if [[ "$version" -gt 1 ]]; then
-	echo "✗ infra-interface.yaml: version=$version не поддерживается (infra поддерживает до v1)." >&2
+if [[ "$version" != "2" ]]; then
+	echo "✗ infra-interface.yaml: version=$version не поддерживается (infra требует v2)." >&2
+	echo "  Миграция v1 → v2: docs/runbooks/app-interface.md (раздел «v2: render-values»)." >&2
 	exit 1
 fi
 

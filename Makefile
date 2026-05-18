@@ -7,8 +7,8 @@
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
 	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop redis-acl-reconcile kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
-	apps-merge-print apps-merge-app-print apps-config-merge apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
-	app-capabilities app-deploy app-rollback app-status app-logs app-migrate app-seed app-shell \
+	apps-merge-print apps-merge-app-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
+	app-capabilities app-render-values app-deploy app-rollback app-status app-logs app-migrate app-seed app-shell \
 	app-image-build app-image-save app-image-push-remote \
 	app-interface-init \
 	apps-conf-encrypt apps-conf-decrypt apps-conf-edit \
@@ -204,8 +204,7 @@ help:
 	@echo ""
 	@echo "$(BOLD)$(GREEN)Apps конфигурация:$(RESET)"
 	@echo "  make apps-merge-print $(YELLOW)[APPS_REGISTRY=...$(RESET)] $(YELLOW)[YQ=path/to/yq$(RESET)] - сырый merge (stdout, mikefarah yq v4)"
-	@echo "  make apps-merge-app-print $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - merged YAML одного APP (registry + apps/conf/<APP>/<ENV>/, stdout) — отладка values.yaml.gotmpl"
-	@echo "  make apps-config-merge $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - пишет merged YAML в apps/.tmp/<APP>-<ENV>.merged.yaml (запускается автоматически перед app-* целями; путь пробрасывается в Makefile.infra через APP_CONFIG)"
+	@echo "  make apps-merge-app-print $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) - merged YAML одного APP (registry + apps/conf/<APP>/<ENV>/, stdout) — отладка/диагностика, в контракте infra-interface v2 не используется"
 	@echo "  make apps-local-src-helm-sets $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) — stdout: $(YELLOW)--set$(RESET) для $(YELLOW)app.volumes.$(RESET)* (hostPath=$(YELLOW)apps/src/<APP>$(RESET)) в вашем helm upgrade приложения"
 	@echo "  make apps-apply $(YELLOW)ENV=$(ENV)$(RESET) $(YELLOW)[ENABLED_SERVICES=... EXCLUDE_SERVICES=...$(RESET)] $(YELLOW)[APPS_APPLY_CONTINUE_ON_ERROR=1$(RESET)] $(YELLOW)[APPS_APPLY_DROP_DISABLED=1$(RESET)] - учётки из apps/conf; APPS_APPLY_DROP_DISABLED=1 — дропать учётки disabled приложений"
 	@echo "  make apps-apply-diff $(YELLOW)ENV=$(ENV)$(RESET) - печатает дельту (would create/update/drop/drift), ничего не меняет"
@@ -214,9 +213,10 @@ help:
 	@echo "  make apps-src-clone $(YELLOW)APP=<name>$(RESET) [$(YELLOW)APPS_REGISTRY=...$(RESET)] - git clone по repo_url (+ repo_branch) из registry → apps/src/<APP>"
 	@echo "  make app-local-src-hostpath-mount $(YELLOW)ENV=local$(RESET) $(YELLOW)APP=<name>$(RESET) $(YELLOW)APP_LOCAL_K8S_WORKLOAD=<kind>/<имя>$(RESET) [$(YELLOW)pod/…|deployment/…|sts/…|ds/…$(RESET)] — hostPath $(YELLOW)apps/src/<APP>$(RESET); initContainers+containers; [$(YELLOW)APP_LOCAL_SRC_READ_ONLY=1$(RESET)] [$(YELLOW)APP_LOCAL_SRC_CONTAINER=…$(RESET)]"
 	@echo ""
-	@echo "$(BOLD)$(GREEN)App lifecycle (infra-interface):$(RESET)"
-	@echo "  make app-capabilities $(YELLOW)APP=myapp$(RESET)            — версия + список методов + валидация целей Makefile"
-	@echo "  make app-deploy   $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)     — infra-deploy в apps/src/<APP>/Makefile"
+	@echo "$(BOLD)$(GREEN)App lifecycle (infra-interface v2):$(RESET)"
+	@echo "  make app-capabilities  $(YELLOW)APP=myapp$(RESET)            — версия + список методов + валидация целей Makefile"
+	@echo "  make app-render-values $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)  — рендер apps/src/<APP>/deploy/helm/values-<ENV>.yaml (передаёт APP_SECRETS=apps/conf/<APP>/<ENV>/secrets.yaml)"
+	@echo "  make app-deploy   $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)     — infra-deploy в apps/src/<APP>/Makefile (зависит от render-values)"
 	@echo "  make app-rollback $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)REVISION=N$(RESET)] — infra-rollback"
 	@echo "  make app-status   $(YELLOW)APP=myapp ENV=$(ENV)$(RESET)     — infra-status"
 	@echo "  make app-logs     $(YELLOW)APP=myapp ENV=$(ENV)$(RESET) [$(YELLOW)FOLLOW=1$(RESET)] [$(YELLOW)CONTAINER=name$(RESET)] — infra-logs"
@@ -535,19 +535,11 @@ apps-merge-app-print:
 	@test -n "$(ENV)" || (echo '✗ Укажите ENV=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/apps-merge-app.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)"
 
-# apps-config-merge: записывает merged YAML одного APP в apps/.tmp/<APP>-<ENV>.merged.yaml.
-# Используется внутри app-* целей: путь к файлу пробрасывается в Makefile.infra
-# приложения через переменную APP_CONFIG (контракт infra ↔ приложение).
-# Файл не коммитим (см. .gitignore: apps/.tmp/).
-APP_CONFIG_FILE = $(REPO_ROOT)/apps/.tmp/$(APP)-$(ENV).merged.yaml
-
-apps-config-merge:
-	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
-	@test -n "$(ENV)" || (echo '✗ Укажите ENV=<name>' >&2; exit 1)
-	@install -d -m 700 "$(REPO_ROOT)/apps/.tmp"
-	@"$(REPO_ROOT)/scripts/apps-merge-app.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)" > "$(APP_CONFIG_FILE)"
-	@chmod 600 "$(APP_CONFIG_FILE)"
-	@echo "✓ APP_CONFIG: $(APP_CONFIG_FILE)"
+# Контракт infra-interface v2: infra передаёт приложению ТОЛЬКО секреты + параметры
+# infra-сервисов (Postgres/Redis/Kafka/MinIO/ClickHouse/RabbitMQ) — apps/conf/<APP>/<ENV>/secrets.yaml.
+# Никакого merge с registry/app.yaml: env-specific параметры приложения (replicas, ingress,
+# resources, log level и т.п.) — внутреннее дело приложения, infra о них не знает.
+# Если есть только secrets.enc.yaml — расшифровывается в apps/.tmp/<APP>-<ENV>.secrets.yaml (chmod 600).
 
 apps-local-src-helm-sets:
 	@test "$(ENV)" = "local" || (echo '✗ apps-local-src-helm-sets только при ENV=local' >&2; exit 1)
@@ -679,38 +671,51 @@ app-capabilities:
 # первой строкой рецепта и оставляет переменную $$APP_NS в shell-окружении следующих строк.
 APP_NS_LOOKUP = APP_NS=$$(APP="$(APP)" "$(YQ)" -r '.apps[] | select(.name == strenv(APP)) | ((.app_ns | select(. != null and . != "")) // .name)' "$(APPS_REGISTRY)" 2>/dev/null || echo "$(APP)")
 
+# Подготовка APP_SECRETS (plain secrets.yaml или расшифрованный .enc.yaml в apps/.tmp).
+# Используется в app-render-values и автоматически в app-deploy (через зависимость от render-values).
+# APP_SECRETS_LOOKUP оставляет $$APP_SECRETS в shell-окружении следующих строк рецепта.
+APP_SECRETS_LOOKUP = APP_SECRETS=$$("$(REPO_ROOT)/scripts/app-render-values-prep.sh" "$(REPO_ROOT)" "$(APP)" "$(ENV)")
+
+# Путь к итоговому values-<ENV>.yaml внутри репозитория приложения (контракт v2).
+APP_VALUES_OUT = $(REPO_ROOT)/apps/src/$(APP)/deploy/helm/values-$(ENV).yaml
+
 # Общие переменные, передаваемые в Makefile.infra приложения при каждом вызове infra-*.
-# APP_CONFIG — путь к merged YAML (registry + apps/conf/<APP>/<ENV>/). Формируется
-# через apps-config-merge перед вызовом подmake. Контракт описан в docs/runbooks/app-interface.md.
-APP_INFRA_VARS = ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APPS_REGISTRY="$(APPS_REGISTRY)" APP_CONFIG="$(APP_CONFIG_FILE)" GOMPLATE="$(GOMPLATE)"
+# Контракт v2: APP_SECRETS (только секреты + endpoints infra-сервисов) и VALUES_OUT (где
+# приложение должно сохранять/искать отрендеренный values-<ENV>.yaml). Описание — docs/runbooks/app-interface.md.
+APP_INFRA_VARS = ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APP="$(APP)" APP_NS="$$APP_NS" APP_SECRETS="$$APP_SECRETS" VALUES_OUT="$(APP_VALUES_OUT)" GOMPLATE="$(GOMPLATE)"
+
+app-render-values:
+	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@test -n "$(ENV)" || (echo '✗ Укажите ENV=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" render-values
+	@$(APP_NS_LOOKUP); $(APP_SECRETS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-render-values $(APP_INFRA_VARS)
 
 app-deploy:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
+	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" render-values
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" deploy
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); $(APP_SECRETS_LOOKUP); \
+	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-render-values $(APP_INFRA_VARS) && \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-deploy $(APP_INFRA_VARS)
 
 app-rollback:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" rollback
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); APP_SECRETS=""; \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-rollback $(APP_INFRA_VARS) \
 	  $(if $(strip $(REVISION)),REVISION="$(REVISION)")
 
 app-status:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" status
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); APP_SECRETS=""; \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-status $(APP_INFRA_VARS)
 
 app-logs:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" logs
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); APP_SECRETS=""; \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-logs $(APP_INFRA_VARS) \
 	  $(if $(strip $(FOLLOW)),FOLLOW="$(FOLLOW)") \
 	  $(if $(strip $(CONTAINER)),CONTAINER="$(CONTAINER)")
@@ -718,8 +723,7 @@ app-logs:
 app-migrate:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" migrate
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); $(APP_SECRETS_LOOKUP); \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-migrate $(APP_INFRA_VARS)
 
 app-seed:
@@ -729,15 +733,13 @@ app-seed:
 	  read -r -p "⚠  seed может быть деструктивным для APP=$(APP) ENV=$(ENV). Продолжить? (y/N) " c; \
 	  [ "$$c" = "y" ] || [ "$$c" = "Y" ] || { echo "Отменено."; exit 1; }; \
 	fi
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); $(APP_SECRETS_LOOKUP); \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-seed $(APP_INFRA_VARS)
 
 app-shell:
 	@test -n "$(APP)" || (echo '✗ Укажите APP=<name>' >&2; exit 1)
 	@"$(REPO_ROOT)/scripts/app-interface-check.sh" "$(REPO_ROOT)" "$(APP)" shell
-	@$(MAKE) apps-config-merge APP="$(APP)" ENV="$(ENV)"
-	@$(APP_NS_LOOKUP); \
+	@$(APP_NS_LOOKUP); APP_SECRETS=""; \
 	$(MAKE) -C "$(REPO_ROOT)/apps/src/$(APP)" infra-shell $(APP_INFRA_VARS) \
 	  $(if $(strip $(CONTAINER)),CONTAINER="$(CONTAINER)")
 
@@ -1272,6 +1274,13 @@ up:
 	if svc_active netdata; then \
 		$(MAKE) -C monitoring/netdata secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
 	fi; \
+	: "Перегенерация overlay redis/values-$(ENV).acl.yaml из apps/registry+conf"; \
+	: "до helmfile apply: helm рендерит ConfigMap users.acl сразу с app-users,"; \
+	: "рестарт пода восстанавливает ACL без вызова redis-acl-reconcile."; \
+	if svc_active redis && [ -f "$(APPS_REGISTRY)" ]; then \
+		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(CURDIR)" ENV="$(ENV)" \
+			scripts/redis-build-acl-overlay.sh || { echo "✗ redis-build-acl-overlay.sh упал"; exit 1; }; \
+	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
 	: "Простановка label infra-env=<ENV> на platform-ns. Используется backup-verify"; \
 	: "preflight'ом для защиты от случайной перезаписи чужого кластера. Идемпотентно;"; \
@@ -1332,6 +1341,10 @@ diff:
 		else \
 			echo "ℹ Secret rabbitmq/rabbitmq ещё нет — diff покажет создание (используется заглушка)"; \
 		fi; \
+	fi; \
+	if svc_active redis && [ -f "$(APPS_REGISTRY)" ]; then \
+		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(CURDIR)" ENV="$(ENV)" \
+			scripts/redis-build-acl-overlay.sh >/dev/null || { echo "✗ redis-build-acl-overlay.sh упал"; exit 1; }; \
 	fi; \
 	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default diff
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Генерирует рыбу infra-interface для приложения в apps/src/<APP>/:
-#   infra-interface.yaml             — декларация методов (v1, все 7)
+# Генерирует рыбу infra-interface v2 для приложения в apps/src/<APP>/:
+#   infra-interface.yaml             — декларация методов (v2: render-values + 7 lifecycle-методов)
 #   Makefile.infra                   — стабы infra-* целей (include в Makefile приложения),
-#                                      включая render values.yaml.gotmpl через gomplate (APP_CONFIG)
+#                                      включая infra-render-values (gomplate из APP_SECRETS → VALUES_OUT)
 #   Makefile                         — минимальный (только если ещё не существует)
-#   deploy/helm/values.yaml.gotmpl   — пример шаблона values c подстановкой из APP_CONFIG
+#   deploy/helm/values.yaml.gotmpl   — пример шаблона values (gomplate datasource sec=APP_SECRETS)
 #                                      (создаётся, только если такого файла ещё нет)
 #
 # Использование: app-interface-init.sh <REPO_ROOT> <APP>
@@ -57,11 +57,12 @@ fi
 # === infra-interface.yaml ===
 if [[ "$SKIP_IFACE" == "0" ]]; then
 	cat >"$IFACE_FILE" <<'YAML'
-# Декларация infra-interface для приложения.
+# Декларация infra-interface для приложения (контракт v2).
 # Оставьте только те методы, которые реализованы в Makefile.infra.
 # Документация: docs/runbooks/app-interface.md
-version: 1
+version: 2
 implements:
+  - render-values
   - deploy
   - rollback
   - status
@@ -76,16 +77,20 @@ fi
 # === Makefile.infra ===
 if [[ "$SKIP_MK_INFRA" == "0" ]]; then
 	cat >"$MK_INFRA" <<'MAKEFILE'
-# infra-interface v1 — стабы lifecycle-методов.
+# infra-interface v2 — стабы lifecycle-методов.
 # Включите в Makefile приложения: include Makefile.infra
 #
 # Переменные, которые infra передаёт при каждом вызове:
-#   ENV            — окружение (local / prod / stage / …)
-#   KUBECONFIG     — абсолютный путь к kubeconfig
-#   APP            — имя приложения
-#   APP_NS         — kubernetes namespace (= app_ns из registry или APP)
-#   APPS_REGISTRY  — путь к apps/registry.yaml
-#   APP_CONFIG     — merged YAML (registry + apps/conf/<APP>/<ENV>/) для подстановки в values.yaml.gotmpl
+#   ENV         — окружение (local / prod / stage / …)
+#   KUBECONFIG  — абсолютный путь к kubeconfig
+#   APP         — имя приложения
+#   APP_NS      — kubernetes namespace (= app_ns из registry или APP)
+#   APP_SECRETS — путь к secrets.yaml приложения (apps/conf/<APP>/<ENV>/secrets.yaml;
+#                 если файл зашифрован — infra расшифровывает в apps/.tmp/ перед вызовом).
+#                 Содержит креды и endpoints infra-сервисов (postgres/redis/kafka/minio/clickhouse/rabbitmq).
+#   VALUES_OUT  — куда писать отрендеренный values-<ENV>.yaml
+#                 (по умолчанию apps/src/<APP>/deploy/helm/values-<ENV>.yaml).
+#   GOMPLATE    — абсолютный путь к бинарю gomplate (или пустое — из PATH).
 #
 # Дополнительные переменные по методу:
 #   rollback: REVISION (номер ревизии; пустой = откат к предыдущей)
@@ -96,34 +101,37 @@ APP      ?= app
 APP_NS   ?= $(APP)
 RELEASE  := $(APP)
 CHART    := deploy/helm
-# Куда сохранять отрендеренный values.yaml (gitignored).
-VALUES_OUT := $(CHART)/.tmp/values.yaml
-# gomplate: infra пробрасывает абсолютный путь к бинарю в переменной GOMPLATE
-# (см. корневой Makefile + ./.tools/gomplate); пустое значение — берём из PATH.
 GOMPLATE ?= gomplate
 
 HELM := helm --kubeconfig $(KUBECONFIG) -n $(APP_NS)
 
-.PHONY: infra-deploy infra-rollback infra-status infra-logs infra-migrate infra-seed infra-shell \
-	infra-values-render infra-values-print
+.PHONY: infra-render-values infra-deploy infra-rollback infra-status infra-logs infra-migrate infra-seed infra-shell \
+	infra-values-print
 
-# Рендер $(VALUES_OUT) из $(CHART)/values.yaml.gotmpl с подстановкой из APP_CONFIG.
-# gomplate datasources:
-#   cfg — merged YAML конкретного приложения (поля из apps/registry.yaml + apps/conf/<APP>/<ENV>/).
-infra-values-render: $(VALUES_OUT)
-
-$(VALUES_OUT): $(CHART)/values.yaml.gotmpl $(APP_CONFIG)
-	@test -n "$(APP_CONFIG)" || (echo '✗ APP_CONFIG не задан (запускайте через make app-deploy ... из infra)' >&2; exit 1)
-	@test -f "$(APP_CONFIG)" || (echo "✗ APP_CONFIG не найден: $(APP_CONFIG)" >&2; exit 1)
+# Рендер $(VALUES_OUT) из $(CHART)/values.yaml.gotmpl с подстановкой из APP_SECRETS.
+# gomplate datasource:
+#   sec — apps/conf/<APP>/<ENV>/secrets.yaml: креды и endpoints infra-сервисов.
+# Не-секретные env-параметры (replicas, ingress, resources, log level) — внутреннее дело
+# приложения: храните их рядом с шаблоном (например $(CHART)/values-$(ENV).base.yaml)
+# и подмержите в values.yaml.gotmpl самостоятельно.
+# Без файловых prerequisites: имена зависят от ENV, и make -n при пустом ENV не должен падать
+# (используется в app-capabilities для проверки наличия цели). Проверки — внутри рецепта.
+infra-render-values:
+	@test -n "$(ENV)" || (echo '✗ ENV не задан' >&2; exit 1)
+	@test -n "$(APP_SECRETS)" || (echo '✗ APP_SECRETS не задан (запускайте через make app-render-values ... из infra)' >&2; exit 1)
+	@test -f "$(APP_SECRETS)" || (echo "✗ APP_SECRETS не найден: $(APP_SECRETS)" >&2; exit 1)
+	@test -n "$(VALUES_OUT)" || (echo '✗ VALUES_OUT не задан' >&2; exit 1)
 	@command -v $(GOMPLATE) >/dev/null 2>&1 || [ -x "$(GOMPLATE)" ] || (echo '✗ gomplate не найден ($(GOMPLATE)) — make tools-check' >&2; exit 1)
-	@mkdir -p "$(CHART)/.tmp"
-	@$(GOMPLATE) -f "$(CHART)/values.yaml.gotmpl" -d cfg="$(APP_CONFIG)" -o "$(VALUES_OUT)"
+	@mkdir -p "$(dir $(VALUES_OUT))"
+	@$(GOMPLATE) -f "$(CHART)/values.yaml.gotmpl" -d sec="$(APP_SECRETS)" -o "$(VALUES_OUT)"
+	@echo "✓ values-$(ENV).yaml → $(VALUES_OUT)"
 
 # Дамп отрендеренных values на stdout (для отладки).
-infra-values-print: infra-values-render
+infra-values-print: infra-render-values
 	@cat "$(VALUES_OUT)"
 
-infra-deploy: infra-values-render
+infra-deploy:
+	@test -f "$(VALUES_OUT)" || (echo "✗ $(VALUES_OUT) не найден — вызывайте через 'make app-deploy' из infra или сначала 'make app-render-values'" >&2; exit 1)
 	$(HELM) upgrade --install $(RELEASE) $(CHART) --create-namespace \
 	  -f $(VALUES_OUT) \
 	  --wait --timeout=5m
@@ -162,7 +170,7 @@ include Makefile.infra
 
 help:
 	@echo "infra-interface targets:"
-	@grep -E '^infra-[a-z]+:' Makefile.infra | sed 's/:.*//' | sort | xargs -I{} echo '  make {}'
+	@grep -E '^infra-[a-z-]+:' Makefile.infra | sed 's/:.*//' | sort | xargs -I{} echo '  make {}'
 MAKEFILE
 	echo "✓ Makefile            → apps/src/$APP/Makefile (минимальный, include Makefile.infra)"
 else
@@ -178,26 +186,34 @@ fi
 if [[ ! -f "$GOTMPL_FILE" ]]; then
 	if [[ -d "$SRC_DIR/deploy/helm" ]]; then
 		cat >"$GOTMPL_FILE" <<'GOTMPL'
-# values.yaml.gotmpl — шаблон Helm values, рендерится infra перед helm upgrade.
-# Источник данных: gomplate -d cfg=<merged-yaml>, где cfg — merged YAML одного приложения
-# (поля из apps/registry.yaml + deep-merge всех apps/conf/<APP>/<ENV>/*.yaml).
-#
-# Примеры обращения:
-#   {{ (ds "cfg").postgres.password }}              — секреты приложения
-#   {{ (ds "cfg").app_ns }}                         — namespace из registry
-#   {{ (ds "cfg").app.replicas.web | default 1 }}   — env-specific параметр из app.yaml
-#
-# Документация контракта: docs/runbooks/app-interface.md
-replicaCount: {{ (ds "cfg").app.replicas.web | default 1 }}
+{{/*
+  values.yaml.gotmpl — env-overrides поверх deploy/helm/values.yaml.
+  Рендерится infra перед helm upgrade (см. Makefile.infra → infra-render-values).
+  Контракт: docs/runbooks/app-interface.md (v2).
 
-# Образ — подставьте свою конвенцию (например REGISTRY/RELEASE:TAG, набираемые в Makefile.infra).
-image:
-  repository: {{ (ds "cfg").app.image.repository | default "localhost:32000/myapp" }}
-  tag: {{ (ds "cfg").app.image.tag | default "latest" }}
+  Datasource:
+    sec — apps/conf/<APP>/<ENV>/secrets.yaml (передаётся infra как APP_SECRETS).
+          Содержит креды и endpoints infra-сервисов (postgres/redis/kafka/minio/clickhouse/rabbitmq)
+          + application-specific секреты (например app.key, app.systemUserPassword).
 
-ingress:
-  enabled: {{ (ds "cfg").app.ingress.enabled | default false }}
-  host: {{ (ds "cfg").app.ingress.host | default "" }}
+  Не-секретные env-параметры (replicas, ingress host, resources, log level) храните
+  внутри репозитория приложения (например deploy/helm/values-<ENV>.base.yaml) —
+  infra их не знает и не передаёт.
+*/ -}}
+{{- $sec := ds "sec" -}}
+postgres:
+  host: {{ $sec.postgres.host | quote }}
+  port: {{ $sec.postgres.port | default 5432 }}
+  username: {{ $sec.postgres.username | quote }}
+  password: {{ $sec.postgres.password | quote }}
+  database: {{ $sec.postgres.database | quote }}
+
+redis:
+  host: {{ $sec.redis.host | quote }}
+  port: {{ $sec.redis.port | default 6379 }}
+  username: {{ $sec.redis.username | quote }}
+  password: {{ $sec.redis.password | quote }}
+  db: {{ $sec.redis.redis_db | default 0 }}
 GOTMPL
 		echo "✓ values.yaml.gotmpl  → apps/src/$APP/deploy/helm/values.yaml.gotmpl (отредактируйте под свой чарт)"
 	else
@@ -209,8 +225,10 @@ fi
 
 echo ""
 echo "Следующие шаги:"
-echo "  1. Перенесите env-specific параметры из values-<ENV>.yaml в apps/conf/$APP/<ENV>/app.yaml"
-echo "  2. Адаптируйте apps/src/$APP/deploy/helm/values.yaml.gotmpl под ваш чарт"
-echo "  3. Проверьте: make apps-merge-app-print APP=$APP ENV=<env>"
-echo "  4. Проверьте: make app-capabilities APP=$APP"
+echo "  1. Адаптируйте apps/src/$APP/deploy/helm/values.yaml.gotmpl под ваш чарт"
+echo "     (datasource sec — apps/conf/$APP/<ENV>/secrets.yaml)."
+echo "  2. Не-секретные env-параметры (replicas/ingress/log level) держите внутри репо приложения,"
+echo "     например в deploy/helm/values-<ENV>.base.yaml + merge в values.yaml.gotmpl."
+echo "  3. Проверьте: make app-capabilities APP=$APP"
+echo "  4. Проверьте рендер:  make app-render-values APP=$APP ENV=<env>"
 echo "  Документация: docs/runbooks/app-interface.md"
