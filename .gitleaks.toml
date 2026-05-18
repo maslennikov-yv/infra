@@ -1,0 +1,22 @@
+# gitleaks-конфиг для pre-commit hook (см. scripts/git-hooks/pre-commit).
+# Расширяет дефолтные правила (https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml).
+
+[extend]
+useDefault = true
+
+# Vendor Helm-чарты (Bitnami) распакованы внутрь каталогов сервисов и
+# содержат шаблоны/документацию с примерами PEM-ключей и плейсхолдерами
+# (NOTES.txt, README.md, values.yaml). Они срабатывают на правило private-key,
+# хотя реальных секретов там нет. Эти каталоги пополняются через `helm pull`,
+# не правятся вручную.
+[allowlist]
+description = "Vendor Bitnami Helm charts (pulled via helm pull)"
+paths = [
+  '''^postgres/postgresql/''',
+  '''^redis/redis/''',
+  '''^kafka/kafka/''',
+  '''^rabbitmq/rabbitmq/''',
+  '''^minio/minio/''',
+  '''^clickhouse/clickhouse/''',
+  '''^monitoring/netdata/netdata/''',
+]

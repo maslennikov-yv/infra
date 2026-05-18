@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# pre-commit: проверка staged-изменений на утечки секретов через gitleaks.
+#
+# Установка: make hooks-install (симлинкует этот файл в .git/hooks/pre-commit
+# и при необходимости скачивает .tools/gitleaks).
+#
+# Конфиг allowlist для vendor-чартов: .gitleaks.toml в корне репозитория.
+#
+# Аварийный обход (на свой риск):
+#   SKIP_GITLEAKS=1 git commit ...
+#   git commit --no-verify
+
+set -uo pipefail
+
+if [ "${SKIP_GITLEAKS:-0}" = "1" ]; then
+	echo "[pre-commit] SKIP_GITLEAKS=1 — пропуск gitleaks." >&2
+	exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if [ -x "$REPO_ROOT/.tools/gitleaks" ]; then
+	GITLEAKS="$REPO_ROOT/.tools/gitleaks"
+elif command -v gitleaks >/dev/null 2>&1; then
+	GITLEAKS=gitleaks
+else
+	cat >&2 <<-EOF
+		[pre-commit] gitleaks не найден.
+		  Установите через:  make hooks-install
+		  Или вручную:       https://github.com/gitleaks/gitleaks/releases
+		  Обход hook'а:      SKIP_GITLEAKS=1 git commit ...   |   git commit --no-verify
+	EOF
+	exit 1
+fi
+
+cd "$REPO_ROOT"
+if "$GITLEAKS" git --staged --redact --no-banner --log-level warn --exit-code 1; then
+	exit 0
+fi
+
+cat >&2 <<-EOF
+
+	[pre-commit] gitleaks обнаружил потенциальные секреты в staged-изменениях.
+	Что делать:
+	  1. Уберите секрет из коммита. Для секретов приложений — apps/conf/<APP>/<ENV>/secrets.yaml
+	     (gitignored) или зашифрованный apps/conf/<APP>/<ENV>/secrets.enc.yaml через sops+age.
+	     Для per-env креденшалов — environments/<env>.mk (gitignored).
+	  2. Если находка ложная — добавьте allowlist-правило в .gitleaks.toml или
+	     суффиксный комментарий "# gitleaks:allow" на строку.
+	  3. Аварийный обход (на свой риск):
+	       SKIP_GITLEAKS=1 git commit ...
+	       git commit --no-verify
+EOF
+exit 1

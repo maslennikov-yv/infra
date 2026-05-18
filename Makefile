@@ -29,7 +29,7 @@
 	backup-verify-preflight backup-fingerprint backup-fingerprint-diff backup-verify-fetch backup-verify-localize backup-verify \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
 	infra \
-	tools-check doctor
+	tools-check doctor hooks-install
 
 # Используется bash (не dash) — recipe полагаются на process substitution `<(...)`
 # (например `doctor`-цель), `read -p`, `set -o pipefail`. На Debian/Ubuntu
@@ -106,6 +106,12 @@ infra:
 # tools-check: проверить минимальные версии тулинга (kubectl, helm, helmfile, yq, jq, ...).
 tools-check:
 	@YQ="$(YQ)" GOMPLATE="$(GOMPLATE)" "$(REPO_ROOT)/scripts/check-tools.sh"
+
+# hooks-install: установить git pre-commit hook (gitleaks для staged-секретов).
+# Симлинкует scripts/git-hooks/* в .git/hooks/ и при необходимости скачивает .tools/gitleaks.
+# Обход hook'а: SKIP_GITLEAKS=1 git commit ...   |   git commit --no-verify
+hooks-install:
+	@"$(REPO_ROOT)/scripts/git-hooks/install.sh"
 
 # doctor: единая точка диагностики окружения. Tools, кластер, релизы, поды, учётки.
 # Завершается с exit 0 если все шаги OK; иначе exit 1 (но проходит все проверки до конца).
