@@ -5,14 +5,21 @@
 # ConfigMap. Результат переживает рестарт пода и не зависит от порядка вызовов.
 #
 # Алгоритм:
-#  1. Собрать desired users.acl: default (с хэшем admin-пароля) + все enabled приложения
-#     с непустым redis.password.
-#  2. kubectl apply ConfigMap redis-configuration (поле data."users.acl") — это
-#     обеспечивает persistence: при рестарте пода Bitnami start-script копирует
-#     users.acl из ConfigMap в emptyDir, на который указывает aclfile.
-#  3. kubectl exec ... cat > /opt/bitnami/redis/etc/users.acl — для немедленного
+#  1. Регенерировать overlay `redis/values-<ENV>.acl.yaml` через
+#     scripts/redis-build-acl-overlay.sh. helmfile подхватывает overlay
+#     дополнительным values-файлом → Bitnami chart рендерит users.acl в
+#     ConfigMap уже с app-users. Это значит: следующий `helm upgrade` (даже
+#     минуя `make up`) не откатит ACL.
+#  2. Собрать desired users.acl: default (с хэшем admin-пароля) + все enabled
+#     приложения с непустым redis.password. Формат строк bit-to-bit совпадает
+#     с тем, что генерирует Bitnami chart из overlay — иначе helm-upgrade
+#     увидит diff и сделает rolling restart redis-master впустую.
+#  3. kubectl apply ConfigMap redis-configuration (поле data."users.acl") —
+#     persistence: при рестарте пода Bitnami start-script копирует users.acl
+#     из ConfigMap в emptyDir, на который указывает aclfile.
+#  4. kubectl exec ... cat > /opt/bitnami/redis/etc/users.acl — для немедленного
 #     применения (emptyDir не синхронизируется с ConfigMap в рантайме).
-#  4. redis-cli ACL LOAD — атомарная замена ACL в памяти содержимым aclfile.
+#  5. redis-cli ACL LOAD — атомарная замена ACL в памяти содержимым aclfile.
 #
 # Env (обязательно): APPS_REGISTRY, REPO_ROOT, ENV.
 # Env (опционально): APPS_MERGED_FILE (если уже подготовлен; иначе скрипт вычислит),
@@ -56,6 +63,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Шаг 1: регенерация overlay для helm. Если overlay уже актуален —
+# build-overlay сохраняет mtime и ничего не пишет. helmfile подхватит файл
+# при следующем apply (см. helmfile.yaml.gotmpl, $hasRedisAcl).
+APPS_REGISTRY="$REG" REPO_ROOT="$REPO" ENV="$ENV" APPS_MERGED_FILE="$MERGED" \
+	"$SCRIPT_DIR/redis-build-acl-overlay.sh"
+
 POD=$(kubectl get pods -n "$NAMESPACE" \
 	-l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/name=redis,app.kubernetes.io/component=master" \
 	-o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -95,11 +108,26 @@ while IFS= read -r app; do
 		SKIPPED+=("$app")
 		continue
 	fi
-	# Формат строки: user <name> on >password ~<prefix>:* &<prefix>:* +@all <deny>
-	# &<prefix>:* — pub/sub channel pattern (симметрично keys ~<prefix>:*); без него
+
+	USERNAME=$("$SCRIPT_DIR/app-config-get.sh" "$MERGED" "$app" redis.username 2>/dev/null || true)
+	[[ -z "$USERNAME" || "$USERNAME" == "null" ]] && USERNAME="app_$app"
+
+	KEY_PREFIX=$("$SCRIPT_DIR/app-config-get.sh" "$MERGED" "$app" redis.key_prefix 2>/dev/null || true)
+	if [[ -z "$KEY_PREFIX" || "$KEY_PREFIX" == "null" ]]; then
+		KEYS_PAT="~${app}:*"
+		CH_PAT="&${app}:*"
+	else
+		KEYS_PAT="~${KEY_PREFIX}*"
+		CH_PAT="&${KEY_PREFIX}*"
+	fi
+	APP_HASH=$(printf '%s' "$PW" | sha256sum | awk '{print $1}')
+	# Формат строки совпадает с рендером Bitnami chart из auth.acl.users
+	# (см. redis/redis/templates/configmap.yaml L66) — это критично, иначе
+	# helm-upgrade увидит diff в ConfigMap и сделает rolling restart redis-master.
+	# &<prefix>* — pub/sub channel pattern (симметрично keys); без него
 	# SUBSCRIBE/PUBLISH у приложения падают с NOPERM.
-	printf 'user app_%s on >%s ~%s:* &%s:* +@all %s\n' \
-		"$app" "$PW" "$app" "$app" "$DENY" >>"$USERS_ACL"
+	printf 'user %s on #%s %s %s +@all %s\n' \
+		"$USERNAME" "$APP_HASH" "$KEYS_PAT" "$CH_PAT" "$DENY" >>"$USERS_ACL"
 	APP_COUNT=$((APP_COUNT + 1))
 done < <("$YQBIN" -r '.apps[] | select(.enabled == true) | .name' "$MERGED")
 

@@ -78,6 +78,21 @@ environments:
   {{- end -}}
 {{- end -}}
 
+{{- /* Auto-generated redis ACL overlay: scripts/redis-build-acl-overlay.sh
+       пересобирает `redis/values-<env>.acl.yaml` из apps/registry+conf перед
+       каждым `make up`. Подключение этого файла дополнительным values даёт
+       Bitnami chart блок auth.acl.users, и users.acl в ConfigMap рендерится
+       сразу с app-users — рестарт пода восстанавливает корректный ACL без
+       вызова redis-acl-reconcile. См. CLAUDE.md, раздел про config-driven
+       reconciliation. */ -}}
+{{- $redisAclName := printf "values-%s.acl.yaml" $env -}}
+{{- $hasRedisAcl := false -}}
+{{- range readDir "redis" -}}
+  {{- if eq (base .) $redisAclName -}}
+    {{- $hasRedisAcl = true -}}
+  {{- end -}}
+{{- end -}}
+
 releases:
 {{- if or (and $hasEnabled (hasKey $enabled "postgres")) (and (not $hasEnabled) (not (hasKey $exclude "postgres"))) }}
   - name: postgres
@@ -109,6 +124,9 @@ releases:
       - ./redis/values-{{ $env }}.yaml
 {{- if hasKey $overlays "redis" }}
       - ./redis/{{ $overlayName }}
+{{- end }}
+{{- if $hasRedisAcl }}
+      - ./redis/{{ $redisAclName }}
 {{- end }}
     set:
       # Required for Bitnami Redis chart rendering when ACL is enabled (it needs the password to build users.acl).

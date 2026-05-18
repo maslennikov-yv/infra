@@ -82,7 +82,35 @@ make app-create APP=myapp ENV=local
 ACL-правила: `+@all -ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL
 -FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF -REPLCONF
 -REPLICAOF -SLAVEOF -SYNC -PSYNC`. Повторный `make app-create` идемпотентен
-(используется `ACL SETUSER ... RESET ...`).
+(reconcile собирает users.acl целиком из реестра).
+
+### Как ACL переживает рестарт пода
+
+Двойной путь применения, источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`:
+
+1. **helm-render** (config-driven, основной путь). `scripts/redis-build-acl-overlay.sh`
+   пересобирает `redis/values-<ENV>.acl.yaml` (gitignored) с блоком
+   `auth.acl.users: [...]` из merged config. helmfile подхватывает overlay
+   дополнительным values-файлом для release redis (см. `helmfile.yaml.gotmpl`),
+   Bitnami chart рендерит `users.acl` в ConfigMap `redis-configuration` уже
+   с app-users. Корневой `make up`/`make diff` сами вызывают этот скрипт
+   перед helmfile, поэтому новые приложения попадают в helm-рендер автоматически.
+2. **runtime patch** (`scripts/redis-acl-reconcile.sh`, вызывается из
+   `apps-apply` агрегированно после прохода всех приложений). Регенерирует
+   overlay → патчит живой ConfigMap → перезаписывает `/opt/bitnami/redis/etc/users.acl`
+   → `ACL LOAD`. Нужен потому, что emptyDir с aclfile не синхронизируется
+   с ConfigMap в рантайме — иначе изменения вступали бы в силу только при
+   следующем рестарте пода.
+
+Формат строки `users.acl` в обоих путях идентичен
+(`user <name> on #<sha256(pw)> ~<prefix>:* &<prefix>:* +@all <DENY>`),
+поэтому `helmfile diff` после reconcile нулевой и лишних rolling restart
+redis-master нет. Любой рестарт пода Redis (eviction, OOM, нода, ручной
+`kubectl delete pod`) восстанавливает корректный ACL из ConfigMap без
+необходимости вручную вызывать reconcile.
+
+Для починки drift вручную (внешние правки ConfigMap, например):
+`make redis-acl-reconcile ENV=...`.
 
 ## Бэкапы и восстановление
 

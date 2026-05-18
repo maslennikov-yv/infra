@@ -50,6 +50,12 @@ terraform.tfvars
 # в публичный репозиторий. См. minio/README.md (раздел про hostname).
 **/values-*.local.yaml
 
+# Auto-generated overlay redis ACL: scripts/redis-build-acl-overlay.sh пересобирает
+# его из apps/registry+conf перед каждым helmfile apply. helmfile подхватывает
+# вторым values-файлом для release redis, что даёт ConfigMap users.acl с app-users
+# уже на этапе helm-рендера (рестарт пода восстанавливает ACL без reconcile).
+redis/values-*.acl.yaml
+
 # Temporary files
 *.swp
 *.swo
