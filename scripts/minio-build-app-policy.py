@@ -8,12 +8,16 @@ Subcommands:
                  ACCESS_MODE env vars (no JSON array assembly required).
   public       — anonymous (public-read) policy for one bucket.
                  Reads BUCKET, PREFIX (optional), PUBLIC_LIST=true|false env vars.
+  public-multi — anonymous (public-read) policy for multiple prefixes in one bucket.
+                 Reads BUCKET and PUBLIC_PREFIXES_JSON (JSON array of strings).
 
 Output: compact JSON to stdout (`mc admin policy create` accepts it).
 """
 import json
 import os
 import sys
+
+USAGE = "usage: minio-build-app-policy.py {app|app-single|public|public-multi}"
 
 ACTS = {
     "private_rw": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
@@ -50,12 +54,16 @@ def app_policy(buckets):
     return {"Version": "2012-10-17", "Statement": stmts}
 
 
-def public_policy(bucket, prefix, include_list):
-    pub_res = (
+def public_resource(bucket, prefix):
+    return (
         "arn:aws:s3:::" + bucket + "/" + prefix + "*"
         if prefix
         else "arn:aws:s3:::" + bucket + "/*"
     )
+
+
+def public_policy(bucket, prefix, include_list):
+    pub_res = public_resource(bucket, prefix)
     stmts = [
         {
             "Effect": "Allow",
@@ -77,9 +85,30 @@ def public_policy(bucket, prefix, include_list):
     return {"Version": "2012-10-17", "Statement": stmts}
 
 
+def public_multi_policy(bucket, prefixes):
+    stmts = []
+    seen = set()
+    for raw_prefix in prefixes:
+        prefix = str(raw_prefix or "").strip()
+        if not prefix:
+            raise SystemExit("public-multi refuses empty prefix (would expose whole bucket)")
+        if prefix in seen:
+            continue
+        seen.add(prefix)
+        stmts.append(
+            {
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": ["s3:GetObject"],
+                "Resource": [public_resource(bucket, prefix)],
+            }
+        )
+    return {"Version": "2012-10-17", "Statement": stmts}
+
+
 def main():
     if len(sys.argv) < 2:
-        sys.exit("usage: minio-build-app-policy.py {app|app-single|public}")
+        sys.exit(USAGE)
     cmd = sys.argv[1]
     if cmd == "app":
         buckets = json.loads(os.environ["BUCKETS"])
@@ -95,8 +124,12 @@ def main():
         prefix = os.environ.get("PREFIX") or ""
         include_list = (os.environ.get("PUBLIC_LIST") or "false").lower() == "true"
         out = public_policy(bucket, prefix, include_list)
+    elif cmd == "public-multi":
+        bucket = os.environ["BUCKET"]
+        prefixes = json.loads(os.environ["PUBLIC_PREFIXES_JSON"])
+        out = public_multi_policy(bucket, prefixes)
     else:
-        sys.exit("usage: minio-build-app-policy.py {app|app-single|public}")
+        sys.exit(USAGE)
     print(json.dumps(out, separators=(",", ":")))
 
 

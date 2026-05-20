@@ -85,6 +85,7 @@ make app-append APP=myapp BUCKET=myapp-archive PREFIX=2026/ ACCESS_MODE=private_
 | `SECRET_KEY` | merged-config | `minio.secret_key` из `apps/conf/<APP>/`; CLI override через `SECRET_KEY=` |
 | `MINIO_SCHEME` | `http` | `http` / `https` (для `MINIO_ENDPOINT` в Secret приложения) |
 | `APP_PUBLIC_ENDPOINT` | (отсутствует) | Внешний URL (`https://files.myapp.com`) для presigned-URL — пишется в Secret отдельным полем |
+| `PUBLIC_PREFIXES` | merged-config | Список public-read префиксов через запятую; если не задан, берётся из `minio.public_prefixes` приложения |
 
 Что попадает в Secret `<APP_NS>/<APP>-minio`:
 - `MINIO_ENDPOINT` (внутрикластерный), `MINIO_PUBLIC_ENDPOINT` (внешний для presign)
@@ -111,6 +112,25 @@ attach'ит к существующей IAM-учётке. Tracking-secret обн
 Рекомендуемая схема для веб-приложений: пользователи **не получают** постоянные S3-ключи; backend после проверки JWT/session выдаёт **presigned URL** (GET/PUT/POST). Снаружи используется **path-style**: `https://files.appA.com/<bucket>/<key>`.
 
 Ingress для MinIO API настраивается в `minio/values-$(ENV).yaml` (блок `ingress:`). По умолчанию `console.ingress` выключен и не должен публиковаться в интернет. Чтобы presigned URL подписывались на «внешний» домен, при `app-create` передавайте `APP_PUBLIC_ENDPOINT`.
+
+Для anonymous public-read предпочтителен config-driven вариант через `apps/conf/<APP>/<ENV>/secrets.yaml`:
+
+```yaml
+minio:
+  public_endpoint: "https://files.appA.com/<bucket>"
+  public_prefixes:
+    - "public/"
+```
+
+`make minio-app-create APP=<APP> ENV=<ENV>` читает `minio.public_endpoint` и
+`minio.public_prefixes` из merged-config, генерирует один combined anonymous
+policy и применяет его через `mc anonymous set-json`. Пустой prefix в
+`public_prefixes` запрещён, чтобы случайно не открыть весь bucket.
+`public_prefixes` даёт только `s3:GetObject`; `PUBLIC_LIST=true` в этом режиме
+не добавляет anonymous `ListBucket`. Если приложение отдаёт raw public URL
+через MinIO Ingress, `public_endpoint` должен включать имя bucket
+(`https://files.appA.com/<bucket>`), потому что внешний MinIO path-style URL
+имеет форму `/<bucket>/<key>`.
 
 #### Реальный публичный hostname (overlay)
 

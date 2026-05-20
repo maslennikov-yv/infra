@@ -97,7 +97,7 @@ help:
 #     [VERSIONING=enable|suspend|skip] [QUOTA=10Gi|skip] [TAGS=k=v,k2=v2|skip] [LIFECYCLE_JSON=path.json|skip] \
 #     [OBJECT_LOCK=skip|governance|compliance] [RETENTION_DAYS=N] \
 #     [ACCESS_KEY=...] [SECRET_KEY=...] [MINIO_SCHEME=http] \
-#     [APP_PUBLIC_ENDPOINT=https://files.appA.com]
+#     [APP_PUBLIC_ENDPOINT=https://files.appA.com/myapp] [PUBLIC_PREFIXES='public/']
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
 	@INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
@@ -118,12 +118,23 @@ app-create:
 	RETENTION_DAYS=$${RETENTION_DAYS:-}; \
 	MINIO_SCHEME=$${MINIO_SCHEME:-http}; \
 	APP_PUBLIC_ENDPOINT=$${APP_PUBLIC_ENDPOINT:-}; \
+	PUBLIC_PREFIXES_RAW=$${PUBLIC_PREFIXES:-}; \
 	SK_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.secret_key || true); \
 	AK_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.access_key || true); \
+	PE_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.public_endpoint || true); \
+	PP_MERGED_JSON=$$(APP_NAME="$(APP)" "$(YQ)" -o=json '[.apps[] | select(.name == strenv(APP_NAME)) | .minio.public_prefixes // []][0]' "$$MG" 2>/dev/null || printf '[]'); \
 	ACCESS_KEY_RAW=$${ACCESS_KEY:-}; \
 	if [ -n "$$ACCESS_KEY_RAW" ] && [ "$$ACCESS_KEY_RAW" != "null" ]; then ACCESS_KEY="$$ACCESS_KEY_RAW"; \
 	elif [ -n "$$AK_MERGED" ] && [ "$$AK_MERGED" != "null" ]; then ACCESS_KEY="$$AK_MERGED"; \
 	else ACCESS_KEY=app_$(APP); fi; \
+	if [ -z "$$APP_PUBLIC_ENDPOINT" ] || [ "$$APP_PUBLIC_ENDPOINT" = "null" ]; then \
+		if [ -n "$$PE_MERGED" ] && [ "$$PE_MERGED" != "null" ]; then APP_PUBLIC_ENDPOINT="$$PE_MERGED"; fi; \
+	fi; \
+	if [ -n "$$PUBLIC_PREFIXES_RAW" ]; then \
+		PUBLIC_PREFIXES_JSON=$$(PUBLIC_PREFIXES_RAW="$$PUBLIC_PREFIXES_RAW" python3 -c 'import json, os; print(json.dumps([p.strip() for p in os.environ["PUBLIC_PREFIXES_RAW"].split(",") if p.strip()], separators=(",", ":")))'); \
+	else \
+		PUBLIC_PREFIXES_JSON="$$PP_MERGED_JSON"; \
+	fi; \
 	SECRET_KEY_RAW=$${SECRET_KEY:-}; \
 	if [ -n "$$SECRET_KEY_RAW" ]; then SECRET_KEY="$$SECRET_KEY_RAW"; else SECRET_KEY="$$SK_MERGED"; fi; \
 	if [ -z "$$SECRET_KEY" ] || [ "$$SECRET_KEY" = "null" ]; then \
@@ -157,10 +168,15 @@ app-create:
 	APP_POLICY_JSON=$$(BUCKET="$$BUCKET" PREFIX="$$PREFIX" ACCESS_MODE="$$ACCESS_MODE" \
 		"$(INFRA_ROOT)/scripts/minio-build-app-policy.py" app-single); \
 	PUBLIC_POLICY_JSON=""; \
-	if [ "$$PUBLIC_READ" = "true" ] || [ "$$PUBLIC_LIST" = "true" ]; then \
+	if [ -n "$$PUBLIC_PREFIXES_JSON" ] && [ "$$PUBLIC_PREFIXES_JSON" != "[]" ] && [ "$$PUBLIC_PREFIXES_JSON" != "null" ]; then \
+		PUBLIC_POLICY_JSON=$$(BUCKET="$$BUCKET" PUBLIC_PREFIXES_JSON="$$PUBLIC_PREFIXES_JSON" \
+			"$(INFRA_ROOT)/scripts/minio-build-app-policy.py" public-multi); \
+	elif [ "$$PUBLIC_READ" = "true" ] || [ "$$PUBLIC_LIST" = "true" ]; then \
 		PUBLIC_POLICY_JSON=$$(BUCKET="$$BUCKET" PREFIX="$$PREFIX" PUBLIC_LIST="$$PUBLIC_LIST" \
 			"$(INFRA_ROOT)/scripts/minio-build-app-policy.py" public); \
 	fi; \
+	TRACKING_JSON=$$(BUCKET="$$BUCKET" PREFIX="$$PREFIX" ACCESS_MODE="$$ACCESS_MODE" PUBLIC_READ="$$PUBLIC_READ" PUBLIC_LIST="$$PUBLIC_LIST" PUBLIC_PREFIXES_JSON="$$PUBLIC_PREFIXES_JSON" \
+		python3 -c 'import json, os; base={"bucket":os.environ["BUCKET"],"prefix":os.environ.get("PREFIX") or "","access_mode":os.environ.get("ACCESS_MODE") or "private_rw","public_read":os.environ.get("PUBLIC_READ","false").lower()=="true","public_list":os.environ.get("PUBLIC_LIST","false").lower()=="true"}; prefixes=list(dict.fromkeys(str(p or "").strip() for p in json.loads(os.environ.get("PUBLIC_PREFIXES_JSON") or "[]"))); out=[base]+[{"bucket":os.environ["BUCKET"],"prefix":p,"access_mode":base["access_mode"],"public_read":True,"public_list":False} for p in prefixes if p and p != base["prefix"]]; print(json.dumps(out, separators=(",", ":")))'); \
 	printf '%s' "$$APP_POLICY_JSON" \
 	| kubectl run minio-mc-$$(date +%s) \
 		--restart='Never' \
@@ -233,7 +249,7 @@ app-create:
 		>/dev/null; \
 	echo "Creating tracking Secret minio-app-$(APP) in namespace $(NAMESPACE)"; \
 	kubectl delete secret "minio-app-$(APP)" -n "$(NAMESPACE)" --ignore-not-found >/dev/null; \
-	printf '%s' "[{\"bucket\":\"$$BUCKET\",\"prefix\":\"$$PREFIX\",\"access_mode\":\"$$ACCESS_MODE\",\"public_read\":$${PUBLIC_READ},\"public_list\":$${PUBLIC_LIST}}]" | \
+	printf '%s' "$$TRACKING_JSON" | \
 		kubectl create secret generic "minio-app-$(APP)" -n "$(NAMESPACE)" --from-file=buckets.json=/dev/stdin >/dev/null; \
 	printf '%s\n' \
 		'minio:' \
