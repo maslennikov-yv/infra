@@ -29,6 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `make apps-apply-diff ENV=...` — dry-run для `apps-apply`: печатает дельту (would create / update / drop / drift), ничего не меняет. Использовать перед `apps-apply` после правок реестра или `apps/conf/`.
 - После `make up` автоматически запускается `apps-apply`, если не задан `SKIP_APPS_APPLY=1`. Те же фильтры `ENABLED_SERVICES` / `EXCLUDE_SERVICES` действуют и для `apps-apply` / `apps-apply-diff`.
 - Учётки приложения создают Secret `<APP>-<service>` в namespace приложения (`postgres`, `redis`, `kafka`, `rabbitmq`, `minio`, `clickhouse`); изоляция — на уровне БД/role/ACL/policy/vhost/prefix.
+- **Расширения PostgreSQL** приложения декларируются в `apps/conf/<APP>/<ENV>/app.yaml` как `postgres.extensions: [cube, earthdistance]`. `pg-app-create` (и `apps-apply`) идемпотентно создаёт их суперпользователем `postgres` в БД приложения (`CREATE EXTENSION IF NOT EXISTS … CASCADE`) — это единственный способ для не-trusted расширений (напр. `earthdistance`), которые app-роль создать не может. Удаление расширений не автоматизируется (только добавление; DROP — вручную, т.к. рискует данными).
 
 ### Lifecycle приложений (infra-interface v2)
 

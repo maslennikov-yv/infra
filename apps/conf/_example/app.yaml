@@ -38,3 +38,10 @@ app:
         memory: ""
       limits:
         memory: ""
+
+# Доп. расширения PostgreSQL для БД приложения. Создаются суперпользователем при
+# make pg-app-create / apps-apply (нужно для не-trusted расширений вроде earthdistance;
+# trusted-расширения, напр. pg_trgm/btree_gist, приложение может создавать само в миграциях).
+# Идемпотентно; удаление расширений не автоматизируется (делается вручную).
+# postgres:
+#   extensions: [cube, earthdistance]

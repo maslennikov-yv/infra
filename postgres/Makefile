@@ -280,6 +280,8 @@ app-create:
 		echo "✗ Для приложения \"$(APP)\" нет postgres.password во merged конфигурации (см. apps/conf/$(APP)/ и apps/registry.yaml)"; exit 1; \
 	fi; \
 	APP_PASSWORD="$$PW_RAW"; \
+	YQBIN="$${YQ:-yq}"; \
+	APP_EXTENSIONS=$$(env APP="$(APP)" "$$YQBIN" -r '[.apps[] | select(.name == strenv(APP))][0].postgres.extensions // [] | .[]' "$$MG" 2>/dev/null | tr '\n' ' '); \
 	POD=$$(kubectl get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
 	if [ -z "$$POD" ]; then echo "✗ PostgreSQL pod не найден в namespace $(NAMESPACE)"; exit 1; fi; \
 	ADMIN_PASSWORD="$(POSTGRES_ADMIN_PASSWORD)"; \
@@ -293,7 +295,7 @@ app-create:
 	PG_HOST="$(RELEASE)-postgresql.$(NAMESPACE).svc.cluster.local"; \
 	PG_PORT=5432; \
 	echo "Creating role/db: $$APP_USER / $$APP_DB"; \
-	kubectl exec -i "$$POD" -n $(NAMESPACE) -- env ADMIN_PASSWORD="$$ADMIN_PASSWORD" APP_USER="$$APP_USER" APP_DB="$$APP_DB" APP_PASSWORD="$$APP_PASSWORD" bash -s < "scripts/app-create-in-pod.sh"; \
+	kubectl exec -i "$$POD" -n $(NAMESPACE) -- env ADMIN_PASSWORD="$$ADMIN_PASSWORD" APP_USER="$$APP_USER" APP_DB="$$APP_DB" APP_PASSWORD="$$APP_PASSWORD" APP_EXTENSIONS="$$APP_EXTENSIONS" bash -s < "scripts/app-create-in-pod.sh"; \
 	echo "Creating Secret $$APP_SECRET_NAME in namespace $$APP_NS"; \
 	kubectl create namespace "$$APP_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null; \
 	kubectl delete secret "$$APP_SECRET_NAME" -n "$$APP_NS" --ignore-not-found >/dev/null; \
@@ -308,7 +310,6 @@ app-create:
 		--from-literal=PGPASSWORD="$$APP_PASSWORD" \
 		--from-literal=DATABASE_URL="$$DATABASE_URL" \
 		>/dev/null; \
-	YQBIN="$${YQ:-yq}"; \
 	APP_PASSWORD="$$APP_PASSWORD" APP_USER="$$APP_USER" APP_DB="$$APP_DB" PG_HOST="$$PG_HOST" PG_PORT="$$PG_PORT" \
 	"$$YQBIN" -n '.postgres.password = strenv(APP_PASSWORD) | .postgres.username = strenv(APP_USER) | .postgres.database = strenv(APP_DB) | .postgres.host = strenv(PG_HOST) | .postgres.port = (env(PG_PORT) | tonumber)' \
 	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \

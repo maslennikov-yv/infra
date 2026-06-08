@@ -57,6 +57,24 @@ psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
   -v app_user="$APP_USER" -v app_db="$APP_DB" \
   <<< "ALTER ROLE :\"app_user\" IN DATABASE :\"app_db\" SET search_path TO public;"
 
+# Расширения PostgreSQL для БД приложения. Создаются под суперпользователем postgres
+# (нужно для не-trusted расширений вроде earthdistance, которые app-роль создать не может).
+# Источник истины — postgres.extensions в merged-конфиге (apps/conf/<APP>/<ENV>/).
+# Идемпотентно (IF NOT EXISTS), только добавляет: удаление расширений не автоматизируем
+# (DROP может уничтожить данные — geometry-колонки и т.п.), это делается вручную.
+if [ -n "${APP_EXTENSIONS:-}" ]; then
+  for ext in $APP_EXTENSIONS; do
+    # allowlist по форме имени — defense-in-depth (конфиг операторский, не из git)
+    case "$ext" in
+      ''|*[!a-z0-9_]*|[!a-z]*) echo "✗ недопустимое имя расширения: $ext"; exit 1 ;;
+    esac
+    # CASCADE подтягивает зависимости (earthdistance → cube)
+    psql -v ON_ERROR_STOP=1 -U postgres -d "$APP_DB" -v ext="$ext" \
+      <<< 'CREATE EXTENSION IF NOT EXISTS :"ext" CASCADE;'
+    echo "✓ extension: $ext"
+  done
+fi
+
 export PGPASSWORD="$APP_PASSWORD"
 psql -v ON_ERROR_STOP=1 -U "$APP_USER" -d "$APP_DB" -c "SELECT 1" >/dev/null \
   || { echo "✗ Проверка подключения не удалась"; exit 1; }

@@ -89,6 +89,17 @@ implements:
 !/deploy/helm/values-*.base.yaml
 ```
 
+## Расширения PostgreSQL приложения
+
+Не относится к `render-values`/секретам — это часть создания учётки (`pg-app-create` / `apps-apply`). Если приложению нужны расширения PostgreSQL, декларируйте их в `apps/conf/<APP>/<ENV>/app.yaml` (не-секретный файл, deep-merge с реестром и `secrets.yaml`):
+
+```yaml
+postgres:
+  extensions: [cube, earthdistance]
+```
+
+`pg-app-create` создаёт их суперпользователем `postgres` в БД приложения (`CREATE EXTENSION IF NOT EXISTS … CASCADE`). Это **единственный** способ для не-trusted расширений (напр. `earthdistance`): app-роль не суперпользователь и из миграции их создать не сможет. Trusted-расширения (`pg_trgm`, `btree_gist`, `cube`, …) приложение может создавать само в миграциях — но указать их здесь тоже безопасно (идемпотентно). Удаление расширений не автоматизировано: убирается вручную (`DROP EXTENSION` рискует данными).
+
 ## Реализация `infra-render-values`
 
 Пример из career2 (`apps/src/career2/Makefile.infra`):
