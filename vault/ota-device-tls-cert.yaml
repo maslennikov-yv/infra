@@ -1,0 +1,24 @@
+# Публичный TLS-серт device-mTLS-хоста devices.rocket-home.ru (secret ota-device-tls,
+# ns ota), выпускается cert-manager'ом ОТДЕЛЬНЫМ Certificate-CR — НЕ через tls-секцию
+# helm-ingress-а `ota-device`. Причина: этот ingress несёт auth-tls-verify-client:on,
+# который блокирует ACME HTTP-01-челлендж (LE не может достучаться до
+# /.well-known/acme-challenge за обязательным client-cert). Отдельный Certificate
+# заставляет cert-manager поднять СВОЙ временный solver-ingress (без mTLS) → серт
+# выпускается, а device-ingress лишь ссылается на готовый секрет по имени.
+#
+# Применять ДО helm-upgrade с mtls.enabled=true (или сразу после — ingress подхватит
+# секрет по мере готовности). cert-manager сам продлевает. Cluster-issuer lets-encrypt
+# (HTTP-01, class public); DNS devices.rocket-home.ru → ingress-контроллер обязателен.
+#   kubectl apply -f vault/ota-device-tls-cert.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ota-device-tls
+  namespace: ota
+spec:
+  secretName: ota-device-tls
+  dnsNames:
+    - devices.rocket-home.ru
+  issuerRef:
+    name: lets-encrypt
+    kind: ClusterIssuer
