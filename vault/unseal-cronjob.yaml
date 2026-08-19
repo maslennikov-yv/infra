@@ -1,0 +1,91 @@
+# Авто-unseal одноузлового Vault.
+#
+# Зачем. Хранилище `file`, seal шамировский, auto-unseal у HashiCorp платный/облачный —
+# поэтому после КАЖДОГО рестарта пода (рестарт узла, обновление образа, eviction) Vault
+# поднимается SEALED. А `ota-api` забирает pubkey ключа `ota-signing` на старте и без
+# него падает целиком: 2026-08-19 узел перезагрузился в 03:58 UTC, и ota.rocket-home.ru
+# отдавал 503 пять часов, пока это не заметили руками. Ручная команда из README остаётся
+# аварийным путём, но полагаться на то, что человек окажется рядом, нельзя.
+#
+# Почему это не ослабляет защиту. Unseal-ключ и так лежит Secret'ом `vault/vault-unseal`
+# в ТОМ ЖЕ кластере, что и сам Vault: кто дотянулся до одного, дотянулся и до второго.
+# Seal здесь защищает от кражи диска/бэкапа PVC, а не от доступа в кластер, и это
+# свойство сохраняется. Реальная граница — RBAC на namespace `vault`.
+#
+# Прав у задачи нет никаких: ключ ПОДМОНТИРОВАН файлом, а не читается через API, поэтому
+# ни ServiceAccount с Role, ни токена API здесь не нужно (`automountServiceAccountToken:
+# false`). Ключ не попадает ни в argv, ни в env, ни в описание Job — он читается из
+# подмонтированного файла (`key=@…`) и виден только внутри этого пода.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-unseal
+  namespace: vault
+spec:
+  schedule: "*/2 * * * *"
+  # Forbid: распечатывание не параллелится. Два одновременных unseal с одним и тем же
+  # шардом безвредны, но копить поды на залипшем Vault ни к чему.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 60
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: unseal
+              # Тот же образ, что у сервера: vault CLI уже внутри, лишний pull не нужен.
+              image: hashicorp/vault:1.15.6
+              env:
+                # Через headless-сервис с publishNotReadyAddresses, а НЕ через обычный
+                # `vault`: readinessProbe теперь честно отдаёт NotReady на запечатанном
+                # Vault, и из эндпоинтов обычного сервиса он в этот момент выпадает —
+                # то есть ровно тогда, когда он и нужен.
+                - name: VAULT_ADDR
+                  value: "http://vault-headless.vault.svc.cluster.local:8200"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -u
+                  vault status >/dev/null 2>&1
+                  rc=$?
+                  case "$rc" in
+                    0) echo "vault распечатан — делать нечего"; exit 0 ;;
+                    2) echo "vault ЗАПЕЧАТАН — распечатываю" ;;
+                    *) echo "vault не отвечает (код $rc) — это не seal, разбираться руками"; exit 1 ;;
+                  esac
+                  # `vault operator unseal` НЕ умеет читать stdin по `-` (проверено:
+                  # `unseal -help` знает только [KEY] аргументом или интерактивный
+                  # промпт) — литеральный «-» уезжает как ключ и ловит 400. Поэтому
+                  # прямой вызов sys/unseal с `key=@файл`: значение читается из файла,
+                  # и ключ по-прежнему не попадает ни в argv, ни в `ps`.
+                  # Перенос строки снимаем заранее: kubectl create secret --from-literal
+                  # его не добавляет, но ключ, заведённый из файла, принёс бы \n и
+                  # получил бы «must be a valid hex or base64 string».
+                  tr -d '\r\n' < /etc/vault-unseal/unseal_key > /tmp/k
+                  vault write -format=json sys/unseal key=@/tmp/k >/dev/null
+                  rm -f /tmp/k
+                  vault status >/dev/null 2>&1
+                  test $? -eq 0 || { echo "распечатать НЕ удалось"; exit 1; }
+                  echo "готово: vault распечатан"
+              volumeMounts:
+                - name: unseal-key
+                  mountPath: /etc/vault-unseal
+                  readOnly: true
+          volumes:
+            - name: unseal-key
+              secret:
+                secretName: vault-unseal
+                # Только сам шард. root_token задаче не нужен и не монтируется.
+                items:
+                  - key: unseal_key
+                    path: unseal_key
+                defaultMode: 0440

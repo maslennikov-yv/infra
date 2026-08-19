@@ -59,8 +59,17 @@ spec:
           ports:
             - containerPort: 8200
               name: http
+          # Проба спрашивает Vault о его СОСТОЯНИИ, а не о том, слушает ли он порт.
+          # Голый tcpSocket считал запечатанный Vault готовым: 2026-08-19 он простоял
+          # sealed пять часов, отдавая Ready, пока ota-api уходил в CrashLoopBackOff —
+          # ни один индикатор кластера не показывал, где проблема.
+          # sealedcode=503 — Vault сам отдаёт 503 на запечатанном, standbyok=true
+          # оставлен на случай появления HA (сейчас replicas=1).
+          # NotReady у vault-0 = «запечатан»; распечатывает CronJob vault-unseal,
+          # который ходит через vault-headless и потому NotReady не боится.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedcode=503
               port: 8200
             initialDelaySeconds: 3
             periodSeconds: 5

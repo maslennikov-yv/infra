@@ -1,0 +1,27 @@
+# Headless-сервис для служебного доступа к Vault ВНЕ зависимости от его готовности.
+#
+# Обычный сервис `vault` (vault.yaml) отдаёт только ready-эндпоинты. С честной
+# readinessProbe (`/v1/sys/health?sealedcode=503`) запечатанный Vault становится NotReady
+# и из него выпадает — а распечатывать его надо именно в этот момент. Отсюда
+# `publishNotReadyAddresses: true`.
+#
+# Адресуемся по имени сервиса, а не по `vault-0.<svc>`: per-pod DNS StatefulSet заводит
+# только у своего governing-сервиса (`serviceName: vault`), а он не headless. При
+# replicas=1 A-запись сервиса и так указывает ровно на нужный под.
+#
+# Приложениям этот адрес не нужен — ota-api ходит через обычный `vault` и должен
+# продолжать получать отказ, пока Vault не готов.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-headless
+  namespace: vault
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200
