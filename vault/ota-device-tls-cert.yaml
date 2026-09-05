@@ -22,3 +22,15 @@ spec:
   issuerRef:
     name: lets-encrypt
     kind: ClusterIssuer
+  # ECDSA P-256 вместо RSA-2048 (решение владельца 2026-09-05, milafire-gw P12):
+  # цепочка LE становится P-256 → P-384 → ISRG Root X2 вместо 2048 → 2048 →
+  # Root YR 4096 → ISRG X1 4096. Шлюзы ESP32 на TLS 1.2 проверяют её на КАЖДОМ
+  # рукопожатии mTLS managed-OTA, и две RSA-4096-проверки были самыми тяжёлыми
+  # аллокациями пика кучи (`PK verify failed FFFFBD70` = MPI_ALLOC_FAILED при
+  # живой MQTT-сессии). X2 есть в бандле ESP-IDF 4.4 — прошивка не меняется.
+  # rotationPolicy Always — иначе смена алгоритма не перевыпустит ключ.
+  # Откат — убрать блок privateKey и kubectl apply: cert-manager вернёт RSA.
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
