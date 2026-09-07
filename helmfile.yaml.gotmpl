@@ -106,9 +106,18 @@ releases:
 {{- end }}
 
 {{- if or (and $hasEnabled (hasKey $enabled "minio")) (and (not $hasEnabled) (not (hasKey $exclude "minio"))) }}
+  # atomic/wait только у minio, а не в helmDefaults: с `updateStrategy: Recreate`
+  # (см. minio/values-rocket.yaml) старый под гасится ДО старта нового, поэтому
+  # неудачный апгрейд оставляет хранилище лежать — RollingUpdate такой апгрейд
+  # пережил бы на старом поде. atomic возвращает предыдущую ревизию сам; без него
+  # простой длится до ручного вмешательства. Остальные релизы не трогаем: wait на
+  # весь helmfile заметно удлиняет `make up` и роняет его на сервисах, которые
+  # доходят до Ready небыстро.
   - name: minio
     namespace: minio
     chart: ./minio/minio
+    atomic: true
+    wait: true
     values:
       - ./minio/values-{{ $env }}.yaml
 {{- if hasKey $overlays "minio" }}

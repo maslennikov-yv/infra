@@ -623,7 +623,9 @@ install:
 	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) -f $(VALUES_FILE)
 
 upgrade:
-	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) --create-namespace -f $(VALUES_FILE)
+	@# --atomic --wait: при updateStrategy: Recreate старый под гасится до старта
+	@# нового, и неудачный апгрейд оставляет хранилище лежать. atomic откатывает сам.
+	@helm upgrade --install $(RELEASE) ./$(CHART_PATH) --namespace $(NAMESPACE) --create-namespace --atomic --wait -f $(VALUES_FILE)
 
 uninstall:
 	@echo "⚠ ВНИМАНИЕ: Это удалит Helm release $(RELEASE)."

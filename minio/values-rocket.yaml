@@ -56,8 +56,44 @@ ingress:
         - files.appB.com
       secretName: minio-s3-tls
 
-# Lightweight local-профиль: standalone, минимальные limits для dev-машины.
+# ⚠ Несмотря на скромные limits, это ЖИВОЙ прод-кластер rocket (212.109.218.202,
+# один узел): под ним zapisamba.ru, ota.rocket-home.ru и natalya-maslennikova.ru.
+# Комментарий «local-профиль» тут был скопирован из values-local.yaml и вводил в
+# заблуждение. Ресурсы малы намеренно — узел один и делится со всем остальным.
 mode: standalone
+
+# Recreate вместо RollingUpdate — замерено на rocket 2026-09-07.
+#
+# standalone ⇒ чарт разворачивает Deployment (см. minio/templates/application.yaml).
+# При одной реплике `RollingUpdate` с `maxSurge: 25%` округляется вверх до 1: новый под
+# стартует ДО завершения старого. В кластере ОДИН узел, том — `ReadWriteOnce` на
+# `microk8s-hostpath`, то есть оба пода гарантированно садятся на один каталог данных.
+# Два процесса MinIO на одном data dir не поддерживаются.
+#
+# 🔑 `rollingUpdate: null` — не косметика, а обязательная часть правки. Живой объект
+# держит `rollingUpdate: {maxSurge, maxUnavailable}` от дефолтов API-сервера, а в
+# манифесте релиза их нет, поэтому helm-патч их не удалит и API отклонит апгрейд:
+#   spec.strategy.rollingUpdate: Forbidden: may not be specified when
+#   strategy `type` is 'Recreate'
+# Проверено серверным dry-run: без null — Forbidden, с null — patched. Чарт рендерит
+# `rollingUpdate: null` в манифест, и helm отправляет директиву удаления поля.
+#
+# Цена. Сама смена стратегии подов НЕ пересоздаёт: это `.spec.strategy`, а не pod
+# template, `helm diff` даёт ровно одну строку — применять можно без окна. Окно
+# возникает при следующем настоящем рестарте (bump образа/чарта): по прошлому старту
+# контейнер выходил в Ready за 7 с, плюс terminationGracePeriod и (для нового тега)
+# pull из localhost:32000 на том же узле — реалистично 10–30 с полной недоступности
+# хранилища. Взамен уходит недетерминированный риск порчи метаданных бакетов.
+#
+# Кого задевает это окно: zapisamba (120 объектов, отдаются наружу ingress'ом
+# files.zapisamba.ru прямо из MinIO — на время окна 503), ota (54 прошивки; окно много
+# короче ManifestTTL=10m, поэтому повтор скачивания идёт по тому же манифесту),
+# natalya/blog (бакет пуст). janus не затронут — у него свой janus-minio в ns prod.
+# Каскада нет: liveness ни одного потребителя не ходит в S3 (zapisamba /healthz —
+# статическая 200, natalya /api/health — config+DB+Redis, ota storage не гейтит).
+updateStrategy:
+  type: Recreate
+  rollingUpdate: null
 resources:
   requests:
     cpu: 50m
