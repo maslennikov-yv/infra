@@ -70,11 +70,11 @@ make app-append APP=myapp BUCKET=myapp-archive PREFIX=2026/ ACCESS_MODE=private_
 |---|---|---|
 | `APP` | (обязательный) | Имя приложения, используется в `<APP>-minio` Secret и `app_<APP>` IAM-username |
 | `APP_NS` | `<APP>` | Namespace, куда положить Secret с кредами |
-| `BUCKET` | `<APP>` | Имя bucket'а (создаётся, если нет) |
+| `BUCKET` | merged-config | Имя bucket'а (создаётся, если нет); если не задан в окружении, берётся из `minio.bucket` приложения, иначе `<APP>` |
 | `PREFIX` | `""` | Префикс ключей внутри bucket'а; пустой = доступ ко всему bucket |
 | `ACCESS_MODE` | `private_rw` | `private_rw` / `private_ro` / `private_wo` |
-| `PUBLIC_READ` | `false` | Анонимный GetObject (best-effort через `mc anonymous set-json`) |
-| `PUBLIC_LIST` | `false` | Анонимный ListBucket в дополнение к PUBLIC_READ |
+| `PUBLIC_READ` | merged-config | Анонимный GetObject (best-effort через `mc anonymous set-json`); если не задан в окружении, берётся из `minio.public_read` приложения |
+| `PUBLIC_LIST` | merged-config | Анонимный ListBucket в дополнение к PUBLIC_READ; если не задан в окружении, берётся из `minio.public_list` |
 | `VERSIONING` | `skip` | `enable` / `suspend` / `skip` |
 | `QUOTA` | `skip` | Размер `10Gi`, `100Gi` или `skip` |
 | `TAGS` | `skip` | `k=v,k2=v2` или `skip` |
@@ -131,6 +131,28 @@ policy и применяет его через `mc anonymous set-json`. Пуст
 через MinIO Ingress, `public_endpoint` должен включать имя bucket
 (`https://files.appA.com/<bucket>`), потому что внешний MinIO path-style URL
 имеет форму `/<bucket>/<key>`.
+
+Когда открывать надо **весь** bucket (префиксы не перечислимы заранее — например,
+у OTA ключ прошивки начинается с имени проекта, и новый проект появляется без
+правки инфры), `public_prefixes` не подходит: пустой префикс он отвергает намеренно.
+Для этого случая те же два ключа объявляются в конфиге приложения:
+
+```yaml
+minio:
+  public_read: true    # анонимный s3:GetObject на весь bucket
+  public_list: false   # но НЕ s3:ListBucket
+```
+
+⚠️ **Не выставлять такую политику шорткатом `mc anonymous set download`.** В MinIO
+он выдаёт `s3:GetObject` **вместе с** `s3:ListBucket`, то есть открывает анонимное
+оглавление bucket'а. Для OTA это означало карту всего флота: перечислялись все
+версии прошивок по всем проектам, включая инженерные сборки. Ровно это и было
+найдено живьём в проде 2026-09-07 — при том что декларация в
+`apps/conf/ota/prod/secrets.yaml` описывала совсем другую, более узкую политику.
+Отсюда правило: **публичная политика задаётся конфигом и применяется
+`apps-apply`, а не руками**; проверка — `curl -o /dev/null -w '%{http_code}'
+'<public_endpoint>/?max-keys=1'` должен вернуть `403`, а GET конкретного
+объекта — `200`.
 
 #### Реальный публичный hostname (overlay)
 

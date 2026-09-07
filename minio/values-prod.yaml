@@ -56,10 +56,26 @@ ingress:
 
 # Standard prod-профиль: standalone (single pod), 50Gi PVC, 512Mi-1Gi памяти.
 # При росте нагрузки/объёма — пересмотреть resources.limits и persistence.size.
-# Изменение persistence.size у StatefulSet — через make minio-recreate-prep
+# Изменение persistence.size — через make minio-recreate-prep
 # (см. minio/BACKUP.md: backup-meta + apps-apply воссоздаст IAM/policies; объекты
 # в bucket'ах требуют отдельного mc mirror или snapshot PV).
+#
+# ⚠ Замерено на rocket 2026-09-07: живой PVC `minio/minio` — **4Gi**, а не 50Gi
+# из этого файла. Он создан раньше и НЕ расширяется на месте: storageClass
+# `microk8s-hostpath` объявляет `ALLOW VOLUME EXPANSION: false`, а `RECLAIM POLICY:
+# Delete` означает, что удаление PVC уносит данные вместе с PV. Значение ниже —
+# намерение для чистой установки; действующий кластер до пересоздания тома живёт на
+# 4Gi (занято ~62 МБ, из них ota-artifacts ~56 МБ; том общий с zapisamba и blog).
+#
+# standalone ⇒ чарт разворачивает Deployment (не StatefulSet, см.
+# minio/templates/application.yaml). При одной реплике `RollingUpdate` с
+# `maxSurge: 25%` округляется вверх до 1: новый под стартует ДО завершения старого, а
+# `ReadWriteOnce` ограничивает том узлом, а не подом — на hostpath оба пода садятся на
+# один каталог данных. Два процесса MinIO на одном data dir не поддерживаются, поэтому
+# здесь Recreate: короткий простой хранилища вместо риска порчи метаданных бакетов.
 mode: standalone
+updateStrategy:
+  type: Recreate
 resources:
   requests:
     cpu: 500m

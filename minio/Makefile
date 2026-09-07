@@ -98,6 +98,15 @@ help:
 #     [OBJECT_LOCK=skip|governance|compliance] [RETENTION_DAYS=N] \
 #     [ACCESS_KEY=...] [SECRET_KEY=...] [MINIO_SCHEME=http] \
 #     [APP_PUBLIC_ENDPOINT=https://files.appA.com/myapp] [PUBLIC_PREFIXES='public/']
+#
+# BUCKET / PUBLIC_READ / PUBLIC_LIST / PUBLIC_PREFIXES / APP_PUBLIC_ENDPOINT читаются
+# из merged-config приложения (minio.bucket / .public_read / .public_list /
+# .public_prefixes / .public_endpoint), если не заданы в окружении — окружение всегда
+# старше конфига. BUCKET раньше молча падал на дефолт `$(APP)`, из-за чего
+# `make minio-app-create APP=ota ENV=prod` заводил пустой bucket `ota` и вешал политику
+# приложения на него, отбирая доступ к настоящему `ota-artifacts` из конфига.
+# Без этого «GetObject без ListBucket» невыразим в конфиге и живая политика обречена
+# разойтись с декларацией (см. minio/README.md, раздел «Presigned URL и публичный доступ»).
 app-create:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-create APP=myapp)"; exit 1; fi
 	@INF="$(INFRA_ROOT)"; REG="$(APPS_REGISTRY)"; \
@@ -105,9 +114,10 @@ app-create:
 	if [ -z "$$MG" ]; then MG=$$(mktemp); CLEAN_MG=1; "$$INF/scripts/apps-merge-config.sh" "$$REG" "$$INF" "$(ENV)" >"$$MG"; fi; \
 	trap 'if [ "$$CLEAN_MG" = 1 ]; then rm -f "$$MG"; fi' EXIT; \
 	APP_NS=$${APP_NS:-$(APP)}; \
-	BUCKET=$${BUCKET:-$(APP)}; \
+	BUCKET_ENV=$${BUCKET:-}; BUCKET=$${BUCKET:-$(APP)}; \
 	PREFIX=$${PREFIX:-}; \
 	ACCESS_MODE=$${ACCESS_MODE:-private_rw}; \
+	PUBLIC_READ_ENV=$${PUBLIC_READ:-}; PUBLIC_LIST_ENV=$${PUBLIC_LIST:-}; \
 	PUBLIC_READ=$${PUBLIC_READ:-false}; \
 	PUBLIC_LIST=$${PUBLIC_LIST:-false}; \
 	VERSIONING=$${VERSIONING:-skip}; \
@@ -122,6 +132,9 @@ app-create:
 	SK_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.secret_key || true); \
 	AK_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.access_key || true); \
 	PE_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.public_endpoint || true); \
+	PR_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.public_read || true); \
+	PL_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.public_list || true); \
+	B_MERGED=$$("$$INF/scripts/app-config-get.sh" "$$MG" "$(APP)" minio.bucket || true); \
 	PP_MERGED_JSON=$$(APP_NAME="$(APP)" "$(YQ)" -o=json '[.apps[] | select(.name == strenv(APP_NAME)) | .minio.public_prefixes // []][0]' "$$MG" 2>/dev/null || printf '[]'); \
 	ACCESS_KEY_RAW=$${ACCESS_KEY:-}; \
 	if [ -n "$$ACCESS_KEY_RAW" ] && [ "$$ACCESS_KEY_RAW" != "null" ]; then ACCESS_KEY="$$ACCESS_KEY_RAW"; \
@@ -130,6 +143,9 @@ app-create:
 	if [ -z "$$APP_PUBLIC_ENDPOINT" ] || [ "$$APP_PUBLIC_ENDPOINT" = "null" ]; then \
 		if [ -n "$$PE_MERGED" ] && [ "$$PE_MERGED" != "null" ]; then APP_PUBLIC_ENDPOINT="$$PE_MERGED"; fi; \
 	fi; \
+	if [ -z "$$BUCKET_ENV" ] && [ -n "$$B_MERGED" ] && [ "$$B_MERGED" != "null" ]; then BUCKET="$$B_MERGED"; fi; \
+	if [ -z "$$PUBLIC_READ_ENV" ] && [ -n "$$PR_MERGED" ] && [ "$$PR_MERGED" != "null" ]; then PUBLIC_READ="$$PR_MERGED"; fi; \
+	if [ -z "$$PUBLIC_LIST_ENV" ] && [ -n "$$PL_MERGED" ] && [ "$$PL_MERGED" != "null" ]; then PUBLIC_LIST="$$PL_MERGED"; fi; \
 	if [ -n "$$PUBLIC_PREFIXES_RAW" ]; then \
 		PUBLIC_PREFIXES_JSON=$$(PUBLIC_PREFIXES_RAW="$$PUBLIC_PREFIXES_RAW" python3 -c 'import json, os; print(json.dumps([p.strip() for p in os.environ["PUBLIC_PREFIXES_RAW"].split(",") if p.strip()], separators=(",", ":")))'); \
 	else \
