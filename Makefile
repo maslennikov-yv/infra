@@ -24,7 +24,7 @@
 	monitoring-status monitoring-logs monitoring-port-forward monitoring-up monitoring-diff monitoring-down \
 	monitoring-top-nodes monitoring-events monitoring-pod-events monitoring-describe-pod \
 	monitoring-secrets-init monitoring-show-creds monitoring-regen-password \
-	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
+	redis-backup redis-restore-acl kafka-backup-meta kafka-restore-meta-topics minio-backup-meta minio-backup-objects minio-restore-meta clickhouse-backup clickhouse-restore rabbitmq-backup-defs rabbitmq-restore-defs \
 	backup-all app-backup \
 	backup-verify-preflight backup-fingerprint backup-fingerprint-diff backup-verify-fetch backup-verify-localize backup-verify \
 	redis-recreate-prep kafka-recreate-prep minio-recreate-prep clickhouse-recreate-prep rabbitmq-recreate-prep \
@@ -338,6 +338,7 @@ help:
 	@echo "  make redis-backup / redis-restore-acl $(YELLOW)BACKUP_FILE=...$(RESET)         (RDB снимок + ACL)"
 	@echo "  make kafka-backup-meta / kafka-restore-meta-topics $(YELLOW)BACKUP_FILE=...$(RESET)  (topics + ACL + SCRAM users list)"
 	@echo "  make minio-backup-meta / minio-restore-meta $(YELLOW)BACKUP_FILE=...$(RESET)    (users + policies + buckets + tracking secrets)"
+	@echo "  make minio-backup-objects $(YELLOW)ENV=$(ENV)$(RESET)                              (содержимое всех бакетов всех приложений)"
 	@echo "  make clickhouse-backup / clickhouse-restore $(YELLOW)BACKUP_FILE=...$(RESET)    (schemas + users + grants)"
 	@echo "  make rabbitmq-backup-defs / rabbitmq-restore-defs $(YELLOW)BACKUP_FILE=...$(RESET) (vhosts + users + queues + bindings)"
 	@echo "  make postgres-backup / postgres-restore $(YELLOW)BACKUP_FILE=...$(RESET)        (pg_dumpall — данные)"
@@ -1132,9 +1133,33 @@ minio-app-drop:
 minio-app-backup:
 	@$(MAKE) -C minio app-backup APP="$(APP)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" \
 		$(if $(strip $(BUCKET)),BUCKET="$(BUCKET)")
-	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "apps/backups/$(ENV)/$(APP)/minio" "$(APP)-bucket-*.tar.gz"
+	@# Шифруем ВСЕ незашифрованные архивы приложения, а не один свежий.
+	@# backup-encrypt.sh за вызов берёт ровно один самый новый файл по паттерну и
+	@# удаляет исходник; app-backup же за прогон делает по архиву НА КАЖДЫЙ bucket,
+	@# поэтому одиночный вызов оставил бы остальные лежать открытым текстом.
+	@# Паттерн — $(APP)-*.tar.gz: имена архивов теперь $(APP)-<bucket>-<TS>.tar.gz,
+	@# старый glob $(APP)-bucket-*.tar.gz не совпал бы ни с одним из них.
+	@if [ -n "$(BACKUP_AGE_RECIPIENT)" ]; then \
+		DIR="apps/backups/$(ENV)/$(APP)/minio"; \
+		while find "$$DIR" -maxdepth 1 -type f -name '$(APP)-*.tar.gz' ! -name '*.age' 2>/dev/null | grep -q .; do \
+			BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "$$DIR" "$(APP)-*.tar.gz" || exit 1; \
+		done; \
+	fi
+
+# Содержимое всех бакетов всех приложений (см. minio/Makefile: backup-objects).
+# Отдельно от minio-backup-meta: тот снимает только определения.
+minio-backup-objects:
+	@$(MAKE) -C minio backup-objects ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
+	@if [ -n "$(BACKUP_AGE_RECIPIENT)" ]; then \
+		for D in apps/backups/$(ENV)/*/minio; do \
+			[ -d "$$D" ] || continue; \
+			while find "$$D" -maxdepth 1 -type f -name '*.tar.gz' ! -name '*.age' 2>/dev/null | grep -q .; do \
+				BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" "$$D" "*.tar.gz" || exit 1; \
+			done; \
+		done; \
+	fi
 minio-app-restore:
-	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/minio/$(APP)-bucket-…tar.gz"; exit 1; fi; \
+	@if [ -z "$(BACKUP_FILE)" ]; then echo "✗ Задайте BACKUP_FILE=apps/backups/$(ENV)/$(APP)/minio/$(APP)-<bucket>-…tar.gz"; exit 1; fi; \
 	FULL="$(REPO_ROOT)/$(BACKUP_FILE)"; \
 	if [ ! -f "$$FULL" ]; then echo "✗ Файл не найден: $$FULL"; exit 1; fi; \
 	PLAIN=$$(BACKUP_AGE_KEY_FILE="$(BACKUP_AGE_KEY_FILE)" "$(REPO_ROOT)/scripts/backup-decrypt.sh" "$$FULL") || exit 1; \
@@ -1950,6 +1975,7 @@ backup-all:
 	run_step redis      redis-backup; \
 	run_step kafka      kafka-backup-meta; \
 	run_step minio      minio-backup-meta; \
+	run_step minio      minio-backup-objects; \
 	run_step clickhouse clickhouse-backup; \
 	run_step rabbitmq   rabbitmq-backup-defs; \
 	echo ""; \

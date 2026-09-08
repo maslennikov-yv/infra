@@ -462,18 +462,43 @@ app-drop:
 	"$(INFRA_ROOT)/scripts/app-conf-clear.sh" "$(INFRA_ROOT)" "$(APP)" "$(ENV)" minio || true; \
 	if [ $$DO_RB -eq 1 ]; then echo "✓ Учётка MinIO для $(APP) удалена; bucket из tracking Secret удалены (mc rb --force)"; else echo "✓ Учётка MinIO для $(APP) удалена; bucket не удалялись"; fi
 
-# Usage: make app-backup APP=myapp ENV=local [BUCKET=myapp]
-# Создаёт apps/backups/$(ENV)/$(APP)/minio/$(APP)-bucket-<TS>.tar.gz с содержимым bucket'а
-# через mc mirror внутри helper-pod'а. Versioning/lifecycle/policy НЕ входят (см. minio-backup-meta).
+# Usage: make app-backup APP=myapp ENV=local [BUCKET=...] [MINIO_BACKUP_KEEP_DAYS=14]
+# Создаёт apps/backups/$(ENV)/$(APP)/minio/$(APP)-<bucket>-<TS>.tar.gz с содержимым
+# КАЖДОГО bucket'а приложения через mc mirror внутри helper-pod'а.
+# Versioning/lifecycle/policy НЕ входят (см. minio-backup-meta).
+#
+# 🔑 Список bucket'ов берётся из tracking Secret minio-app-<APP> (ключ buckets.json) —
+# того же источника, которым app-append перестраивает политику. Раньше здесь стоял
+# BUCKET=$${BUCKET:-$(APP)}, то есть по умолчанию бэкапился bucket С ИМЕНЕМ ПРИЛОЖЕНИЯ.
+# Для ota это bucket `ota` (пустой артефакт инцидента 2026-09-06), а не `ota-artifacts`,
+# где лежат прошивки: `make minio-app-backup APP=ota` молча клал в архив ноль объектов
+# и рапортовал успех. Ровно эта же подстановка по умолчанию увела app-create не на тот
+# bucket и на семь минут отобрала у ota доступ к своим объектам. BUCKET= в окружении
+# по-прежнему выигрывает — для разовой выборочной выгрузки.
+#
+# Число объектов печатается всегда и проверяется: пустой архив не должен выглядеть как
+# удачный бэкап. Ротация — MINIO_BACKUP_KEEP_DAYS (по умолчанию 14 суток).
 app-backup:
 	@if [ -z "$(APP)" ]; then echo "✗ APP не задан (пример: make app-backup APP=myapp ENV=$(ENV))"; exit 1; fi
 	@set -eo pipefail; \
-	BUCKET=$${BUCKET:-$(APP)}; \
+	KEEP_DAYS=$${MINIO_BACKUP_KEEP_DAYS:-14}; \
+	if [ -n "$${BUCKET:-}" ]; then \
+		BUCKETS="$$BUCKET"; SRC="переменная BUCKET"; \
+	else \
+		BUCKETS=$$(kubectl get secret "minio-app-$(APP)" -n $(NAMESPACE) -o jsonpath='{.data.buckets\.json}' 2>/dev/null | base64 -d 2>/dev/null \
+			| python3 -c 'import json,sys; d=sys.stdin.read().strip(); print(" ".join(dict.fromkeys(b["bucket"] for b in json.loads(d) if b.get("bucket"))) if d else "")' 2>/dev/null || true); \
+		SRC="tracking Secret minio-app-$(APP)"; \
+	fi; \
+	if [ -z "$$BUCKETS" ]; then \
+		echo "✗ Не удалось определить bucket'ы приложения $(APP)."; \
+		echo "  Нет Secret minio-app-$(APP) в namespace $(NAMESPACE) (создаётся make minio-app-create)."; \
+		echo "  Укажите явно: make minio-app-backup APP=$(APP) BUCKET=<имя> ENV=$(ENV)"; \
+		exit 1; \
+	fi; \
+	echo "Bucket'ы приложения $(APP) ($$SRC): $$BUCKETS"; \
 	OUT_DIR="$(INFRA_ROOT)/apps/backups/$(ENV)/$(APP)/minio"; \
 	install -d -m 700 "$$OUT_DIR"; \
 	TS=$$(date +%Y%m%d-%H%M%S)-$$$$; \
-	OUT="$$OUT_DIR/$(APP)-bucket-$$TS.tar.gz"; \
-	echo "Создание бэкапа bucket $$BUCKET в $$OUT..."; \
 	ROOT_USER=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d); \
 	ROOT_PASSWORD=$$(kubectl get secret --namespace $(NAMESPACE) $(RELEASE) -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d); \
 	if [ -z "$$ROOT_USER" ] || [ -z "$$ROOT_PASSWORD" ]; then echo "✗ Не удалось получить root creds из секрета $(RELEASE)"; exit 1; fi; \
@@ -485,24 +510,38 @@ app-backup:
 		>/dev/null; \
 	trap 'kubectl delete pod "$$HELPER" -n $(NAMESPACE) --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT INT TERM; \
 	kubectl wait --namespace $(NAMESPACE) --for=condition=Ready pod/"$$HELPER" --timeout=120s >/dev/null; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
-			ROOT_USER="$$ROOT_USER" ROOT_PASSWORD="$$ROOT_PASSWORD" \
-			MINIO_ENDPOINT="$$MINIO_ENDPOINT" BUCKET="$$BUCKET" \
-			sh -ec ' \
-		set -e; \
-		mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
-		mc stat "minio/$$BUCKET" >/dev/null 2>&1 || { echo "✗ Bucket $$BUCKET не существует" >&2; exit 1; }; \
-		mkdir -p /tmp/dump; \
-		: "mc mirror копирует только current-versions; для версионированного bucket"; \
-		: "это даёт текущий snapshot, не историю версий (см. minio/BACKUP.md)."; \
-		mc mirror --quiet --overwrite "minio/$$BUCKET" /tmp/dump/ >/dev/null; \
-		tar -czf /tmp/app-bucket.tar.gz -C /tmp/dump .; \
-	'; \
-	kubectl exec "$$HELPER" -n $(NAMESPACE) -- cat /tmp/app-bucket.tar.gz > "$$OUT"; \
-	[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не скопирован"; exit 1; }; \
-	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
-	echo "✓ Бэкап bucket $$BUCKET создан: $$OUT ($$SIZE)"; \
-	echo "=> $$OUT"
+	RC=0; \
+	for B in $$BUCKETS; do \
+		OUT="$$OUT_DIR/$(APP)-$$B-$$TS.tar.gz"; \
+		echo "  → bucket $$B"; \
+		N=$$(kubectl exec "$$HELPER" -n $(NAMESPACE) -- env \
+				ROOT_USER="$$ROOT_USER" ROOT_PASSWORD="$$ROOT_PASSWORD" \
+				MINIO_ENDPOINT="$$MINIO_ENDPOINT" BUCKET="$$B" \
+				sh -ec ' \
+			set -e; \
+			mc alias set minio "$$MINIO_ENDPOINT" "$$ROOT_USER" "$$ROOT_PASSWORD" >/dev/null; \
+			mc stat "minio/$$BUCKET" >/dev/null 2>&1 || { echo "✗ Bucket $$BUCKET не существует" >&2; exit 1; }; \
+			rm -rf /tmp/dump && mkdir -p /tmp/dump; \
+			: "mc mirror копирует только current-versions; для версионированного bucket"; \
+			: "это даёт текущий snapshot, не историю версий (см. minio/BACKUP.md)."; \
+			mc mirror --quiet --overwrite "minio/$$BUCKET" /tmp/dump/ >/dev/null; \
+			tar -czf /tmp/app-bucket.tar.gz -C /tmp/dump .; \
+			find /tmp/dump -type f | wc -l; \
+		') || { echo "✗ Не удалось снять bucket $$B"; RC=1; continue; }; \
+		kubectl exec "$$HELPER" -n $(NAMESPACE) -- cat /tmp/app-bucket.tar.gz > "$$OUT"; \
+		[ -s "$$OUT" ] || { echo "✗ Архив $$OUT пуст или не скопирован"; RC=1; continue; }; \
+		SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
+		if [ "$$N" -eq 0 ] 2>/dev/null; then \
+			echo "  ⚠ bucket $$B ПУСТ: в архиве 0 объектов ($$OUT, $$SIZE)."; \
+			echo "    Это законно для нового bucket'а, но если объекты ожидались — бэкап бесполезен."; \
+		else \
+			echo "  ✓ $$B: объектов $$N, $$OUT ($$SIZE)"; \
+		fi; \
+		echo "=> $$OUT"; \
+	done; \
+	DELETED=$$(find "$$OUT_DIR" -maxdepth 1 -name '$(APP)-*.tar.gz' -mtime +$$KEEP_DAYS -print -delete 2>/dev/null | wc -l); \
+	[ "$$DELETED" -gt 0 ] && echo "  Ротация: удалено архивов старше $$KEEP_DAYS сут: $$DELETED" || true; \
+	exit $$RC
 
 # Usage: make app-restore APP=myapp ENV=local BACKUP_FILE=<path> [BUCKET=myapp] [SKIP_CONFIRM=1]
 # Восстанавливает содержимое bucket'а через mc mirror. Сам bucket + user/policy
@@ -791,6 +830,38 @@ backup-meta:
 	[ -s "$$OUT" ] || { echo "✗ Финальный архив $$OUT пуст"; exit 1; }; \
 	SIZE=$$(du -h --apparent-size "$$OUT" | cut -f1); \
 	echo "✓ Meta-бэкап создан: $$OUT ($$SIZE)"
+
+# Содержимое ВСЕХ бакетов ВСЕХ приложений — то, чего не делает backup-meta.
+#
+# 🔑 Зачем отдельная цель. backup-meta снимает ТОЛЬКО определения (IAM, policies,
+# buckets, tracking secrets) — так написано и в его комментарии, и в BACKUP.md.
+# Объекты требовали отдельного app-backup на каждое приложение, и в результате их
+# не делал никто: на 2026-09-08 в apps/backups/ не было НИ ОДНОГО бэкапа объектов
+# rocket-кластера, а bucket ota-artifacts (60 объектов подписанных прошивок) не
+# выгружался ни разу за всё время. RPO хранилища был не «сутки», а «никогда».
+# Корневой `make backup-all` тоже звал у minio только backup-meta — то есть команда
+# «сделать все бэкапы» объекты не покрывала.
+#
+# Приложения берутся из tracking secrets minio-app-* в namespace $(NAMESPACE):
+# перечислять их руками не нужно, новое приложение попадает в бэкап само.
+# Неудача на одном приложении не отменяет остальные, но код возврата ненулевой —
+# cron обязан прислать письмо.
+backup-objects:
+	@set -eo pipefail; \
+	RC=0; \
+	APPS=$$(kubectl -n $(NAMESPACE) get secret -o name 2>/dev/null | sed -n 's#^secret/minio-app-##p' | sort); \
+	if [ -z "$$APPS" ]; then \
+		echo "⚠ В namespace $(NAMESPACE) нет ни одного tracking Secret minio-app-* — бэкапить нечего."; \
+		echo "  Если приложения есть, значит они заводились мимо make minio-app-create."; \
+		exit 1; \
+	fi; \
+	for A in $$APPS; do \
+		echo ""; echo "=== объекты: $$A ==="; \
+		$(MAKE) app-backup APP="$$A" ENV=$(ENV) KUBECONFIG=$(KUBECONFIG) || RC=1; \
+	done; \
+	echo ""; \
+	if [ $$RC -ne 0 ]; then echo "✗ Бэкап объектов завершён с ошибками (см. выше)"; else echo "✓ Бэкап объектов завершён"; fi; \
+	exit $$RC
 
 list-backups:
 	@echo "Список meta-бэкапов MinIO в $(BACKUP_DIR):"

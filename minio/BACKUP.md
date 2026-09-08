@@ -110,15 +110,57 @@ mc cp --recursive minio/<bucket> /var/backups/minio/<bucket>/
 
 ## Автоматизация (cron)
 
+⚠ **`minio-backup-meta` — это НЕ бэкап данных.** Он снимает только определения:
+IAM users, policies, bucket-config, tracking secrets. Содержимое бакетов в него не
+входит. Вешать в cron нужно `backup-all` (meta + объекты) или, если нужны только
+объекты, `minio-backup-objects`.
+
+Цена этой разницы измерена: на 2026-09-08 в `apps/backups/` не было **ни одного**
+бэкапа объектов rocket-кластера, а bucket `ota-artifacts` (60 объектов подписанных
+прошивок) не выгружался ни разу за всё время существования. При этом meta-бэкапы
+делались, и со стороны выглядело, будто хранилище бэкапится.
+
 ```cron
-# /etc/cron.d/minio-backup-meta — ежедневно в 03:40
-40 3 * * * ubuntu cd /opt/infra && /usr/bin/make minio-backup-meta ENV=prod >> /var/log/minio-backup-meta.log 2>&1
+# /etc/cron.d/minio-backup — ежедневно в 03:40, meta + содержимое всех бакетов
+40 3 * * * ubuntu cd /opt/infra && /usr/bin/make backup-all ENV=rocket ENABLED_SERVICES=minio >> /var/log/minio-backup.log 2>&1
 ```
 
-Ротация:
+Ненулевой код возврата — сигнал: cron пришлёт письмо. Отдельные шаги не отменяют
+друг друга (`BACKUP_ALL_CONTINUE_ON_ERROR=1` по умолчанию), но итог красный, если
+упал хотя бы один.
+
+Что делает `make backup-all ENV=rocket ENABLED_SERVICES=minio` (замер на живом
+кластере — 41 с):
+
+| шаг | что снимает | куда |
+|---|---|---|
+| `minio-backup-meta` | IAM, policies, bucket-config, tracking secrets | `minio/backups/<ENV>/minio-meta-<TS>.tar.gz` |
+| `minio-backup-objects` | содержимое **каждого** bucket'а **каждого** приложения | `apps/backups/<ENV>/<APP>/minio/<APP>-<bucket>-<TS>.tar.gz` |
+
+Приложения и их бакеты берутся из tracking secrets `minio-app-*` в namespace
+`minio` — руками перечислять не нужно, новое приложение попадает в бэкап само.
+
+Ротация встроена в `app-backup`: архивы старше `MINIO_BACKUP_KEEP_DAYS` (по
+умолчанию 14 суток) удаляются после успешного прогона. Для meta ротация пока
+ручная:
+
 ```bash
-find minio/backups/prod -name 'minio-meta-*.tar.gz' -mtime +14 -delete
+find minio/backups/<ENV> -name 'minio-meta-*.tar.gz' -mtime +14 -delete
 ```
+
+### Пустой бакет не должен выглядеть как удачный бэкап
+
+`app-backup` печатает число объектов в каждом архиве и отдельно предупреждает,
+если их ноль. Пустой `tar.gz` весит 108 байт и раньше проходил проверку `[ -s ]`
+как валидный бэкап — так в `apps/backups/rocket/zapisamba/` полгода лежал
+«бэкап» на 108 байт.
+
+### Шифрование
+
+Если задан `BACKUP_AGE_RECIPIENT`, архивы шифруются в `*.age` и открытые копии
+удаляются. `backup-encrypt.sh` за вызов берёт **один** самый свежий файл, поэтому
+корневые цели вызывают его в цикле, пока незашифрованные архивы остаются: за один
+прогон `app-backup` создаёт по архиву на каждый bucket.
 
 ## Известные ограничения
 
