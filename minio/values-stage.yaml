@@ -58,6 +58,15 @@ ingress:
 
 # Lightweight local-профиль: standalone, минимальные limits для dev-машины.
 mode: standalone
+
+# Recreate — по той же причине, что и на rocket: standalone разворачивается
+# Deployment'ом, на одной реплике RollingUpdate с maxSurge 25% округляется вверх до 1,
+# и новый под стартует ДО завершения старого на том же RWO-томе. Два процесса MinIO на
+# одном каталоге данных не поддерживаются. Полный разбор с замерами (окно, кого задевает,
+# зачем rollingUpdate: null) — в values-rocket.yaml.
+updateStrategy:
+  type: Recreate
+  rollingUpdate: null
 resources:
   requests:
     cpu: 50m
