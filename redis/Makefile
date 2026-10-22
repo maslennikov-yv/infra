@@ -31,7 +31,8 @@ REDIS_AUTH_SECRET_PASSWORD_KEY ?= redis-password
 
 # Под и контейнер Valkey (Deployment чарта valkey; selector — стандартные labels чарта).
 POD_SELECTOR := app.kubernetes.io/instance=$(RELEASE),app.kubernetes.io/name=valkey
-CONTAINER := valkey
+# Имя контейнера в чарте = fullname = имя релиза.
+CONTAINER := $(RELEASE)
 # Service = имя релиза (fullname чарта valkey).
 REDIS_HOST_FQDN := $(RELEASE).$(NAMESPACE).svc.cluster.local
 
@@ -510,7 +511,7 @@ restore-rdb:
 	tar -xzf "$(BACKUP_FILE)" -C "$$TMP" dump.rdb; \
 	HDR=$$(head -c 9 "$$TMP/dump.rdb"); \
 	case "$$HDR" in REDIS0012*|REDIS0013*) echo "✗ $$HDR — снимок Redis 7.4+/8, Valkey его не читает (см. BACKUP.md)"; exit 1;; REDIS00*) ;; *) echo "✗ $$HDR — не RDB"; exit 1;; esac; \
-	IMAGE=$$(kubectl -n $(NAMESPACE) get deploy $(RELEASE) -o jsonpath='{.spec.template.spec.containers[?(@.name=="valkey")].image}'); \
+	IMAGE=$$(kubectl -n $(NAMESPACE) get deploy $(RELEASE) -o jsonpath='{.spec.template.spec.containers[?(@.name=="$(CONTAINER)")].image}'); \
 	PVC=$$(kubectl -n $(NAMESPACE) get deploy $(RELEASE) -o jsonpath='{.spec.template.spec.volumes[?(@.name=="valkey-data")].persistentVolumeClaim.claimName}'); \
 	[ -n "$$IMAGE" ] && [ -n "$$PVC" ] || { echo "✗ не удалось определить образ/PVC deploy/$(RELEASE)"; exit 1; }; \
 	echo "→ scale 0 deploy/$(RELEASE)"; \

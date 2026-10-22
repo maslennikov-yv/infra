@@ -111,12 +111,12 @@ elif [[ "$APP_COUNT" -gt 0 ]]; then
 fi
 
 # Шаг 4: перезапись aclfile в живом поде (init ставит 0400 — снимаем на время записи).
-kubectl exec -i "$POD" -n "$NAMESPACE" -c valkey -- \
+kubectl exec -i "$POD" -n "$NAMESPACE" -c "$RELEASE" -- \
 	sh -c 'chmod 0600 /etc/valkey/users.acl && cat > /etc/valkey/users.acl && chmod 0400 /etc/valkey/users.acl' <"$USERS_ACL"
 echo "✓ aclfile перезаписан в поде $POD (/etc/valkey/users.acl)"
 
 # Шаг 5: ACL LOAD — полное замещение: пользователи, исчезнувшие из конфига, выпадают из памяти.
-OUT=$(kubectl exec "$POD" -n "$NAMESPACE" -c valkey -- env REDISCLI_AUTH="$ADMIN_PW" \
+OUT=$(kubectl exec "$POD" -n "$NAMESPACE" -c "$RELEASE" -- env REDISCLI_AUTH="$ADMIN_PW" \
 	valkey-cli --no-auth-warning ACL LOAD 2>&1)
 if [[ "$OUT" != "OK" ]]; then
 	echo "✗ ACL LOAD failed: $OUT" >&2

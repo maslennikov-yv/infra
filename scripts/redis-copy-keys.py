@@ -154,6 +154,19 @@ def main():
     if not src_url or not dst_url:
         print("✗ задайте SRC_URL и DST_URL (env)", file=sys.stderr)
         return 2
+    try:
+        src_info = connect(src_url, 0).info("server")
+        dst_info = connect(dst_url, 0).info("server")
+    except redis.exceptions.RedisError as e:
+        print(f"✗ нет подключения к источнику/приёмнику: {e}", file=sys.stderr)
+        return 2
+    # Печатаем, КУДА пишем: run_id и версия однозначно отличают серверы (защита от port-forward не туда).
+    for side, inf in (("src", src_info), ("dst", dst_info)):
+        ver = inf.get("valkey_version") and f"valkey {inf['valkey_version']}" or f"redis {inf.get('redis_version')}"
+        print(f"  {side}: {ver}, run_id {inf.get('run_id', '?')[:12]}")
+    if src_info.get("run_id") == dst_info.get("run_id"):
+        print("✗ источник и приёмник — один и тот же сервер", file=sys.stderr)
+        return 2
     dbs = [int(x) for x in args.dbs.split(",")] if args.dbs else nonempty_dbs(connect(src_url, 0))
     print(f"→ БД: {dbs or '(пусто)'}")
     rc = 0

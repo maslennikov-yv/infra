@@ -46,15 +46,22 @@ if [ "${SKIP_CONFIRM:-}" != "1" ]; then
 fi
 
 step "4/7 копирование ключей redis → valkey"
+# Порты занятыми быть не должны: чужая port-forward на том же порту молча отправила бы ключи
+# не туда. Проверяем до запуска и что обе forward живы после.
+for p in 16379 16380; do
+	if ss -ltn 2>/dev/null | grep -q ":$p "; then echo "✗ порт $p уже занят (старая port-forward?) — освободите" >&2; exit 1; fi
+done
+# kubectl напрямую, не через функцию k: «k … &» даёт в $! PID подоболочки, и kill не гасит kubectl.
 PF_LOG=$(mktemp)
-k port-forward svc/redis-master 16379:6379 >"$PF_LOG" 2>&1 & P1=$!
-k port-forward svc/valkey 16380:6379 >>"$PF_LOG" 2>&1 & P2=$!
+kubectl -n "$NS" port-forward svc/redis-master 16379:6379 >"$PF_LOG" 2>&1 & P1=$!
+kubectl -n "$NS" port-forward svc/valkey 16380:6379 >>"$PF_LOG" 2>&1 & P2=$!
 trap 'kill $P1 $P2 2>/dev/null || true; rm -f "$PF_LOG"' EXIT
 sleep 3
+kill -0 $P1 2>/dev/null && kill -0 $P2 2>/dev/null || { echo "✗ port-forward не поднялась:" >&2; cat "$PF_LOG" >&2; exit 1; }
 SRC_URL="redis://default:$PW@127.0.0.1:16379" DST_URL="redis://default:$PW@127.0.0.1:16380" \
 	uv run -q --with 'redis>=5' python -I "$REPO/scripts/redis-copy-keys.py" \
 	|| { echo "✗ копирование/сверка с ошибками — старый Redis не тронут, разберитесь и повторите" >&2; exit 1; }
-kill $P1 $P2 2>/dev/null || true
+kill $P1 $P2 2>/dev/null || true; wait $P1 $P2 2>/dev/null || true
 
 step "5/7 удаление release redis (PVC остаётся для отката)"
 helm -n "$NS" uninstall redis --wait
