@@ -371,32 +371,33 @@ fp_minio() {
   fi
   local helper="mc-fp-$(date +%s)-$$"
   local tmp; tmp=$(mktemp -d); trap "rm -rf '$tmp'" RETURN
+  # В поде только mc: в образе minio-client нет jq, JSON фильтруем уже здесь (jq_section).
   cat >"$tmp/run.sh" <<'EOF'
 set -u
 mc alias set local http://minio.minio.svc.cluster.local:9000 "$ROOT_USER" "$ROOT_PW" >/dev/null 2>&1
 echo "===USERS==="
-# filter к access_key APP-юзера (mc admin user list иногда возвращает доп. колонки)
-mc admin user list local --json 2>/dev/null \
-  | jq -c --arg ak "$ACCESS_KEY" 'select(.accessKey==$ak)' | sort
+mc admin user list local --json 2>/dev/null
 echo "===POLICY_USER==="
-mc admin user info local "$ACCESS_KEY" --json 2>/dev/null | jq -c '{policyName, status}'
+mc admin user info local "$ACCESS_KEY" --json 2>/dev/null
 echo "===BUCKET_EXISTS==="
-mc stat local/"$BUCKET" --json 2>/dev/null | jq -c '{name: (.url // "")}' || echo '{}'
+mc stat local/"$BUCKET" --json 2>/dev/null || echo '{}'
 echo "===BUCKET_VERSIONING==="
-mc version info local/"$BUCKET" --json 2>/dev/null | jq -c '{status: (.versioning // .status // "off")}' || echo '{}'
+mc version info local/"$BUCKET" --json 2>/dev/null || echo '{}'
 echo "===BUCKET_QUOTA==="
-mc admin bucket quota local/"$BUCKET" --json 2>/dev/null | jq -c '{quota: (.quota // 0), type: (.quotatype // "none")}' || echo '{}'
+mc admin bucket quota local/"$BUCKET" --json 2>/dev/null || echo '{}'
 echo "===BUCKET_ANONYMOUS==="
 mc anonymous get local/"$BUCKET" 2>/dev/null || echo "none"
 echo "===POLICY_INFO==="
 # policy объекта совпадает с именем bucket в minio-app-create (minio/Makefile:101+)
-mc admin policy info local "minio-$ACCESS_KEY" --json 2>/dev/null | jq -c '{policy: .policyName, statements: (.policy.Statement | length // 0)}' || echo '{}'
+mc admin policy info local "minio-$ACCESS_KEY" --json 2>/dev/null || echo '{}'
 echo "===BUCKET_DU==="
-mc du local/"$BUCKET" --json 2>/dev/null | jq -c '{objects, size}' || echo '{}'
+mc du local/"$BUCKET" --json 2>/dev/null || echo '{}'
 EOF
+  # quay.io/minio/mc больше не публикуется — тот же образ, что у minio/Makefile (MINIO_CLIENT_IMAGE_LOCAL).
+  local mc_image="${MINIO_CLIENT_IMAGE:-${REGISTRY:-localhost:32000}/bitnami/minio-client:2025.7.21-debian-12-r2}"
   local raw
   raw=$(kubectl --kubeconfig "$KUBECONFIG_FILE" -n minio run "$helper" \
-    --restart=Never --image=quay.io/minio/mc:latest --rm -i --quiet \
+    --restart=Never --image="$mc_image" --rm -i --quiet \
     --env="ROOT_USER=$root_user" --env="ROOT_PW=$root_pw" \
     --env="ACCESS_KEY=$access_key" --env="BUCKET=$bucket" \
     --command -- sh -ec "$(cat "$tmp/run.sh")" 2>/dev/null || true)
@@ -405,15 +406,18 @@ EOF
     return 0
   fi
   extract_section() { echo "$raw" | awk -v s="===$1===" '$0==s{f=1;next} /^===/{f=0} f'; }
+  # jq поверх секции; невалидный JSON → пусто (sanitize_json ниже превратит в null).
+  jq_section() { local sec="$1"; shift; extract_section "$sec" | jq -c "$@" 2>/dev/null || true; }
   local user_info policy_user bucket_exists versioning quota anonymous policy_info bucket_du
-  user_info=$(extract_section USERS)
-  policy_user=$(extract_section POLICY_USER)
-  bucket_exists=$(extract_section BUCKET_EXISTS)
-  versioning=$(extract_section BUCKET_VERSIONING)
-  quota=$(extract_section BUCKET_QUOTA)
+  # filter к access_key APP-юзера (mc admin user list иногда возвращает доп. колонки)
+  user_info=$(jq_section USERS --arg ak "$access_key" 'select(.accessKey==$ak)' | sort)
+  policy_user=$(jq_section POLICY_USER '{policyName, status}')
+  bucket_exists=$(jq_section BUCKET_EXISTS '{name: (.url // "")}')
+  versioning=$(jq_section BUCKET_VERSIONING '{status: (.versioning // .status // "off")}')
+  quota=$(jq_section BUCKET_QUOTA '{quota: (.quota // 0), type: (.quotatype // "none")}')
   anonymous=$(extract_section BUCKET_ANONYMOUS)
-  policy_info=$(extract_section POLICY_INFO)
-  bucket_du=$(extract_section BUCKET_DU)
+  policy_info=$(jq_section POLICY_INFO '{policy: .policyName, statements: (.policy.Statement | length // 0)}')
+  bucket_du=$(jq_section BUCKET_DU '{objects, size}')
   # anonymous parsing: `mc anonymous get` возвращает "Access permission for '...' is 'none'".
   # Раньше делали `tr -d '[:space:]'` — выходила бессмыслица. Берём последнее single-quoted
   # значение через awk (-F\').
