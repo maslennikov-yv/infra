@@ -378,6 +378,9 @@ fp_minio() {
   cat >"$tmp/run.sh" <<'EOF'
 set -u
 mc alias set local http://minio.minio.svc.cluster.local:9000 "$ROOT_USER" "$ROOT_PW" >/dev/null 2>&1
+# kubectl run --rm -i подключается к выводу с задержкой — без паузы начало (секция USERS)
+# иногда теряется, и user_info в слепке молча становится null.
+sleep 3
 echo "===USERS==="
 mc admin user list local --json 2>/dev/null
 echo "===POLICY_USER==="
