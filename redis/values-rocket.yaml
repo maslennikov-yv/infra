@@ -51,3 +51,13 @@ metrics:
       registry: localhost:32000
       repository: oliver006/redis_exporter
       tag: "v1.79.0"
+
+# Эквивалент прежней Bitnami-политики (allowExternal: true, allowExternalEgress: true): вход на
+# valkey/метрики от кого угодно, egress не ограничен. Сегментация — docs/runbooks/network-policy.md.
+networkPolicy:
+  ingress:
+    - ports:
+        - port: 6379
+          protocol: TCP
+        - port: 9121
+          protocol: TCP
