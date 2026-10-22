@@ -146,7 +146,7 @@ GRANT ALL ON \\\"$$DB\\\".* TO \\\"$$APP_USER\\\";\" \
 		"  host: \"$$CH_HOST\"" \
 		"  native_port: $$CH_PORT" \
 		"  http_port: $$CH_HTTP_PORT" \
-	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \
 	echo "✓ Done (Secret: $$APP_NS/$$APP_SECRET_NAME)"; \
 	}
 

@@ -816,7 +816,7 @@ redis-acl-reconcile:
 		$(if $(strip $(REDIS_AUTH_SECRET_PASSWORD_KEY)),REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)")
 
 kafka-app-create:
-	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
 kafka-app-show-creds:
 	@$(MAKE) -C kafka app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" KUBECONFIG="$(KUBECONFIG)"
@@ -841,7 +841,7 @@ kafka-app-restore:
 	exit $$rc
 
 rabbitmq-app-create:
-	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
+	@$(MAKE) -C rabbitmq app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
 rabbitmq-app-show-creds:
 	@$(MAKE) -C rabbitmq app-show-creds APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"
@@ -1173,7 +1173,7 @@ clickhouse-app-create:
 	@$(MAKE) -C clickhouse app-create \
 		APP="$(APP)" APP_NS="$(APP_NS)" DB="$(DB)" APP_USER="$(APP_USER)" \
 		APP_SECRET_NAME="$(APP_SECRET_NAME)" ADMIN_USER="$(ADMIN_USER)" \
-		KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)"
+		ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" APPS_REGISTRY="$(APPS_REGISTRY)"
 
 clickhouse-app-show-creds:
 	@$(MAKE) -C clickhouse app-show-creds \

@@ -265,7 +265,7 @@ app-create:
 		"  topic_prefix: \"$(APP).\"" \
 		"  group_prefix: \"$(APP).\"" \
 		"  bootstrap: \"$(KAFKA_BOOTSTRAP_SERVER)\"" \
-	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)"; \
+	| "$$INF/scripts/app-conf-set.sh" "$$INF" "$(APP)" "$(ENV)"; \
 	echo ""; \
 	echo "App connection info:"; \
 	echo "  - bootstrap: $(KAFKA_BOOTSTRAP_SERVER)"; \
