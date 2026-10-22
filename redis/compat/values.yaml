@@ -1,0 +1,7 @@
+# Имя Service, на которое смотрят REDIS_HOST в Secret <APP>-redis, заведённых при Bitnami Redis
+# (redis-master.redis.svc.cluster.local). Убрать релиз — когда все приложения перечитали Secret
+# с новым хостом valkey.redis.svc (apps-apply пересоздаёт Secret, приложению нужен рестарт).
+name: redis-master
+# Релиз valkey, на поды которого указывает Service.
+targetRelease: valkey
+port: 6379

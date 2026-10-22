@@ -6,7 +6,7 @@ postgres:
 
 redis:
   namespace: redis
-  release: redis
+  release: valkey
 
 minio:
   namespace: minio

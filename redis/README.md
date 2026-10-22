@@ -1,160 +1,89 @@
-# Redis Chart для Kubernetes (Bitnami)
+# Redis-сервис = Valkey (официальный чарт valkey-io/valkey-helm)
 
-Redis на основе Bitnami chart: `architecture: standalone`, AOF persistence,
-ACL (`auth.acl.enabled: true`), фиксированные теги образов из локального
-registry microk8s (`localhost:32000/bitnami/*`). Логические БД (`databases 128`)
-распределяются между приложениями через `REDIS_DB` в `<APP>-redis` Secret —
-изоляция дополняется ACL-префиксом по ключам (`<APP>:*`).
+Сервис `redis` этого репо — **Valkey** (чарт `valkey-io/valkey-helm`, vendored в `redis/valkey/`,
+release `valkey`, namespace `redis`). Bitnami Redis заморожен в `bitnamilegacy` без патчей — переход
+описан в [docs/runbooks/redis-to-valkey.md](../docs/runbooks/redis-to-valkey.md).
 
-## Требования
+- standalone (Deployment, `deploymentStrategy: Recreate` — PVC RWO), AOF persistence, PVC `valkey`
+  (`keepPvc: true` — переживает `helm uninstall`);
+- образ `valkey/valkey-bundle` (Valkey + `valkey-json`/`valkey-search` — замена ReJSON/RediSearch:
+  `JSON.*` и `FT.*`, включая TEXT/NUMERIC/TAG-индексы), зеркало в `localhost:32000/valkey/*`;
+- ACL (`auth.enabled: true`): пароль `default` — из Secret `redis/redis` (ключ `redis-password`),
+  пользователи приложений — `auth.aclConfig` из overlay (см. ниже);
+- логические БД (`databases 128`) распределяются между приложениями через `REDIS_DB`, изоляция — ACL по
+  префиксу ключей/каналов `<APP>:*`;
+- `redis-compat` (`redis/compat/`) — Service `redis-master` → поды Valkey, чтобы приложения, заведённые
+  при Bitnami (`REDIS_HOST=redis-master.redis.svc…`), работали до своего рестарта/передеплоя.
 
-- Helm 3.x
-- Kubernetes (microk8s)
-- Docker
-- microk8s registry (или fallback через containerd, см. ниже)
+Клиенты (phpredis, go-redis, ioredis, Laravel/Horizon) работают без изменений: протокол RESP и команды
+совместимы, `redis-cli` в образе — симлинк на `valkey-cli`.
 
-## Подготовка образов для offline использования
-
-### Способ 1: через microk8s registry (рекомендуется)
+## Образы
 
 ```bash
-microk8s enable registry
-make images-sync         # pull → tag → push в localhost:32000
+make images-sync         # pull → tag → push в localhost:32000 (valkey-bundle, redis_exporter)
+make images-pull images-save   # tar для оффлайн-стенда; на целевой машине: make images-sync-from-files
+make images-verify       # проверить теги в docker.io/valkey и ghcr.io/oliver006
 ```
 
-Полный набор tar-файлов для оффлайн-стенда:
-```bash
-make images-pull images-save           # положит tar в images/
-# на целевой машине:
-make images-sync-from-files            # load → tag → push
-```
-
-### Способ 2: containerd напрямую (fallback)
-
-`make images-pull` + `docker save | microk8s ctr image import -` под теги,
-указанные в `values-<ENV>.yaml` (`localhost:32000/bitnami/*`). Это нужно
-только если registry по какой-то причине недоступен.
+Теги — `VALKEY_TAG` / `REDIS_EXPORTER_TAG` в `redis/Makefile` и в `values-<ENV>.yaml`.
 
 ## Деплой
 
 ```bash
-# Из корня репозитория (рекомендуется)
-make redis-up ENV=local
-
-# Или из redis/
-make install ENV=local
+make redis-up ENV=local          # из корня: helmfile (valkey + redis-compat) + apps-apply
+make install ENV=local           # из redis/: только helm upgrade --install valkey
 ```
 
-> `make install` (как и корневой `make up`) сам создаёт Secret `redis/redis`
-> со случайным паролем admin'а через `openssl rand -hex 16`, если его ещё
-> нет, и передаёт `global.redis.password` в чарт через `--set` (нужен для
-> рендера `users.acl` при `auth.acl.enabled: true`). Прямой `helm install
-> redis ./redis -f values-local.yaml` потребует pre-existing Secret и
-> `--set global.redis.password=...` вручную.
+`make up`/`make install` создают Secret `redis/redis` со случайным паролем, если его нет.
 
-Просмотр созданных ресурсов:
+## App accounts
+
 ```bash
-make status ENV=local
-```
-
-## App accounts (изоляция по приложениям)
-
-Создание ACL-пользователя + Secret с кредами для приложения:
-```bash
-# Из корня
-make redis-app-create APP=myapp ENV=local              # REDIS_DB подберётся из apps/registry.yaml
-make redis-app-create APP=myapp REDIS_DB=5 ENV=local   # фикс. номер БД
+make redis-app-create     APP=myapp ENV=local              # REDIS_DB подберётся из apps/registry.yaml
+make redis-app-create     APP=myapp REDIS_DB=5 ENV=local
 make redis-app-show-creds APP=myapp ENV=local
-make redis-app-verify    APP=myapp ENV=local           # smoke: PING + DBSIZE
-make redis-app-drop      APP=myapp ENV=local           # ACL DELUSER + Secret (⚠ y/N; SKIP_CONFIRM=1)
-
-# Или из redis/
-make app-create APP=myapp ENV=local
+make redis-app-verify     APP=myapp ENV=local              # smoke: PING + DBSIZE под APP-кредами
+make redis-app-drop       APP=myapp ENV=local              # ⚠ y/N; SKIP_CONFIRM=1
 ```
 
-Что попадёт в `<APP_NS>/<APP>-redis`:
-- `REDIS_HOST` / `REDIS_PORT` — `*-master` сервис в namespace `redis`
-- `REDIS_USERNAME` (`app_<APP>`) / `REDIS_PASSWORD`
-- `REDIS_KEY_PREFIX` (`<APP>:`) — приложению **обязательно** префиксовать ключи
-  (ACL `~<APP>:*` запрещает доступ к чужим)
-- `REDIS_DB` — логический номер БД (0..127); опциональный, дефолт `0`
+Secret `<APP_NS>/<APP>-redis`: `REDIS_HOST` (`valkey.redis.svc.cluster.local`), `REDIS_PORT`,
+`REDIS_USERNAME` (`app_<APP>`), `REDIS_PASSWORD`, `REDIS_KEY_PREFIX` (`<APP>:` — префиксовать ключи
+обязательно), `REDIS_DB` (0..127).
 
-ACL-правила: `+@all -ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL
--FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF -REPLCONF
--REPLICAOF -SLAVEOF -SYNC -PSYNC`. Повторный `make app-create` идемпотентен
-(reconcile собирает users.acl целиком из реестра).
+ACL приложения: `~<APP>:* &<APP>:* +@all -ACL -CONFIG -SHUTDOWN -MODULE -DEBUG -COMMAND -KEYS -FLUSHALL
+-FLUSHDB -LATENCY -MEMORY -MONITOR -SAVE -BGSAVE -BGREWRITEAOF -REPLCONF -REPLICAOF -SLAVEOF -SYNC -PSYNC`.
 
 ### Как ACL переживает рестарт пода
 
-Двойной путь применения, источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`:
+Источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`, два пути применения:
 
-1. **helm-render** (config-driven, основной путь). `scripts/redis-build-acl-overlay.sh`
-   пересобирает `redis/values-<ENV>.acl.yaml` (gitignored) с блоком
-   `auth.acl.users: [...]` из merged config. helmfile подхватывает overlay
-   дополнительным values-файлом для release redis (см. `helmfile.yaml.gotmpl`),
-   Bitnami chart рендерит `users.acl` в ConfigMap `redis-configuration` уже
-   с app-users. Корневой `make up`/`make diff` сами вызывают этот скрипт
-   перед helmfile, поэтому новые приложения попадают в helm-рендер автоматически.
-2. **runtime patch** (`scripts/redis-acl-reconcile.sh`, вызывается из
-   `apps-apply` агрегированно после прохода всех приложений). Регенерирует
-   overlay → патчит живой ConfigMap → перезаписывает `/opt/bitnami/redis/etc/users.acl`
-   → `ACL LOAD`. Нужен потому, что emptyDir с aclfile не синхронизируется
-   с ConfigMap в рантайме — иначе изменения вступали бы в силу только при
-   следующем рестарте пода.
+1. **helm-render.** `scripts/redis-build-acl-overlay.sh` пересобирает `redis/values-<ENV>.acl.yaml`
+   (gitignored) с `auth.aclConfig` — готовыми строками aclfile с sha256 паролей. helmfile подключает
+   overlay к release `valkey`, чарт кладёт его в Secret `valkey-auth`, init-контейнер при каждом старте
+   пода собирает `/etc/valkey/users.acl` = `user default …` + aclConfig. `make up`/`make diff` вызывают
+   скрипт перед helmfile.
+2. **runtime** (`scripts/redis-acl-reconcile.sh`, из `apps-apply` один раз после всех приложений):
+   overlay → патч Secret `valkey-auth` → перезапись `/etc/valkey/users.acl` в поде → `ACL LOAD`.
 
-Формат строки `users.acl` в обоих путях идентичен
-(`user <name> on #<sha256(pw)> ~<prefix>:* &<prefix>:* +@all <DENY>`),
-поэтому `helmfile diff` после reconcile нулевой и лишних rolling restart
-redis-master нет. Любой рестарт пода Redis (eviction, OOM, нода, ручной
-`kubectl delete pod`) восстанавливает корректный ACL из ConfigMap без
-необходимости вручную вызывать reconcile.
-
-Для починки drift вручную (внешние правки ConfigMap, например):
+Строки в обоих путях одинаковы, поэтому `helmfile diff` после reconcile нулевой. Ручная починка drift —
 `make redis-acl-reconcile ENV=...`.
 
-## Бэкапы и восстановление
+## Бэкапы
 
 ```bash
-make backup       ENV=local            # RDB-снимок + ACL + INFO в backups/local/redis-backup-*.tar.gz
+make backup ENV=local       # RDB-снимок Valkey + ACL LIST + INFO → backups/local/redis-backup-*.tar.gz
 make list-backups
-make restore-acl  BACKUP_FILE=backups/local/redis-backup-YYYYMMDD-HHMMSS.tar.gz ENV=local
+make restore-acl BACKUP_FILE=... ENV=local
 ```
 
-Восстановление RDB-данных — ручная процедура (scale 0 → замена в PVC),
-см. **[BACKUP.md](BACKUP.md)** для пошагового сценария.
+RDB Valkey и RDB Redis 8 взаимно несовместимы — бэкапы, снятые до перехода, в Valkey не восстановить
+(только логическое копирование, `scripts/redis-copy-keys.py`). Подробно — [BACKUP.md](BACKUP.md).
 
 ## Полезные команды
 
 ```bash
-make help                   # сводка по всем командам
-make status                 # helm status + поды + svc + PVC
-make logs                   # логи master pod
-make shell                  # interactive shell в master pod
-make images-verify          # проверить SRC-теги bitnamilegacy
-make check-updates          # доступные версии чарта в bitnami
-make uninstall              # ⚠ удалит helm release (PVC останутся)
+make status | logs | shell     # статус, логи, shell в поде valkey
+make check-updates             # новая версия чарта valkey/valkey и где смотреть теги образа
+make uninstall                 # ⚠ удалит release (PVC valkey останется)
 ```
-
-## Используемые образы
-
-Теги фиксируются в `redis/Makefile`, при необходимости переопределяются
-через `REDIS_TAG` / `REDIS_SENTINEL_TAG` / `REDIS_EXPORTER_TAG` /
-`OS_SHELL_TAG` / `KUBECTL_TAG`:
-
-1. **bitnami/redis** — основной образ Redis (по умолчанию `8.4.0`)
-2. **bitnami/redis-sentinel** — Sentinel (по умолчанию `8.4.0`; в репо
-   `sentinel.enabled: false`, образ нужен только для consistency rendering)
-3. **bitnami/redis-exporter** — Prometheus exporter (по умолчанию `1.80.1`)
-4. **bitnami/os-shell** — init container для volumePermissions (по умолчанию
-   `12-debian-12-r51`; в репо `volumePermissions.enabled: false`)
-5. **bitnami/kubectl** — для chart hooks (по умолчанию `1.35.0`)
-
-Source-образы тянутся из `docker.io/bitnamilegacy/*` по immutable `sha256-*`
-тегам (см. `*_SRC_TAG` в `Makefile`), затем перетегируются в
-`localhost:32000/bitnami/*` под перечисленные выше теги.
-
-## Дополнительно
-
-- [BACKUP.md](BACKUP.md) — детально про backup/restore и DR-сценарии.
-- [Bitnami Redis Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis) — апстрим документация.
-- Корневой `CLAUDE.md` / `README.md` — общие соглашения (envs, helmfile, apps-merge).

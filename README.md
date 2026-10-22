@@ -156,7 +156,7 @@ microk8s enable registry
 ls -lh */images/ && make images-save ENV=local
 
 # Helmfile без кластера (для проверки шаблонов)
-ENV=local REDIS_PASSWORD=x RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
+ENV=local RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
   helmfile -f helmfile.yaml.gotmpl -e default template
 ```
 

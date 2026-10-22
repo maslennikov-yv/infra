@@ -1,70 +1,53 @@
-global:
-  security:
-    allowInsecureImages: true
-
-architecture: standalone
-
-auth:
-  enabled: true
-  existingSecret: redis
-  existingSecretPasswordKey: redis-password
-  acl:
-    enabled: true
+# Valkey (официальный чарт valkey-io/valkey-helm, vendored в redis/valkey) вместо Bitnami Redis.
+# Образ valkey-bundle — Valkey + модули valkey-json/valkey-search (замена ReJSON/RediSearch).
+# Пароль админа (user default) — из того же Secret redis/redis (ключ redis-password), что и раньше;
+# пользователи приложений — auth.aclConfig из overlay redis/values-<ENV>.acl.yaml
+# (scripts/redis-build-acl-overlay.sh), живое применение — scripts/redis-acl-reconcile.sh.
 
 image:
   registry: localhost:32000
-  repository: bitnami/redis
-  tag: "8.4.0"
+  repository: valkey/valkey-bundle
+  tag: "9.1.3-trixie"
 
-sentinel:
-  enabled: false
-  image:
-    registry: localhost:32000
-    repository: bitnami/redis-sentinel
-    tag: "8.4.0"
+# PVC RWO: RollingUpdate поднял бы новый под раньше, чем старый отпустит том.
+deploymentStrategy: Recreate
+
+dataStorage:
+  enabled: true
+  requestedSize: 2Gi
+  className: ""
+  # PVC переживает helm uninstall (данные не теряются при пересоздании релиза).
+  keepPvc: true
+
+auth:
+  enabled: true
+  usersExistingSecret: redis
+  aclUsers:
+    default:
+      permissions: "~* &* +@all"
+      passwordKey: redis-password
+
+# Логические БД для REDIS_DB в app-redis Secret (см. docs/pg-app.md): в реестре закрепляйте с 1.
+valkeyConfig: |-
+  databases 128
+  loadmodule /usr/lib/valkey/libjson.so
+  loadmodule /usr/lib/valkey/libsearch.so
+  appendonly yes
+  save ""
+
+# Ресурсы — как были у Bitnami master в этом окружении.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
 
 metrics:
   enabled: true
-  image:
-    registry: localhost:32000
-    repository: bitnami/redis-exporter
-    tag: "1.80.1"
-
-volumePermissions:
-  enabled: false
-  image:
-    registry: localhost:32000
-    repository: bitnami/os-shell
-    tag: "12-debian-12-r51"
-
-kubectl:
-  image:
-    registry: localhost:32000
-    repository: bitnami/kubectl
-    tag: "1.35.0"
-
-# Lightweight local-профиль: минимальные limits, чтобы не давить на dev-машину.
-master:
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
-  persistence:
-    enabled: true
-    size: 2Gi
-    storageClass: ""
-
-# Синхронизировать с redis/redis/values.yaml commonConfiguration при смене модулей/AOF.
-# Логические БД для REDIS_DB в app-redis Secret (см. docs/pg-app.md): в реестре закрепляйте с 1, 0 — фолбэк; дефолт Redis — 16.
-commonConfiguration: |-
-  databases 128
-  # Enable ReJSON и Redisearch
-  loadmodule /opt/bitnami/redis/lib/redis/modules/redisearch.so
-  loadmodule /opt/bitnami/redis/lib/redis/modules/rejson.so
-  # Enable AOF https://redis.io/topics/persistence#append-only-file
-  appendonly yes
-  # Disable RDB persistence, AOF persistence already enabled.
-  save ""
+  exporter:
+    image:
+      registry: localhost:32000
+      repository: oliver006/redis_exporter
+      tag: "v1.79.0"

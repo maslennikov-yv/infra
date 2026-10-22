@@ -254,16 +254,16 @@ while IFS= read -r app_disabled; do
 done < <("$YQBIN" -r '.apps[] | select(.enabled == false) | .name' "$REG")
 
 # === Агрегированный reconcile сервисов с multi-tenant конфигом ===
-# Redis ACL живёт в ConfigMap redis-configuration; per-app create/drop выше уже
+# Valkey ACL живёт в Secret redis/valkey-auth (aclConfig); per-app create/drop выше уже
 # обновили apps/conf и Secret в namespace приложения, но реальный ACL применяется
 # одним вызовом reconcile из полного состояния merged config. Это и обеспечивает
 # инвариант: ACL после apps-apply = ровно то, что в apps/registry+conf.
 # Делаем безусловно при svc_active redis (даже без действий) — на случай drift'а
-# (внешние правки ACL, перезаписи ConfigMap helm-апгрейдом и т.п.).
+# (внешние правки ACL, перезаписи Secret helm-апгрейдом и т.п.).
 if [[ "$DRY_RUN" == "1" ]] && svc_active redis; then
 	echo ""
 	redis_apps=$("$YQBIN" -r '[.apps[] | select(.enabled == true) | select(.redis.password != null and .redis.password != "")] | length' "$merged" 2>/dev/null || echo 0)
-	echo "  [dry-run] would reconcile Redis ACL (ConfigMap redis-configuration + aclfile + ACL LOAD): 1 default + $redis_apps app users"
+	echo "  [dry-run] would reconcile Valkey ACL (Secret valkey-auth + aclfile + ACL LOAD): 1 default + $redis_apps app users"
 fi
 if [[ "$DRY_RUN" != "1" ]] && svc_active redis; then
 	echo ""

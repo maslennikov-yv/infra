@@ -5,7 +5,7 @@
 	postgres-verify redis-verify minio-verify clickhouse-verify \
 	check-updates postgres-check-updates redis-check-updates kafka-check-updates \
 	minio-check-updates clickhouse-check-updates rabbitmq-check-updates \
-	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop redis-acl-reconcile kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
+	pg-app-create pg-app-show-creds pg-app-psql pg-app-verify pg-app-drop pg-app-backup pg-app-restore redis-app-create redis-app-show-creds redis-app-verify redis-app-drop redis-acl-reconcile redis-migrate-to-valkey kafka-app-create kafka-app-show-creds kafka-app-verify kafka-app-drop kafka-app-backup kafka-app-restore minio-app-create minio-app-show-creds minio-app-verify minio-app-drop minio-app-backup minio-app-restore clickhouse-app-create clickhouse-app-show-creds clickhouse-app-verify clickhouse-app-drop clickhouse-app-backup clickhouse-app-restore rabbitmq-app-create rabbitmq-app-show-creds rabbitmq-app-verify rabbitmq-app-drop rabbitmq-app-backup rabbitmq-app-restore \
 	kafka-topic-create kafka-topic-alter kafka-topic-describe kafka-topic-list \
 	apps-merge-print apps-merge-app-print apps-local-src-helm-sets apps-apply apps-apply-diff apps-conf-template apps-src-clone app-local-src-hostpath-mount \
 	app-capabilities app-render-values app-deploy app-rollback app-status app-logs app-migrate app-seed app-shell \
@@ -128,7 +128,7 @@ doctor:
 	echo ""; echo "=== 3/5 Helm-релизы (vs helmfile.yaml.gotmpl) ==="; \
 	if command -v helm >/dev/null 2>&1; then \
 		LIVE=$$(helm --kubeconfig "$(KUBECONFIG)" list -A -q 2>/dev/null | sort -u); \
-		WANT=$$(ENV="$(ENV)" REDIS_PASSWORD=x RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
+		WANT=$$(ENV="$(ENV)" RABBITMQ_PASSWORD=x RABBITMQ_ERLANG_COOKIE=x \
 				helmfile -f helmfile.yaml.gotmpl -e default list --output=json 2>/dev/null \
 				| jq -r '.[].name' 2>/dev/null \
 				| sort -u || true); \
@@ -250,7 +250,7 @@ help:
 	@echo "$(BOLD)$(GREEN)Image verification (bitnamilegacy):$(RESET)"
 	@echo "  make kafka-verify      - проверить доступность тегов в bitnamilegacy для Kafka"
 	@echo "  make postgres-verify   - проверить доступность тегов в bitnamilegacy для PostgreSQL"
-	@echo "  make redis-verify      - проверить доступность тегов в bitnamilegacy для Redis"
+	@echo "  make redis-verify      - проверить доступность тегов образов Valkey"
 	@echo "  make minio-verify      - проверить доступность тегов в bitnamilegacy для MinIO"
 	@echo "  make clickhouse-verify - проверить доступность тегов в bitnamilegacy для ClickHouse"
 	@echo "  make rabbitmq-verify   - проверить доступность тегов в bitnamilegacy для RabbitMQ"
@@ -269,6 +269,7 @@ help:
 	@echo "  make redis-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - показать креды из Secret app-redis (REDIS_KEY_PREFIX, REDIS_DB)"
 	@echo "  make redis-app-drop     $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] - удалить запись apps/conf, Secret + reconcile ACL (⚠ y/N; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
 	@echo "  make redis-acl-reconcile $(YELLOW)ENV=$(ENV)$(RESET) - полная реконсилиация ACL из apps/registry+conf (config-driven)"
+	@echo "  make redis-migrate-to-valkey $(YELLOW)ENV=$(ENV)$(RESET) - разовый переход с Bitnami Redis на Valkey (docs/runbooks/redis-to-valkey.md)"
 	@echo "  make kafka-app-create $(YELLOW)APP=myapp$(RESET) [$(YELLOW)APP_NS=myapp$(RESET)]"
 	@echo "  make kafka-app-show-creds $(YELLOW)APP=myapp$(RESET) [$(YELLOW)ENV=$(ENV)$(RESET)] — креды из Secret приложения в k8s"
 	@echo "  make kafka-app-drop     $(YELLOW)APP=myapp$(RESET) - SCRAM, ACL, Secret (топики не удаляются; $(YELLOW)SKIP_CONFIRM=1$(RESET))"
@@ -815,6 +816,12 @@ redis-acl-reconcile:
 		$(if $(strip $(REDIS_AUTH_SECRET_NAME)),REDIS_AUTH_SECRET_NAME="$(REDIS_AUTH_SECRET_NAME)") \
 		$(if $(strip $(REDIS_AUTH_SECRET_PASSWORD_KEY)),REDIS_AUTH_SECRET_PASSWORD_KEY="$(REDIS_AUTH_SECRET_PASSWORD_KEY)")
 
+# Разовый переход живого окружения с Bitnami Redis на Valkey (данные + ACL + compat Service).
+# Runbook: docs/runbooks/redis-to-valkey.md. SKIP_CONFIRM=1 — без вопроса про остановку записи.
+redis-migrate-to-valkey:
+	@ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)" REPO_ROOT="$(REPO_ROOT)" APPS_REGISTRY="$(APPS_REGISTRY)" \
+		SKIP_CONFIRM="$(SKIP_CONFIRM)" "$(REPO_ROOT)/scripts/redis-migrate-to-valkey.sh"
+
 kafka-app-create:
 	@$(MAKE) -C kafka app-create APP="$(APP)" APP_NS="$(APP_NS)" ENV="$(ENV)" APPS_REGISTRY="$(APPS_REGISTRY)" KUBECONFIG="$(KUBECONFIG)"
 
@@ -966,11 +973,11 @@ redis-recreate-prep:
 	@$(MAKE) redis-down ENV="$(ENV)"
 	@echo ""
 	@echo "=== 3/3 Удаление PVC ==="
-	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n redis -l app.kubernetes.io/instance=redis --ignore-not-found
-	@echo "✓ PVC redis удалены"
+	@kubectl --kubeconfig "$(KUBECONFIG)" delete pvc -n redis -l app.kubernetes.io/instance=valkey --ignore-not-found
+	@echo "✓ PVC valkey удалены"
 	@echo ""
 	@echo "Дальше:"
-	@echo "  1. Отредактируйте redis/values-$(ENV).yaml (master.persistence.size)"
+	@echo "  1. Отредактируйте redis/values-$(ENV).yaml (dataStorage.requestedSize)"
 	@echo "  2. make redis-up ENV=$(ENV)   (helmfile apply + apps-apply → acl-reconcile из apps/registry+conf: ACL восстановится из конфигов, не из бэкапа)"
 	@echo "  3. (Опц.) восстановление RDB-данных — см. redis/BACKUP.md"
 	@echo "Примечание: redis-restore-acl нужен только для legacy-бэкапов или ad-hoc восстановления — основной путь это apps-apply (config-driven)."
@@ -1213,8 +1220,8 @@ minio-app-append:
 up:
 	@# Раньше: `kubectl get | base64 -d || true` — `|| true` маскировало ЛЮБЫЕ
 	# ошибки kubectl (network/RBAC/wrong KUBECONFIG), не только NotFound.
-	# Если kubectl упал, REDIS_PASSWORD оставался пустым, и ниже kubectl delete +
-	# create порождал НОВЫЙ Secret, тогда как живой Redis-pod продолжал работать
+	# Если kubectl упал, пароль оставался пустым, и ниже kubectl delete +
+	# create порождал НОВЫЙ Secret, тогда как живой Valkey-pod продолжал работать
 	# со СТАРЫМ паролем → WRONGPASS у клиентов до перезапуска pod.
 	# Теперь: явный if-Secret-exists, отдельный cluster-info check, без delete.
 	# Каждый блок секрет-init обёрнут в `svc_active <svc>` — при ENABLED_SERVICES/
@@ -1234,8 +1241,7 @@ up:
 	}; \
 	if svc_active redis; then \
 		if kubectl get secret -n redis redis >/dev/null 2>&1; then \
-			REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
-			[ -n "$$REDIS_PASSWORD" ] || { echo "✗ Secret redis/redis есть, но ключ redis-password пуст. Восстановите вручную."; exit 1; }; \
+			[ -n "$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}')" ] || { echo "✗ Secret redis/redis есть, но ключ redis-password пуст. Восстановите вручную."; exit 1; }; \
 		else \
 			kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 || { echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; }; \
 			echo "Redis password secret not found (redis/redis). Creating one for first install..."; \
@@ -1306,13 +1312,13 @@ up:
 		$(MAKE) -C monitoring/netdata secrets-init ENV="$(ENV)" KUBECONFIG="$(KUBECONFIG)"; \
 	fi; \
 	: "Перегенерация overlay redis/values-$(ENV).acl.yaml из apps/registry+conf"; \
-	: "до helmfile apply: helm рендерит ConfigMap users.acl сразу с app-users,"; \
+	: "до helmfile apply: helm кладёт aclConfig в Secret valkey-auth сразу с app-users,"; \
 	: "рестарт пода восстанавливает ACL без вызова redis-acl-reconcile."; \
 	if svc_active redis && [ -f "$(APPS_REGISTRY)" ]; then \
 		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(CURDIR)" ENV="$(ENV)" \
 			scripts/redis-build-acl-overlay.sh || { echo "✗ redis-build-acl-overlay.sh упал"; exit 1; }; \
 	fi; \
-	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
+	ENV=$(ENV) RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default apply; \
 	: "Простановка label infra-env=<ENV> на platform-ns. Используется backup-verify"; \
 	: "preflight'ом для защиты от случайной перезаписи чужого кластера. Идемпотентно;"; \
 	: "ошибки игнорируются (ns может ещё не существовать при первом apply)."; \
@@ -1331,7 +1337,7 @@ up:
 diff:
 	@# `diff:` не создаёт Secret (это делает `up:`); только читает.
 	# Если сервис исключён фильтрами или Secret ещё не создан (первый deploy) —
-	# подставляются заглушки REDIS_PASSWORD/RABBITMQ_PASSWORD/RABBITMQ_ERLANG_COOKIE,
+	# подставляются заглушки RABBITMQ_PASSWORD/RABBITMQ_ERLANG_COOKIE,
 	# чтобы helmfile зарендерил шаблоны и показал планируемый diff, а не упал.
 	set -e; \
 	svc_active() { \
@@ -1342,23 +1348,11 @@ diff:
 			! echo ",$(EXCLUDE_SERVICES)," | grep -qF ",$$svc,"; \
 		fi; \
 	}; \
-	REDIS_PASSWORD="REDIS_PASSWORD"; \
 	RABBITMQ_PASSWORD="RABBITMQ_PASSWORD"; \
 	RABBITMQ_COOKIE="RABBITMQ_ERLANG_COOKIE"; \
-	if svc_active redis || svc_active rabbitmq; then \
+	if svc_active rabbitmq; then \
 		if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then \
 			echo "✗ kubectl недоступен (KUBECONFIG=$(KUBECONFIG))"; exit 1; \
-		fi; \
-	fi; \
-	if svc_active redis; then \
-		if kubectl get secret -n redis redis >/dev/null 2>&1; then \
-			REDIS_PASSWORD=$$(kubectl get secret -n redis redis -o jsonpath='{.data.redis-password}' | base64 -d); \
-			if [ -z "$$REDIS_PASSWORD" ]; then \
-				echo "⚠ Secret redis/redis есть, но redis-password пуст — diff с заглушкой"; \
-				REDIS_PASSWORD="REDIS_PASSWORD"; \
-			fi; \
-		else \
-			echo "ℹ Secret redis/redis ещё нет — diff покажет создание (используется заглушка пароля)"; \
 		fi; \
 	fi; \
 	if svc_active rabbitmq; then \
@@ -1377,7 +1371,7 @@ diff:
 		APPS_REGISTRY="$(APPS_REGISTRY)" REPO_ROOT="$(CURDIR)" ENV="$(ENV)" \
 			scripts/redis-build-acl-overlay.sh >/dev/null || { echo "✗ redis-build-acl-overlay.sh упал"; exit 1; }; \
 	fi; \
-	ENV=$(ENV) REDIS_PASSWORD="$$REDIS_PASSWORD" RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default diff
+	ENV=$(ENV) RABBITMQ_PASSWORD="$$RABBITMQ_PASSWORD" RABBITMQ_ERLANG_COOKIE="$$RABBITMQ_COOKIE" ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default diff
 
 down:
 	@ENV=$(ENV) ENABLED_SERVICES="$(ENABLED_SERVICES)" EXCLUDE_SERVICES="$(EXCLUDE_SERVICES)" helmfile -f helmfile.yaml.gotmpl -e default destroy
@@ -1658,7 +1652,7 @@ env-new:
 			"" \
 			"redis:" \
 			"  namespace: redis" \
-			"  release: redis" \
+			"  release: valkey" \
 			"" \
 			"minio:" \
 			"  namespace: minio" \
@@ -1927,6 +1921,8 @@ redis-backup:
 	@BACKUP_AGE_RECIPIENT="$(BACKUP_AGE_RECIPIENT)" "$(REPO_ROOT)/scripts/backup-encrypt.sh" redis/backups/$(ENV) "redis-backup-*.tar.gz"
 redis-restore-acl:
 	$(call _restore_with_decrypt,redis,restore-acl)
+redis-restore-rdb:
+	$(call _restore_with_decrypt,redis,restore-rdb)
 
 kafka-backup-meta:
 	@$(MAKE) -C kafka backup-meta ENV="$(ENV)" REGISTRY="$(REGISTRY)" KUBECONFIG="$(KUBECONFIG)"

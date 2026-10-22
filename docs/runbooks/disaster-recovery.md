@@ -153,8 +153,9 @@ make postgres-restore BACKUP_FILE=postgres/backups/<env>/postgres-backup-YYYYMMD
 # ACL восстанавливается из конфигов (config-driven), не из бэкапа:
 make apps-apply ENV=<env> ENABLED_SERVICES=redis
 #   → redis-acl-reconcile собирает users.acl из apps/registry.yaml + apps/conf/<APP>/<ENV>/,
-#     патчит ConfigMap redis-configuration + ACL LOAD. Состояние переживает рестарт пода.
-# Данные RDB — отдельная процедура (scale 0 + замена в PVC):
+#     патчит Secret valkey-auth + ACL LOAD. Состояние переживает рестарт пода.
+# Данные RDB (сервис redis = Valkey; снимки Bitnami Redis 8 в Valkey не грузятся):
+make redis-restore-rdb ENV=<env> BACKUP_FILE=backups/<env>/redis-backup-YYYYMMDD-HHMMSS.tar.gz
 #   см. redis/BACKUP.md, раздел «Восстановление данных (RDB)».
 # redis-restore-acl нужен только для legacy-бэкапов или ad-hoc восстановления
 # (например, если apps/conf утрачен и есть свежий ACL-снимок в бэкапе).

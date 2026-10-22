@@ -159,7 +159,7 @@ postgres → redis → kafka → rabbitmq → minio → clickhouse.
 
 ```bash
 # 1. Удалить PVC одного из инфра-сервисов
-kubectl delete pvc -n redis redis-data-redis-master-0
+kubectl delete pvc -n redis valkey
 
 # 2. Проверить, что PV остался в Released, не Terminated
 kubectl get pv | grep redis

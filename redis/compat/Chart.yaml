@@ -1,0 +1,5 @@
+apiVersion: v2
+name: redis-compat
+description: Service redis-master → поды Valkey — совместимость REDIS_HOST приложений, заведённых до перехода с Bitnami Redis
+type: application
+version: 0.1.0

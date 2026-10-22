@@ -163,7 +163,7 @@ kubectl get secret myapp-postgres -n myapp -o jsonpath='{.data.DATABASE_URL}' | 
 
 Отдельный ACL-пользователь и ключи с префиксом `APP:`; см. [redis/Makefile](../redis/Makefile).
 
-**Config-driven ACL.** Источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`. `make apps-apply` (или `redis-acl-reconcile` напрямую) собирает полный `users.acl` из merged конфига, патчит ConfigMap `redis-configuration` и делает `ACL LOAD`. `redis-app-create`/`drop` обновляют только per-app данные (Secret, `apps/conf`) и в конце дёргают reconcile (или отложенно — внутри `apps-apply`). **Состояние переживает рестарт пода** (aclfile подтягивается из ConfigMap при старте). См. [`scripts/redis-acl-reconcile.sh`](../scripts/redis-acl-reconcile.sh).
+**Config-driven ACL.** Источник истины — `apps/registry.yaml` + `apps/conf/<APP>/<ENV>/`. `make apps-apply` (или `redis-acl-reconcile` напрямую) собирает полный `users.acl` из merged конфига, патчит Secret `valkey-auth` и делает `ACL LOAD`. `redis-app-create`/`drop` обновляют только per-app данные (Secret, `apps/conf`) и в конце дёргают reconcile (или отложенно — внутри `apps-apply`). **Состояние переживает рестарт пода** (init-контейнер собирает aclfile из Secret при старте). См. [`scripts/redis-acl-reconcile.sh`](../scripts/redis-acl-reconcile.sh).
 
 ### Имена по умолчанию
 
@@ -184,7 +184,7 @@ make redis-app-show-creds APP=myapp ENV=stage
 make redis-app-drop APP=myapp ENV=stage   # ACL-пользователь + Secret; ключи по префиксу не удаляются
 ```
 
-Хост master-сервиса подставляется автоматически (точное имя — в Secret). Типичный вид: `redis-master.redis.svc.cluster.local`, порт `6379`. Приложение должно подключаться с `db`/параметром, соответствующим `REDIS_KEY_PREFIX` и `REDIS_DB` из Secret (если не `0` — выполнить `SELECT` или указать номер БД в клиенте).
+Хост подставляется автоматически (точное имя — в Secret): `valkey.redis.svc.cluster.local`, порт `6379` (сервис `redis` = Valkey; старое имя `redis-master.redis.svc` ведёт туда же через `redis-compat`). Приложение должно подключаться с `db`/параметром, соответствующим `REDIS_KEY_PREFIX` и `REDIS_DB` из Secret (если не `0` — выполнить `SELECT` или указать номер БД в клиенте).
 
 ### Ключи Secret
 
@@ -192,7 +192,7 @@ make redis-app-drop APP=myapp ENV=stage   # ACL-пользователь + Secre
 - `REDIS_KEY_PREFIX` — префикс ключей (`<APP>:`); изоляция через ACL.
 - `REDIS_DB` — неотрицательное целое, логический номер БД Redis (если не задано в CLI — **следующий свободный 1..127** по реестру или явный **`redis_db`** в YAML, иначе фолбэк **`0`** без yq). Поле **`redis_db`** в реестре можно не указывать — тогда номер выделяется автоматически.
 
-В [`redis/values-local.yaml`](../redis/values-local.yaml) и [`redis/values-prod.yaml`](../redis/values-prod.yaml) в `commonConfiguration` задано `databases 128` (вместо типичных **16** по умолчанию). При смене лимита или путей модулей синхронизируйте блок с `redis/redis/values.yaml` и пересоберите релиз Redis; не назначайте `REDIS_DB` выше `databases - 1`.
+В `redis/values-<ENV>.yaml` в `valkeyConfig` задано `databases 128` (вместо типичных **16** по умолчанию). Не назначайте `REDIS_DB` выше `databases - 1`.
 
 ### Чеклист: Redis
 

@@ -208,17 +208,17 @@ fp_redis() {
     return 0
   fi
   local user="app_$APP"
-  local db; db=$(cfg_get redis.db || echo "")
+  local db; db=$(cfg_get redis.db || cfg_get redis.redis_db || echo "")
   if [ -z "$db" ]; then
     # fallback: registry.apps[].redis_db.
     db=$(NM="$APP" "$YQ_BIN" -r '.apps[] | select(.name == strenv(NM)) | .redis_db // ""' "$APPS_REGISTRY" 2>/dev/null || echo "")
   fi
   local pod
   pod=$(kubectl --kubeconfig "$KUBECONFIG_FILE" -n redis get pods \
-    -l app.kubernetes.io/name=redis,app.kubernetes.io/component=master \
+    -l app.kubernetes.io/name=valkey --field-selector=status.phase=Running \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   if [ -z "$pod" ]; then
-    jq -n --arg user "$user" --arg db "$db" '{status:"absent",user:$user,db:$db,error:"redis master pod not found"}'
+    jq -n --arg user "$user" --arg db "$db" '{status:"absent",user:$user,db:$db,error:"valkey pod not found"}'
     return 0
   fi
   local pw
@@ -228,22 +228,25 @@ fp_redis() {
     jq -n --arg user "$user" '{status:"absent",user:$user,error:"admin secret missing"}'
     return 0
   fi
-  # ACL GETUSER возвращает массив строк key=value; нормализуем в map.
+  # ACL GETUSER в --json — map без ручного разбора пар (построчный awk ломался на
+  # многострочном flags). В слепок — только смысловые поля: служебные флаги
+  # (sanitize-payload) и databases зависят от версии сервера, не от конфига.
   local acl_raw
-  acl_raw=$(kubectl --kubeconfig "$KUBECONFIG_FILE" -n redis exec -i "$pod" -- \
-    env REDISCLI_AUTH="$pw" redis-cli ACL GETUSER "$user" 2>/dev/null || true)
+  acl_raw=$(kubectl --kubeconfig "$KUBECONFIG_FILE" -n redis exec -i "$pod" -c valkey -- \
+    env REDISCLI_AUTH="$pw" redis-cli --json ACL GETUSER "$user" 2>/dev/null || true)
   local acl_json="null"
   if [ -n "$acl_raw" ]; then
-    # ACL GETUSER печатает пары "field\nvalue\nfield\nvalue\n...".
-    # Группируем построчно: нечётная строка = ключ, чётная = значение.
-    acl_json=$(echo "$acl_raw" | awk 'NR%2==1 {k=$0; next} {print k"\t"$0}' \
-      | jq -Rn '[inputs | split("\t") | select(length==2) | {(.[0]): .[1]}] | add // {}')
+    acl_json=$(echo "$acl_raw" | jq -c '{
+      enabled: ((.flags // []) | index("on") != null),
+      passwords: ((.passwords // []) | sort),
+      keys, channels, commands
+    }' 2>/dev/null || echo null)
   fi
   # DBSIZE на db приложения (informational).
   local dbsize="null"
   if [ -n "$db" ]; then
     local d
-    d=$(kubectl --kubeconfig "$KUBECONFIG_FILE" -n redis exec -i "$pod" -- \
+    d=$(kubectl --kubeconfig "$KUBECONFIG_FILE" -n redis exec -i "$pod" -c valkey -- \
       env REDISCLI_AUTH="$pw" redis-cli -n "$db" DBSIZE 2>/dev/null | tr -d '[:space:]' || echo "")
     if [ -n "$d" ]; then dbsize="$d"; fi
   fi
