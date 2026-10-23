@@ -57,7 +57,7 @@ controller:
       memory: 256Mi
     limits:
       cpu: 300m
-      memory: 384Mi
+      memory: 1Gi
   persistence:
     enabled: true
     size: 2Gi
